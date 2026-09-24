@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: mashawerr-api
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    # Render health check must return 2xx within ~5s — GET / has no DB dependency
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: https://mashawerr-api.onrender.com
+      # Keep-alive ping every 10 min (app.js) — reduces cold starts on free tier
+      - key: RENDER_EXTERNAL_URL
+        value: https://mashawerr-api.onrender.com

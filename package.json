@@ -1,0 +1,46 @@
+{
+  "name": "mashawerr-api",
+  "version": "1.0.0",
+  "description": "Mashawerr REST API with JWT authentication and user management",
+  "dependencies": {
+    "axios": "^1.16.1",
+    "bcryptjs": "^3.0.3",
+    "cloudinary": "^1.41.3",
+    "cors": "^2.8.6",
+    "dotenv": "^17.2.3",
+    "ejs": "^4.0.1",
+    "express": "^5.2.1",
+    "express-async-handler": "^1.2.0",
+    "express-rate-limit": "^8.5.2",
+    "firebase-admin": "^13.7.0",
+    "helmet": "^8.1.0",
+    "ioredis": "^5.11.1",
+    "joi": "^18.0.2",
+    "joi-password-complexity": "^5.2.0",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^9.0.1",
+    "lru-cache": "^10.4.3",
+    "morgan": "^1.10.1",
+    "multer": "^1.4.5-lts.1",
+    "multer-storage-cloudinary": "^4.0.0",
+    "ngeohash": "^0.6.3",
+    "nodemailer": "^7.0.13",
+    "socket.io": "^4.8.3",
+    "swagger-jsdoc": "^6.2.8",
+    "swagger-ui-express": "^5.0.1",
+    "tafgeet-arabic": "^1.4.0",
+    "winston": "^3.19.0"
+  },
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js",
+    "push": "powershell -ExecutionPolicy Bypass -File ./push.ps1",
+    "watch:push": "node scripts/auto_push_watcher.js"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.11"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

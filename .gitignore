@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Environment variables (contains secrets)
+.env
+
+# Uploaded files
+uploads/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Firebase service account key (contains private credentials)
+*firebase-adminsdk*
+*service-account*
+firebase-service-account.json
+serviceAccountKey.json

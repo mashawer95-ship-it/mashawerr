@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  tracking-service:
+    build: .
+    container_name: tracking-service
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+      - JWT_SECRET=super_secret_jwt_key_change_me_in_production
+      - CORS_ORIGIN=*
+    restart: always
