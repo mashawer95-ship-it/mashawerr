@@ -20,7 +20,8 @@
 const jwt    = require('jsonwebtoken');
 const logger = require('../utils/logger');
 
-const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET || process.env.JWT_SECRET;
+const DEFAULT_ACCESS_SECRET = '4ae0e005a85d9690e9d91b0f7415d966c3a463ed1e33b5c2d6412d9d09ef401a67f41f2bd980ce8d7b040141d8701b74e19cda45c6573c36f1f132bfd3bfa06f';
+const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET || process.env.JWT_SECRET || DEFAULT_ACCESS_SECRET;
 
 /**
  * Socket.IO middleware: verify Access Token and attach user to socket.

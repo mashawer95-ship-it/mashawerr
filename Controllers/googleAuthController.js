@@ -90,88 +90,98 @@ const googleSignIn = asyncHandler(async (req, res) => {
     const fcmToken = req.body?.fcmToken || req.headers['fcm-token'] || req.headers['x-fcm-token'];
     const deviceId = req.body?.deviceId || req.headers['x-device-id'];
 
-    // ── 2. Find or create user ────────────────────────────────────────────
-    const emailRegex = new RegExp(`^${email.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}$`, 'i');
-    let user = await User.findOne({ $or: [{ googleId: uid }, { email: emailRegex }] });
+    try {
+        // ── 2. Find or create user ────────────────────────────────────────────
+        const emailRegex = new RegExp(`^${email.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}$`, 'i');
+        let user = await User.findOne({ $or: [{ googleId: uid }, { email: emailRegex }] });
 
-    // Check if device/email/fcmToken/phone is banned in the NEW BannedDevice system
-    const banCheck = await isBanned({ email, fcmToken, deviceId: deviceId || user?.deviceId, phone: user?.phone });
-    if (banCheck.isBanned) {
-        return res.status(403).json({
-            code: 'DEVICE_BLOCKED',
-            message: 'عذراً، هذا الجهاز أو الحساب محظور من استخدام التطبيق. يرجى التواصل مع الدعم الفني.',
-        });
-    }
-
-    if (user && (user.isSuspended === true || user.status === 'blocked')) {
-        return res.status(403).json({
-            code: 'ACCOUNT_SUSPENDED',
-            message: 'عذراً، هذا الحساب موقوف من قبل الإدارة. يرجى التواصل مع الدعم الفني.',
-        });
-    }
-
-    if (!user) {
-        // New Google user → create account (no password, no phone yet)
-        const nameParts = (name || '').split(' ');
-        const firstName = nameParts[0] || 'Google';
-        const lastName = nameParts.slice(1).join(' ') || 'User';
-
-        user = await User.create({
-            googleId: uid,
-            email,
-            firstName,
-            lastName,
-            profileImage: picture || null,
-            deviceId: deviceId || null,
-            isVerified: true,          // Google already verified the email
-            isProfileCompleted: false, // User needs to add phone & password
-        });
-
-        console.log('✅ New Google user created:', user._id, email);
-    } else {
-        // Existing user → update googleId if missing & refresh profile image
-        let changed = false;
-        if (!user.googleId) { user.googleId = uid; changed = true; }
-        if (picture && !user.profileImage) { user.profileImage = picture; changed = true; }
-        if (!user.isVerified) { user.isVerified = true; changed = true; }
-        if (deviceId && user.deviceId !== deviceId) { user.deviceId = deviceId; changed = true; }
-
-        // Senior Logic: If user registered previously via email/password or already has phone/password, profile is complete!
-        if (!user.isProfileCompleted && (user.phone || user.password || user.isVerified)) {
-            user.isProfileCompleted = true;
-            changed = true;
+        // Check if device/email/fcmToken/phone is banned in the NEW BannedDevice system
+        const banCheck = await isBanned({ email, fcmToken, deviceId: deviceId || user?.deviceId, phone: user?.phone });
+        if (banCheck.isBanned) {
+            return res.status(403).json({
+                code: 'DEVICE_BLOCKED',
+                message: 'عذراً، هذا الجهاز أو الحساب محظور من استخدام التطبيق. يرجى التواصل مع الدعم الفني.',
+            });
         }
 
-        if (changed) await user.save();
+        if (user && (user.isSuspended === true || user.status === 'blocked')) {
+            return res.status(403).json({
+                code: 'ACCOUNT_SUSPENDED',
+                message: 'عذراً، هذا الحساب موقوف من قبل الإدارة. يرجى التواصل مع الدعم الفني.',
+            });
+        }
 
-        console.log('✅ Existing user signed in via Google:', user._id, email, 'isProfileCompleted:', user.isProfileCompleted);
+        if (!user) {
+            // New Google user → create account (no password, no phone yet)
+            const nameParts = (name || '').split(' ');
+            const firstName = nameParts[0] || 'Google';
+            const lastName = nameParts.slice(1).join(' ') || 'User';
+
+            user = await User.create({
+                googleId: uid,
+                email,
+                firstName,
+                lastName,
+                profileImage: picture || null,
+                deviceId: deviceId || null,
+                isVerified: true,          // Google already verified the email
+                isProfileCompleted: false, // User needs to add phone & password
+            });
+
+            console.log('✅ New Google user created:', user._id, email);
+        } else {
+            // Existing user → update googleId if missing & refresh profile image
+            let changed = false;
+            if (!user.googleId) { user.googleId = uid; changed = true; }
+            if (picture && !user.profileImage) { user.profileImage = picture; changed = true; }
+            if (!user.isVerified) { user.isVerified = true; changed = true; }
+            if (deviceId && user.deviceId !== deviceId) { user.deviceId = deviceId; changed = true; }
+
+            // Senior Logic: If user registered previously via email/password or already has phone/password, profile is complete!
+            if (!user.isProfileCompleted && (user.phone || user.password || user.isVerified)) {
+                user.isProfileCompleted = true;
+                changed = true;
+            }
+
+            if (changed) await user.save();
+
+            console.log('✅ Existing user signed in via Google:', user._id, email, 'isProfileCompleted:', user.isProfileCompleted);
+        }
+
+        // ── 3. Issue Access + Refresh tokens ───────────────────────────────────
+        const accessToken  = generateAccessToken(user);
+        const refreshToken = await generateRefreshToken(user._id, null, {
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent'],
+        });
+
+        const profileCompletedFinal = Boolean(user.isProfileCompleted) || (Boolean(user.phone) && Boolean(user.phone.trim()));
+
+        // ── 4. Return user data ────────────────────────────────────
+        return res.status(200).json({
+            _id: user._id,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            email: user.email,
+            phone: user.phone || null,
+            isAdmin: user.isAdmin,
+            userType: user.userType || 'NormalUser',
+            profileImage: user.profileImage || null,
+            isProfileCompleted: profileCompletedFinal,
+            accessToken,
+            refreshToken,
+            // Legacy – kept for backward compat with older Flutter clients
+            token: accessToken,
+        });
+    } catch (err) {
+        console.error('❌ [GoogleSignIn Error]:', err);
+        return res.status(500).json({
+            success: false,
+            message: 'حدث خطأ أثناء معالجة تسجيل الدخول: ' + err.message,
+            code: 'GOOGLE_SIGNIN_PROCESSING_ERROR',
+            error: err.message,
+        });
     }
-
-    // ── 3. Issue Access + Refresh tokens ───────────────────────────────────
-    const accessToken  = generateAccessToken(user);
-    const refreshToken = await generateRefreshToken(user._id, null, {
-        ipAddress: req.ip,
-        userAgent: req.headers['user-agent'],
-    });
-
-    const profileCompletedFinal = Boolean(user.isProfileCompleted) || (Boolean(user.phone) && Boolean(user.phone.trim()));
-
-    // ── 4. Return user data ────────────────────────────────────
-    res.status(200).json({
-        _id: user._id,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        phone: user.phone || null,
-        isAdmin: user.isAdmin,
-        userType: user.userType || 'NormalUser',
-        profileImage: user.profileImage || null,
-        isProfileCompleted: profileCompletedFinal,
-        accessToken,
-        refreshToken,
-        // Legacy – kept for backward compat with older Flutter clients
-        token: accessToken,
-    });
 });
 
 /**
