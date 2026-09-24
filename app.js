@@ -412,7 +412,7 @@ connectToDB().catch((err) => {
 });
 
 // Keep-alive: ping the server every 8 minutes so Render never spins it down
-const renderUrl = process.env.RENDER_EXTERNAL_URL || process.env.HOST || (process.env.NODE_ENV === 'production' ? 'https://mashawerr-api.onrender.com' : null);
+const renderUrl = process.env.RENDER_EXTERNAL_URL || process.env.HOST || (process.env.NODE_ENV === 'production' ? 'https://mashawerr.onrender.com' : null);
 if (renderUrl) {
     const PING_INTERVAL_MS = 8 * 60 * 1000;
     const pingUrl = `${renderUrl.replace(/\/$/, '')}/api/health`;

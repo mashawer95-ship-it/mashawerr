@@ -3,7 +3,7 @@
  * Uses swagger-jsdoc to build the spec; serve with swagger-ui-express at /api-docs
  *
  * Server URL priority:
- *   1. process.env.HOST  – set this on production (e.g. https://mashawerr-api.onrender.com)
+ *   1. process.env.HOST  – set this on production (e.g. https://mashawerr.onrender.com)
  *   2. http://localhost:3000  – automatic fallback for local development
  */
 
@@ -27,7 +27,7 @@ const options = {
             },
             ...(isProduction
                 ? [{ url: `http://localhost:${process.env.PORT || 3000}`, description: 'Local development server' }]
-                : [{ url: 'https://mashawerr-api.onrender.com', description: 'Production server (Render)' }]
+                : [{ url: 'https://mashawerr.onrender.com', description: 'Production server (Render)' }]
             ),
         ],
         tags: [

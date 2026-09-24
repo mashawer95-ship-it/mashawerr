@@ -167,7 +167,7 @@ async function enrichOrder(param1, param2) {
             const base = process.env.HOST.replace(/\/$/, '');
             return `${base}/uploads/${img}`;
         }
-        return `https://mashawerr-api.onrender.com/uploads/${img}`;
+        return `https://mashawerr.onrender.com/uploads/${img}`;
     }
 
     const obj = order.toObject ? order.toObject() : { ...order };

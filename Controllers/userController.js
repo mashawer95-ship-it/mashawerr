@@ -1333,7 +1333,7 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
             const { buildUrl } = require('../config/urlBuilder');
             return buildUrl(req, str);
         } catch (_) {
-            return `https://mashawerr-api.onrender.com/uploads/${str.replace(/^\//, '')}`;
+            return `https://mashawerr.onrender.com/uploads/${str.replace(/^\//, '')}`;
         }
     };
 

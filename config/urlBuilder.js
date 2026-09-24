@@ -3,7 +3,7 @@
  *
  * Priority order:
  *  1. process.env.HOST  – set this in Render/server env vars to:
- *       https://mashawerr-api.onrender.com
+ *       https://mashawerr.onrender.com
  *  2. x-forwarded-proto header – Render & most reverse proxies set this,
  *     so we get "https" even though req.protocol itself says "http".
  *  3. Fallback: req.protocol + host (works in local dev).
@@ -35,7 +35,7 @@ function buildUrl(req, img, prefix = '/uploads') {
         : (req?.protocol || 'https');
 
     // 3. Forwarded host (optional – rare, but handles proxied hosts)
-    const host = req?.headers?.['x-forwarded-host'] || (typeof req?.get === 'function' ? req.get('host') : 'mashawerr-api.onrender.com');
+    const host = req?.headers?.['x-forwarded-host'] || (typeof req?.get === 'function' ? req.get('host') : 'mashawerr.onrender.com');
 
     return `${proto}://${host}${prefix}/${img}`;
 }

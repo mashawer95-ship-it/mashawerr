@@ -10,7 +10,7 @@ services:
       - key: NODE_ENV
         value: production
       - key: HOST
-        value: https://mashawerr-api.onrender.com
+        value: https://mashawerr.onrender.com
       # Keep-alive ping every 10 min (app.js) — reduces cold starts on free tier
       - key: RENDER_EXTERNAL_URL
-        value: https://mashawerr-api.onrender.com
+        value: https://mashawerr.onrender.com
