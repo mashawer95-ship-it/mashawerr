@@ -22,10 +22,16 @@ const uuidv4 = () => (typeof crypto.randomUUID === 'function' ? crypto.randomUUI
 const DEFAULT_ACCESS_SECRET  = '4ae0e005a85d9690e9d91b0f7415d966c3a463ed1e33b5c2d6412d9d09ef401a67f41f2bd980ce8d7b040141d8701b74e19cda45c6573c36f1f132bfd3bfa06f';
 const DEFAULT_REFRESH_SECRET = '4c3c0790eabfdbda717a61243c89cdbb0a12097d0f6e156088bf169fdcfc394737460c3c1fc051e46e78e2bc23fb2a55ca4f928a4a1c3429e5ed37afe2bfa6cd';
 
+function sanitizeExpires(val, fallback) {
+    if (!val) return fallback;
+    const clean = String(val).replace(/["'\r\n\s]/g, '');
+    return /^\d+[smhdwy]?$/i.test(clean) ? clean : fallback;
+}
+
 const ACCESS_SECRET  = process.env.JWT_ACCESS_SECRET  || process.env.JWT_SECRET || DEFAULT_ACCESS_SECRET;
 const REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET || DEFAULT_REFRESH_SECRET;
-const ACCESS_EXPIRES  = process.env.JWT_ACCESS_EXPIRES  || '10m';
-const REFRESH_EXPIRES = process.env.JWT_REFRESH_EXPIRES || '120d';
+const ACCESS_EXPIRES  = sanitizeExpires(process.env.JWT_ACCESS_EXPIRES, '10m');
+const REFRESH_EXPIRES = sanitizeExpires(process.env.JWT_REFRESH_EXPIRES, '120d');
 
 // Convert REFRESH_EXPIRES string to milliseconds for DB expiresAt field
 function refreshExpiresMs() {
@@ -34,6 +40,7 @@ function refreshExpiresMs() {
     if (str.endsWith('d')) return num * 24 * 60 * 60 * 1000;
     if (str.endsWith('h')) return num * 60 * 60 * 1000;
     if (str.endsWith('m')) return num * 60 * 1000;
+    if (str.endsWith('s')) return num * 1000;
     return 120 * 24 * 60 * 60 * 1000; // default 120 days
 }
 
