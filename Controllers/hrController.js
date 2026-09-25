@@ -382,411 +382,96 @@ const getShiftCoverage = expressAsyncHandler(async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2. ATTENDANCE — MANUAL (Representative Settings)
+// 2. ATTENDANCE & SHIFTS (Disabled per requirement - Safe fallbacks)
 // ─────────────────────────────────────────────────────────────────────────────
 
-
-
 /**
- * Representative Manual Check-in
+ * Representative Manual Check-in (Fallback)
  * POST /api/hr/attendance/manual-check-in
  */
 const manualCheckIn = expressAsyncHandler(async (req, res) => {
-    const repId = req.user.id;
-    const { lat, lng, accuracy, address, deviceInfo } = req.body;
-
-    if (lat !== undefined && (lat < -90 || lat > 90)) {
-        return res.status(400).json({ message: 'Invalid latitude value' });
-    }
-    if (lng !== undefined && (lng < -180 || lng > 180)) {
-        return res.status(400).json({ message: 'Invalid longitude value' });
-    }
-
-    let { shift, referenceDateStr, meta } = await detectCurrentShift(repId);
-    if (!shift) {
-        shift = await Shift.findOne({ isActive: true, representativeIds: repId }).lean();
-    }
-
-    // Guard: Representative MUST have an assigned shift before checking in
-    if (!shift) {
-        return res.status(403).json({
-            code: 'NO_SHIFT_ASSIGNED',
-            message: 'عذراً، لم يتم تخصيص أي شيفت لك بعد. لا يمكنك تسجيل الحضور حتى يقوم مسؤول الـ HR بتخصيص شيفت لك.',
-        });
-    }
-
-    const now = new Date();
-    const timing = evaluateShiftTiming(shift, now);
-
-    // Guard: Check if representative already completed manual check-in today
-    let record = await AttendanceRecord.findOne({
-        representativeId: repId,
-        dateStr: referenceDateStr,
-    });
-
-    if (record && record.isManualCheckIn) {
-        return res.status(409).json({
-            message: 'لقد قمت بتسجيل الحضور اليدوي بالفعل لهذا اليوم',
-            record,
-            shift,
-        });
-    }
-
-    // Rule 1: Cannot check-in before shift startTime
-    if (timing.hasShift && timing.isBeforeShiftStart) {
-        return res.status(400).json({
-            message: `عذراً، لم يبدأ وقت الشيفت بعد. يمكنك تسجيل الحضور بدءاً من الساعة ${shift.startTime}`,
-            shift,
-        });
-    }
-
-    // Rule 2: 15-minute grace period check. If past 15 mins -> mark absent & block check-in!
-    if (timing.hasShift && timing.isPastGracePeriod) {
-        if (!record) {
-            record = new AttendanceRecord({
-                representativeId: repId,
-                shiftId: shift ? shift._id : null,
-                date: meta.date,
-                dateStr: referenceDateStr,
-                week: meta.week,
-                month: meta.month,
-                year: meta.year,
-                status: 'absent',
-                notes: 'تم تسجيل غياب تلقائياً لانقضاء مهلة تسجيل الحضور (15 دقيقة من بداية الشيفت)',
-            });
-        } else {
-            record.status = 'absent';
-            record.notes = 'تم تسجيل غياب تلقائياً لانقضاء مهلة تسجيل الحضور (15 دقيقة من بداية الشيفت)';
-        }
-        await record.save();
-
-        return res.status(400).json({
-            message: `عذراً، لقد انتهت مهلة تسجيل الحضور المسموحة (15 دقيقة من بداية الشيفت الساعة ${shift.startTime}) وحالتك اليوم غياب ❌`,
-            record,
-            shift,
-        });
-    }
-
-    const locationObj = { lat: lat || null, lng: lng || null, accuracy: accuracy || null, address: address || null };
-
-    if (!record) {
-        record = new AttendanceRecord({
-            representativeId: repId,
-            shiftId: shift ? shift._id : null,
-            date: meta.date,
-            dateStr: referenceDateStr,
-            week: meta.week,
-            month: meta.month,
-            year: meta.year,
-            status: 'present',
-        });
-    }
-
-    record.manualCheckInAt = now;
-    record.manualCheckInLocation = locationObj;
-    record.manualCheckInDevice = deviceInfo || {};
-    record.isManualCheckIn = true;
-    record.status = 'present';
-    if (shift) record.shiftId = shift._id;
-
-    await record.save();
-
-    // Permanent activity log entry
-    await RepActivityLog.create({
-        representativeId: repId,
-        shiftId: shift ? shift._id : null,
-        dateStr: referenceDateStr,
-        week: meta.week,
-        month: meta.month,
-        year: meta.year,
-        eventType: 'manual_check_in',
-        timestamp: now,
-        location: locationObj,
-        metadata: { deviceInfo },
-    });
-
-    // Update Redis session
-    await setRepSession(repId, {
-        checkInAt: now.toISOString(),
-        shiftId: shift ? shift._id.toString() : null,
-        shiftName: shift ? shift.name : 'افتراضي',
-        isOnline: true,
-        lastSeen: Date.now(),
-    });
-    await setRepAppState(repId, 'open');
-    await invalidateLiveDashboard();
-
-    res.status(200).json({
-        message: 'تم تسجيل الحضور بنجاح',
-        record,
-        currentShift: shift,
-    });
+    res.json({ message: 'نظام الشيفتات والحضور تم إلغاؤه', record: null });
 });
 
 /**
- * Representative Manual Check-out
+ * Representative Manual Check-out (Fallback)
  * POST /api/hr/attendance/manual-check-out
  */
 const manualCheckOut = expressAsyncHandler(async (req, res) => {
-    const repId = req.user.id;
-    const { lat, lng, accuracy, address, deviceInfo } = req.body;
-
-    let { shift, referenceDateStr, meta } = await detectCurrentShift(repId);
-    if (!shift) {
-        shift = await Shift.findOne({ isActive: true, representativeIds: repId }).lean();
-    }
-
-    const now = new Date();
-    const timing = evaluateShiftTiming(shift, now);
-
-    // Rule 1: Cannot check-out before shift endTime!
-    if (timing.hasShift && timing.isBeforeShiftEnd) {
-        return res.status(400).json({
-            message: `عذراً، لا يمكنك تسجيل الانصراف قبل انتهاء وقت الشيفت في تمام الساعة ${shift.endTime}`,
-            shift,
-        });
-    }
-
-    // Rule 2: Cannot check-out after 1.5 hours (90 minutes) past shift endTime!
-    if (timing.hasShift && timing.isPastCheckoutGracePeriod) {
-        return res.status(400).json({
-            message: 'عذراً، لقد انتهت مهلة تسجيل الانصراف المسموحة (ساعة ونصف من نهاية الشيفت). تم إغلاق تسجيل الانصراف لهذا الشيفت.',
-            shift,
-        });
-    }
-
-    const locationObj = { lat: lat || null, lng: lng || null, accuracy: accuracy || null, address: address || null };
-
-    let record = await AttendanceRecord.findOne({
-        representativeId: repId,
-        dateStr: referenceDateStr,
-    });
-
-    if (!record) {
-        record = new AttendanceRecord({
-            representativeId: repId,
-            shiftId: shift ? shift._id : null,
-            date: meta.date,
-            dateStr: referenceDateStr,
-            week: meta.week,
-            month: meta.month,
-            year: meta.year,
-            status: 'partial',
-        });
-    }
-
-    record.manualCheckOutAt = now;
-    record.manualCheckOutLocation = locationObj;
-    await record.save();
-
-    await RepActivityLog.create({
-        representativeId: repId,
-        shiftId: shift ? shift._id : null,
-        dateStr: referenceDateStr,
-        week: meta.week,
-        month: meta.month,
-        year: meta.year,
-        eventType: 'manual_check_out',
-        timestamp: now,
-        location: locationObj,
-        metadata: { deviceInfo },
-    });
-
-    await clearRepSession(repId);
-    await setRepAppState(repId, 'closed');
-    await invalidateLiveDashboard();
-
-    res.json({
-        message: 'تم تسجيل الانصراف بنجاح',
-        record,
-    });
+    res.json({ message: 'نظام الشيفتات والحضور تم إلغاؤه', record: null });
 });
 
 /**
- * Get Representative's Today Attendance Status
+ * Get Representative's Today Attendance Status (Fallback)
  * GET /api/hr/attendance/my-today
  */
 const getMyTodayAttendance = expressAsyncHandler(async (req, res) => {
-    const repId = req.user.id;
-
-    const repShifts = await Shift.find({
-        isActive: true,
-        representativeIds: repId,
-    }).sort({ startTime: 1 }).lean();
-
-    let { shift, referenceDateStr, meta } = await detectCurrentShift(repId);
-
-    // If representative has NO assigned shifts at all, shift must be null
-    if (!repShifts || repShifts.length === 0) {
-        shift = null;
-    } else if (!shift) {
-        shift = repShifts[0];
-    }
-
-    let record = await AttendanceRecord.findOne({
-        representativeId: repId,
-        dateStr: referenceDateStr,
-    }).populate('shiftId');
-
-    // Auto-mark absent IF rep has an assigned shift, hasn't checked in, and 15-minute grace period passed!
-    if (shift && repShifts && repShifts.length > 0) {
-        const now = new Date();
-        const timing = evaluateShiftTiming(shift, now);
-
-        // If current time is within grace period, reset any stale 'absent' status so representative can check in
-        if (!timing.isPastGracePeriod && record && !record.isManualCheckIn && record.status === 'absent') {
-            await AttendanceRecord.deleteOne({ _id: record._id });
-            record = null;
-        }
-
-        if (timing.isPastGracePeriod && (!record || (!record.isManualCheckIn && record.status !== 'present'))) {
-            if (!record) {
-                record = new AttendanceRecord({
-                    representativeId: repId,
-                    shiftId: shift._id,
-                    date: meta.date,
-                    dateStr: referenceDateStr,
-                    week: meta.week,
-                    month: meta.month,
-                    year: meta.year,
-                    status: 'absent',
-                    notes: 'تم تسجيل غياب تلقائياً لانقضاء مهلة تسجيل الحضور (15 دقيقة من بداية الشيفت)',
-                });
-            } else if (record.status !== 'absent') {
-                record.status = 'absent';
-                record.notes = 'تم تسجيل غياب تلقائياً لانقضاء مهلة تسجيل الحضور (15 دقيقة من بداية الشيفت)';
-            }
-            await record.save();
-        }
-    }
-
     res.json({
-        record: record || null,
-        currentShift: shift || null,
-        shift: shift || null,
-        shifts: repShifts || [],
-        dateStr: referenceDateStr,
+        record: null,
+        currentShift: null,
+        shift: null,
+        shifts: [],
+        dateStr: new Date().toISOString().slice(0, 10),
     });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3. ATTENDANCE — AUTOMATIC BACKGROUND TRACKING
+// 3. LIVE TRACKING — AUTOMATIC BACKGROUND APP STATE & HEARTBEAT
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * App Open Hook (Automatic background)
+ * App Open Hook (Automatic background live tracking)
  * POST /api/hr/attendance/app-open
  */
 const appOpen = expressAsyncHandler(async (req, res) => {
     const repId = req.user.id;
-    const { shift, referenceDateStr, meta } = await detectCurrentShift(repId);
     const now = new Date();
-
-    let record = await AttendanceRecord.findOne({
-        representativeId: repId,
-        dateStr: referenceDateStr,
-    });
-
-    if (!record) {
-        record = new AttendanceRecord({
-            representativeId: repId,
-            shiftId: shift ? shift._id : null,
-            date: meta.date,
-            dateStr: referenceDateStr,
-            week: meta.week,
-            month: meta.month,
-            year: meta.year,
-            status: 'absent',
-        });
-    }
-
-    if (!record.appOpenAt) {
-        record.appOpenAt = now;
-    }
-    record.sessionLogs.push({ openAt: now });
-    await record.save();
-
-    await RepActivityLog.create({
-        representativeId: repId,
-        shiftId: shift ? shift._id : null,
-        dateStr: referenceDateStr,
-        week: meta.week,
-        month: meta.month,
-        year: meta.year,
-        eventType: 'app_open',
-        timestamp: now,
-    });
 
     await setRepAppState(repId, 'open');
     await touchRepAppState(repId);
     await invalidateLiveDashboard();
 
-    res.json({ message: 'App open recorded', record, currentShift: shift });
+    try {
+        await RepActivityLog.create({
+            representativeId: repId,
+            eventType: 'app_open',
+            timestamp: now,
+        });
+    } catch (_) {}
+
+    res.json({ message: 'App open recorded', appState: 'open' });
 });
 
 /**
- * App Close Hook (Automatic background)
+ * App Close Hook (Automatic background live tracking)
  * POST /api/hr/attendance/app-close
  */
 const appClose = expressAsyncHandler(async (req, res) => {
     const repId = req.user.id;
-    const { shift, referenceDateStr, meta } = await detectCurrentShift(repId);
     const now = new Date();
-
-    let record = await AttendanceRecord.findOne({
-        representativeId: repId,
-        dateStr: referenceDateStr,
-    });
-
-    if (record) {
-        record.appCloseAt = now;
-        if (record.sessionLogs && record.sessionLogs.length > 0) {
-            const lastSession = record.sessionLogs[record.sessionLogs.length - 1];
-            if (!lastSession.closeAt) {
-                lastSession.closeAt = now;
-                const diffMs = now - new Date(lastSession.openAt);
-                lastSession.durationMinutes = Math.max(1, Math.round(diffMs / 60000));
-            }
-        }
-        let totalMins = 0;
-        record.sessionLogs.forEach(s => {
-            if (s.durationMinutes) totalMins += s.durationMinutes;
-        });
-        record.totalOnlineMinutes = totalMins;
-        await record.save();
-    }
-
-    await RepActivityLog.create({
-        representativeId: repId,
-        shiftId: shift ? shift._id : null,
-        dateStr: referenceDateStr,
-        week: meta.week,
-        month: meta.month,
-        year: meta.year,
-        eventType: 'app_close',
-        timestamp: now,
-    });
 
     await setRepAppState(repId, 'closed');
     await invalidateLiveDashboard();
 
-    res.json({ message: 'App close recorded' });
+    try {
+        await RepActivityLog.create({
+            representativeId: repId,
+            eventType: 'app_close',
+            timestamp: now,
+        });
+    } catch (_) {}
+
+    res.json({ message: 'App close recorded', appState: 'closed' });
 });
 
 /**
- * Heartbeat Hook (Every 2 mins)
+ * Heartbeat Hook (Every 2 mins - keeps representative online in live tracking)
  * POST /api/hr/attendance/heartbeat
  */
 const heartbeat = expressAsyncHandler(async (req, res) => {
     const repId = req.user.id;
     await touchRepAppState(repId);
     await setRepAppState(repId, 'open');
-
-    const { referenceDateStr } = await detectCurrentShift(repId);
-    await AttendanceRecord.updateOne(
-        { representativeId: repId, dateStr: referenceDateStr },
-        { $inc: { totalOnlineMinutes: 2 } }
-    );
     await invalidateLiveDashboard();
 
     res.json({ ok: true, timestamp: Date.now() });
@@ -906,23 +591,14 @@ const getLiveTracking = expressAsyncHandler(async (req, res) => {
             }
         }
 
-        // Detect single current shift for this rep
-        const { shift, referenceDateStr } = await detectCurrentShift(rep._id);
-
-        const attendance = await AttendanceRecord.findOne({
-            representativeId: rep._id,
-            dateStr: referenceDateStr,
-        }).select('manualCheckInAt manualCheckOutAt status').lean();
-
         const isFresh = Boolean(appStateObj && appStateObj.lastSeen && (nowTs - appStateObj.lastSeen < 180000));
         const isOnline = Boolean(appStateObj && appStateObj.state === 'open' && isFresh);
         const hasOrder = Boolean(currentOrder && currentOrder.orderId && isRealActiveOrder);
 
         if (isOnline) onlineCount++;
         if (hasOrder) onOrderCount++;
-        if (!isOnline && shift) offlineInShiftCount++;
 
-        const rawLastSeen = appStateObj?.lastSeen || attendance?.manualCheckOutAt || rep.lastLocation?.updatedAt || attendance?.manualCheckInAt || null;
+        const rawLastSeen = appStateObj?.lastSeen || rep.lastLocation?.updatedAt || null;
 
         liveReps.push({
             representative: {
@@ -937,30 +613,23 @@ const getLiveTracking = expressAsyncHandler(async (req, res) => {
             },
             appState: isOnline ? 'open' : 'closed',
             lastSeen: rawLastSeen,
-            currentShift: shift ? {
-                id: shift._id,
-                name: shift.name,
-                startTime: shift.startTime,
-                endTime: shift.endTime,
-                crossesMidnight: shift.crossesMidnight,
-            } : null,
+            currentShift: null,
             currentOrder: hasOrder ? currentOrder : null,
             lastLocation: rep.lastLocation || null,
             session: sessionObj || null,
-            attendance: attendance ? {
-                manualCheckInAt: attendance.manualCheckInAt || null,
-                manualCheckOutAt: attendance.manualCheckOutAt || null,
-                status: attendance.status || null,
-            } : null,
+            attendance: null,
         });
     }
+
+    const offlineCount = Math.max(0, reps.length - onlineCount);
 
     const dashboard = {
         summary: {
             totalRepresentatives: reps.length,
             onlineCount,
             onOrderCount,
-            offlineInShiftCount,
+            offlineCount,
+            offlineInShiftCount: offlineCount, // for backward compatibility
             updatedAt: new Date(),
         },
         representatives: liveReps,
@@ -982,24 +651,18 @@ const getRepLiveDetails = expressAsyncHandler(async (req, res) => {
         return res.status(404).json({ message: 'Representative not found' });
     }
 
-    const { shift, referenceDateStr } = await detectCurrentShift(repId);
     const appStateObj = await getRepAppState(repId);
     const sessionObj = await getRepSession(repId);
     const currentOrder = await getRepCurrentOrder(repId);
 
-    const todayAttendance = await AttendanceRecord.findOne({
-        representativeId: repId,
-        dateStr: referenceDateStr,
-    }).populate('shiftId');
-
     res.json({
         representative: rep,
-        currentShift: shift,
+        currentShift: null,
         appState: appStateObj ? appStateObj.state : 'closed',
         lastSeen: appStateObj ? appStateObj.lastSeen : null,
         session: sessionObj,
         currentOrder,
-        todayAttendance,
+        todayAttendance: null,
     });
 });
 
