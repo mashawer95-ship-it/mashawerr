@@ -56,6 +56,19 @@ const UserSchema = new mongoose.Schema({
         trim: true,
         description: 'Physical hardware device ID associated with the user',
 },
+ governorate: {
+        type: String,
+        default: null,
+        trim: true,
+        description: 'المحافظة (محافظات مصر)',
+ },
+ gender: {
+        type: String,
+        enum: ['male', 'female', 'ذكر', 'أنثى', null],
+        default: null,
+        trim: true,
+        description: 'النوع (ذكر / أنثى)',
+ },
  // ─── حالة الحساب الجديدة (Active / Blocked) ──────────────────────────────
  status: {
         type: String,
@@ -179,6 +192,8 @@ function validateRegisterUser(object){
         }),
         deviceId: joi.string().trim().allow('', null).optional(),
         fcmToken: joi.string().trim().allow('', null).optional(),
+        governorate: joi.string().trim().allow('', null).optional(),
+        gender: joi.string().valid('male', 'female', 'ذكر', 'أنثى').allow('', null).optional(),
     }).unknown(true);
     return schema.validate(object);
 }
@@ -256,6 +271,8 @@ function validateUpdateUser(object){
         firstName: joi.string().trim().min(2).max(100),
         lastName: joi.string().trim().min(2).max(100),
         phone: joi.string().trim().min(7).max(15),
+        governorate: joi.string().trim().allow('', null).optional(),
+        gender: joi.string().valid('male', 'female', 'ذكر', 'أنثى').allow('', null).optional(),
     }).unknown(true);
     return schema.validate(object);
 }

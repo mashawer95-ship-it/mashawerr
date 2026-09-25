@@ -49,7 +49,7 @@ const register = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: error.details[0].message });
     }
 
-    const { firstName, lastName, email, phone, password } = req.body;
+    const { firstName, lastName, email, phone, password, governorate, gender } = req.body;
     const fcmToken = req.body?.fcmToken || req.headers['fcm-token'] || req.headers['x-fcm-token'];
     const deviceId = req.body?.deviceId || req.headers['x-device-id'];
 
@@ -83,6 +83,8 @@ const register = asyncHandler(async (req, res) => {
         phone,
         password: hashedPassword,
         deviceId: deviceId || null,
+        governorate: governorate ? String(governorate).trim() : null,
+        gender: gender ? String(gender).trim() : null,
         emailVerificationCode: otp,
         emailVerificationExpires,
     });
@@ -167,6 +169,8 @@ const login = asyncHandler(async (req, res) => {
         lastName: user.lastName,
         email: user.email,
         phone: user.phone,
+        governorate: user.governorate || null,
+        gender: user.gender || null,
         isAdmin: user.isAdmin,
         userType: user.userType || 'NormalUser',
         accessToken,
@@ -227,6 +231,8 @@ const verifyEmail = asyncHandler(async (req, res) => {
         lastName: user.lastName,
         email: user.email,
         phone: user.phone,
+        governorate: user.governorate || null,
+        gender: user.gender || null,
         isAdmin: user.isAdmin,
         userType: user.userType || 'NormalUser',
         accessToken,

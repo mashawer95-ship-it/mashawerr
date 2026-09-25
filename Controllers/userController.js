@@ -75,6 +75,8 @@ const updateUser = asyncHandler(async (req, res) => {
         }
     }
     if (req.body.phone) updateData.phone = req.body.phone;
+    if (req.body.governorate !== undefined) updateData.governorate = req.body.governorate ? String(req.body.governorate).trim() : null;
+    if (req.body.gender !== undefined) updateData.gender = req.body.gender ? String(req.body.gender).trim() : null;
 
     // Mass Assignment Protection: Only Admins can modify role, status, isSuspended, userType
     if (isAdmin) {
@@ -257,7 +259,7 @@ const getProfile = asyncHandler(async (req, res) => {
         return sanitizeErrorResponse(res, true, true);
     }
 
-    const user = await User.findById(req.params.id).select('firstName lastName email phone profileImage userType isSuspended status isAdmin vehicleNumber vehicleColor vehicleModel vehicleImage vehicleTypeId vehicleTypeName preferredOrderTypes canEditVehicleInfo');
+    const user = await User.findById(req.params.id).select('firstName lastName email phone governorate gender profileImage userType isSuspended status isAdmin vehicleNumber vehicleColor vehicleModel vehicleImage vehicleTypeId vehicleTypeName preferredOrderTypes canEditVehicleInfo');
     if (!user) {
         return sanitizeErrorResponse(res, false, true);
     }
@@ -278,6 +280,8 @@ const getProfile = asyncHandler(async (req, res) => {
         lastName:            user.lastName,
         email:               user.email,
         phone:               user.phone,
+        governorate:         user.governorate         || null,
+        gender:              user.gender              || null,
         userType:            user.userType || 'NormalUser',
         isSuspended:         !!user.isSuspended,
         status:              user.status || 'active',

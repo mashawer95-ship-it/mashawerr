@@ -164,6 +164,8 @@ const googleSignIn = asyncHandler(async (req, res) => {
             lastName: user.lastName,
             email: user.email,
             phone: user.phone || null,
+            governorate: user.governorate || null,
+            gender: user.gender || null,
             isAdmin: user.isAdmin,
             userType: user.userType || 'NormalUser',
             profileImage: user.profileImage || null,
@@ -195,7 +197,7 @@ const googleSignIn = asyncHandler(async (req, res) => {
  * - Sets isProfileCompleted = true
  */
 const completeGoogleProfile = asyncHandler(async (req, res) => {
-    const { userId, phone, password, confirmPassword } = req.body;
+    const { userId, phone, password, confirmPassword, governorate, gender } = req.body;
 
     // ── Validate required fields ──────────────────────────────────────────
     if (!userId || !phone || !password || !confirmPassword) {
@@ -240,10 +242,12 @@ const completeGoogleProfile = asyncHandler(async (req, res) => {
 
     user.phone = phone;
     user.password = hashedPassword;
+    if (governorate) user.governorate = String(governorate).trim();
+    if (gender) user.gender = String(gender).trim();
     user.isProfileCompleted = true;
     await user.save();
 
-    console.log('✅ Google user profile completed:', user._id, user.email);
+    console.log('✅ Google user profile completed:', user._id, user.email, 'gov:', user.governorate, 'gender:', user.gender);
 
     // ── Issue refreshed Access + Refresh tokens ────────────────────────
     const accessToken  = generateAccessToken(user);
@@ -259,6 +263,8 @@ const completeGoogleProfile = asyncHandler(async (req, res) => {
         lastName: user.lastName,
         email: user.email,
         phone: user.phone,
+        governorate: user.governorate || null,
+        gender: user.gender || null,
         isAdmin: user.isAdmin,
         userType: user.userType || 'NormalUser',
         profileImage: user.profileImage || null,
