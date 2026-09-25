@@ -125,6 +125,10 @@ const TaskSchema = new mongoose.Schema(
         itemPhotoBefore: { type: String, trim: true, default: '' },
         itemPhotoAfter: { type: String, trim: true, default: '' },
         purchaseItems: { type: [PurchaseItemSchema], default: [] },
+        representativeWillPay: { type: Boolean, default: false },
+        representativePaymentAmount: { type: Number, default: 0 },
+        purchaseDetails: { type: String, trim: true, default: '' },
+        paymentMethod: { type: String, trim: true, default: 'cash' },
     },
     { _id: false }
 );
@@ -158,7 +162,16 @@ const OrderSchema = new mongoose.Schema(
         vehicleName: { type: String, trim: true, default: null },
         vehicleTypeName: { type: String, trim: true, default: null },
         orderType: { type: String, trim: true, default: null },
-        orderCategory: { type: String, trim: true, default: 'delivery' },
+        orderCategory: {
+            type: String,
+            enum: ['delivery', 'purchase', 'passenger'],
+            default: 'delivery',
+            trim: true,
+        },
+        paymentMethod: { type: String, trim: true, default: 'cash' },
+        representativeWillPay: { type: Boolean, default: false },
+        representativePaymentAmount: { type: Number, default: 0 },
+        purchaseDetails: { type: String, trim: true, default: '' },
         isBusinessOrder: { type: Boolean, default: false },
         storeOrderId: { type: Number, default: null, index: true },
         parentGroupId: { type: String, default: null, index: true },
@@ -333,6 +346,10 @@ const taskSchema = joi.object({
     itemPhotoBefore: joi.string().trim().allow('', null).default(''),
     itemPhotoAfter: joi.string().trim().allow('', null).default(''),
     purchaseItems: joi.array().items(purchaseItemSchema).allow(null).default([]),
+    representativeWillPay: joi.boolean().allow(null).default(false),
+    representativePaymentAmount: joi.number().min(0).allow(null).default(0),
+    purchaseDetails: joi.string().trim().allow('', null).default(''),
+    paymentMethod: joi.string().trim().allow('', null).default('cash'),
 });
 
 function validateCreateOrder(object) {
@@ -358,6 +375,11 @@ function validateCreateOrder(object) {
         vehicleName: joi.string().trim().allow(null, '').default(null),
         vehicleTypeName: joi.string().trim().allow(null, '').default(null),
         orderType: joi.string().trim().allow(null, '').default(null),
+        orderCategory: joi.string().trim().valid('delivery', 'purchase', 'passenger').default('delivery'),
+        paymentMethod: joi.string().trim().allow(null, '').default('cash'),
+        representativeWillPay: joi.boolean().allow(null).default(false),
+        representativePaymentAmount: joi.number().min(0).allow(null).default(0),
+        purchaseDetails: joi.string().trim().allow(null, '').default(''),
         clientFcmToken: joi.string().trim().allow(null, '').optional(),
         tasks: joi.array().items(taskSchema).min(1).required().messages({
             'any.required': 'tasks array is required',

@@ -347,9 +347,12 @@ function formatOrder(req, order, commissionCfg) {
         totalDistanceKm: calculateOrderTripDistance(order),
         distanceKm: calculateOrderTripDistance(order),
         status,
-        statusLabel: status,
         orderType: order.orderType || null,
-        orderCategory: 'delivery',
+        orderCategory: order.orderCategory || 'delivery',
+        paymentMethod: order.paymentMethod || 'cash',
+        representativeWillPay: Boolean(order.representativeWillPay),
+        representativePaymentAmount: order.representativePaymentAmount || 0,
+        purchaseDetails: order.purchaseDetails || null,
         isBusinessOrder: false,
         isStoreOrder: false,
         cancellationReason: order.cancellationReason || null,
@@ -1128,7 +1131,12 @@ const createOrder = asyncHandler(async (req, res) => {
         vehicleTypeId: value.vehicleTypeId,
         vehicleName: resolvedVehicleName,
         vehicleTypeName: resolvedVehicleName,
-        orderType: value.orderType,
+        orderType: value.orderType || value.orderCategory || null,
+        orderCategory: value.orderCategory || (value.orderType === 'passenger' ? 'passenger' : (value.orderType === 'purchase' ? 'purchase' : 'delivery')),
+        paymentMethod: value.paymentMethod || 'cash',
+        representativeWillPay: Boolean(value.representativeWillPay),
+        representativePaymentAmount: Number(value.representativePaymentAmount) || 0,
+        purchaseDetails: value.purchaseDetails || '',
         tasks,
         allLocationsInOrder: req.body.allLocationsInOrder || value.allLocationsInOrder || [],
 
@@ -2784,7 +2792,7 @@ const getActiveOrders = asyncHandler(async (req, res) => {
         const formatted = formatOrder(req, doc, commissionCfg);
         if (formatted) {
             formatted.isBusinessOrder = false;
-            formatted.orderCategory = 'delivery';
+            formatted.orderCategory = doc.orderCategory || formatted.orderCategory || 'delivery';
             allFormatted.push(formatted);
         }
     }
@@ -2816,7 +2824,7 @@ const getActiveOrders = asyncHandler(async (req, res) => {
             _id: (order._id || order.orderId || '').toString(),
             orderId: (order.orderId || order._id || '').toString(),
             isBusinessOrder: false,
-            orderCategory: 'delivery',
+            orderCategory: order.orderCategory || 'delivery',
             fromLatitude,
             fromLongitude,
             toLatitude,

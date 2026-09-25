@@ -16,6 +16,7 @@ router.get('/client-keys', (req, res) => {
     try {
         const googleMapsKey =
             process.env.GOOGLE_MAPS_KEY ||
+            process.env.GOOGLE_ROUTES_API_KEY ||
             process.env.GOOGLE_API_KEY ||
             process.env.GOOGLE_MAP_API_KEY ||
             '';

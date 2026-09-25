@@ -30,7 +30,7 @@ const ORDER_STATUSES = Object.freeze([
 const TASK_STATUSES = Object.freeze(['pending', 'picked_up', 'completed']);
 
 /** أنواع التاسك داخل الأوردر `Order.tasks[].type` */
-const TASK_TYPES = Object.freeze(['purchase', 'delivery']);
+const TASK_TYPES = Object.freeze(['purchase', 'delivery', 'passenger']);
 
 /** تسميات عربية للمرجع (عرض / توثيق) */
 const ORDER_STATUS_LABELS_AR = Object.freeze({

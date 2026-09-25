@@ -35,7 +35,7 @@ const ROUTES_API_URL = 'https://routes.googleapis.com/directions/v2:computeRoute
  * }>}
  */
 async function callGoogleRoutesAPI(params) {
-    const apiKey = process.env.GOOGLE_ROUTES_API_KEY;
+    const apiKey = process.env.GOOGLE_ROUTES_API_KEY || process.env.GOOGLE_MAPS_KEY;
     if (!apiKey) {
         logger.error('[GoogleRoutes] GOOGLE_ROUTES_API_KEY missing from environment');
         throw new Error('GOOGLE_ROUTES_API_KEY is not configured');
