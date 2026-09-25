@@ -37,9 +37,12 @@ const uploadVehicleTypeImage = (req, res, next) => {
     upload(req, res, (err) => {
         if (err) {
             console.error('Vehicle type image upload error:', err);
+            const message = typeof err === 'string'
+                ? err
+                : (err.message || (err.error && err.error.message) || 'فشل في رفع صورة نوع المركبة');
             return res.status(400).json({
                 success: false,
-                message: err.message || 'فشل في رفع صورة نوع المركبة',
+                message,
             });
         }
         next();
