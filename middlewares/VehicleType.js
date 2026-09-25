@@ -57,7 +57,7 @@ const VehicleTypeSchema = new mongoose.Schema(
 const VehicleType = mongoose.model('VehicleType', VehicleTypeSchema);
 
 const filsField = (name) =>
-    joi.number().min(0).max(1e12).messages({
+    joi.number().min(0).max(1e12).empty('').default(0).messages({
         'number.base': `${name} must be a number (fils, decimals allowed)`,
         'number.min': `${name} cannot be negative`,
         'number.max': `${name} is too large`,
@@ -76,9 +76,9 @@ function validateCreateVehicleType(object) {
         baseFare: filsField('baseFare').optional(),
         pricePerMeter: filsField('pricePerMeter').optional(),
         minFare: filsField('minFare').optional(),
-        surgeMultiplier: joi.number().min(0).optional(),
-        category: joi.string().valid('delivery', 'business', 'both').optional().default('both'),
-        isActive: joi.boolean().optional(),
+        surgeMultiplier: joi.number().min(0).empty('').default(1).optional(),
+        category: joi.string().valid('delivery', 'business', 'both').empty('').default('both').optional(),
+        isActive: joi.boolean().empty('').default(true).optional(),
     });
     return schema.validate(object, { allowUnknown: true });
 }
@@ -93,9 +93,9 @@ function validateUpdateVehicleType(object) {
         baseFare: filsField('baseFare').optional(),
         pricePerMeter: filsField('pricePerMeter').optional(),
         minFare: filsField('minFare').optional(),
-        surgeMultiplier: joi.number().min(0).optional(),
-        category: joi.string().valid('delivery', 'business', 'both').optional(),
-        isActive: joi.boolean().optional(),
+        surgeMultiplier: joi.number().min(0).empty('').optional(),
+        category: joi.string().valid('delivery', 'business', 'both').empty('').optional(),
+        isActive: joi.boolean().empty('').optional(),
     }).min(1);
     return schema.validate(object, { allowUnknown: true });
 }

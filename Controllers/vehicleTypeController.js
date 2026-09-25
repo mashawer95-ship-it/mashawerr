@@ -45,24 +45,35 @@ const createVehicleType = asyncHandler(async (req, res) => {
         req.body.image = req.file.path;
     }
 
-    const { error } = validateCreateVehicleType(req.body);
+    const { error, value } = validateCreateVehicleType(req.body);
     if (error) {
         return res.status(400).json({ message: error.details[0].message });
     }
 
-    const { name_ar, name_en, icon_key, iconKey, baseFare, pricePerMeter, minFare, surgeMultiplier, category, isActive } = req.body;
+    const {
+        name_ar,
+        name_en,
+        icon_key,
+        iconKey,
+        baseFare = 0,
+        pricePerMeter = 0,
+        minFare = 0,
+        surgeMultiplier = 1,
+        category = 'both',
+        isActive = true,
+    } = value;
 
     const vehicleType = await VehicleType.create({
         name_ar,
-        name_en,
-        image: req.body.image,
+        name_en: name_en || undefined,
+        image: value.image || req.body.image || undefined,
         icon_key: icon_key || iconKey || 'sedan',
         baseFare: filsToKd(baseFare),
         pricePerMeter: filsToKd(pricePerMeter),
         minFare: filsToKd(minFare),
         surgeMultiplier: surgeMultiplier !== undefined ? Number(surgeMultiplier) : 1,
         category: category || 'both',
-        isActive: isActive !== undefined ? isActive : true,
+        isActive: isActive !== undefined ? Boolean(isActive) : true,
     });
 
     return res.status(201).json({
@@ -81,7 +92,7 @@ const updateVehicleType = asyncHandler(async (req, res) => {
         req.body.image = req.file.path;
     }
 
-    const { error } = validateUpdateVehicleType(req.body);
+    const { error, value } = validateUpdateVehicleType(req.body);
     if (error) {
         return res.status(400).json({ message: error.details[0].message });
     }
@@ -91,18 +102,29 @@ const updateVehicleType = asyncHandler(async (req, res) => {
         return res.status(404).json({ message: 'Vehicle type not found' });
     }
 
-    const { name_ar, name_en, icon_key, iconKey, baseFare, pricePerMeter, minFare, surgeMultiplier, category, isActive } = req.body;
+    const {
+        name_ar,
+        name_en,
+        icon_key,
+        iconKey,
+        baseFare,
+        pricePerMeter,
+        minFare,
+        surgeMultiplier,
+        category,
+        isActive,
+    } = value;
 
     if (name_ar !== undefined) vehicleType.name_ar = name_ar;
     if (name_en !== undefined) vehicleType.name_en = name_en;
     if (icon_key !== undefined || iconKey !== undefined) vehicleType.icon_key = icon_key || iconKey;
-    if (req.body.image !== undefined) vehicleType.image = req.body.image;
+    if (value.image !== undefined) vehicleType.image = value.image;
     if (baseFare !== undefined) vehicleType.baseFare = filsToKd(baseFare);
     if (pricePerMeter !== undefined) vehicleType.pricePerMeter = filsToKd(pricePerMeter);
     if (minFare !== undefined) vehicleType.minFare = filsToKd(minFare);
     if (surgeMultiplier !== undefined) vehicleType.surgeMultiplier = Number(surgeMultiplier);
     if (category !== undefined) vehicleType.category = category;
-    if (isActive !== undefined) vehicleType.isActive = isActive;
+    if (isActive !== undefined) vehicleType.isActive = Boolean(isActive);
 
     await vehicleType.save();
 
