@@ -266,23 +266,7 @@ const calculateVehiclePrices = asyncHandler(async (req, res) => {
     }
 
     // 2. Only calculate for active vehicle types
-    let vehicleTypes = await VehicleType.find({ isActive: true });
-    if (!vehicleTypes || vehicleTypes.length === 0) {
-        vehicleTypes = [
-            {
-                _id: 'default_sedan',
-                name_ar: 'سيارة مشاوير',
-                name_en: 'Standard Car',
-                icon_key: 'sedan',
-                baseFare: 0.5,
-                pricePerMeter: 0.00015,
-                minFare: 1.0,
-                surgeMultiplier: 1.0,
-                category: 'both',
-                isActive: true,
-            }
-        ];
-    }
+    const vehicleTypes = await VehicleType.find({ isActive: true });
 
     const results = vehicleTypes.map((vt) => {
         // Base fare + distance * price per meter
