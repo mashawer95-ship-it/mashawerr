@@ -75,11 +75,11 @@ const updateUser = asyncHandler(async (req, res) => {
         }
     }
     if (req.body.phone) updateData.phone = req.body.phone;
-    if (req.body.governorate !== undefined) updateData.governorate = req.body.governorate ? String(req.body.governorate).trim() : null;
-    if (req.body.gender !== undefined) updateData.gender = req.body.gender ? String(req.body.gender).trim() : null;
 
-    // Mass Assignment Protection: Only Admins can modify role, status, isSuspended, userType
+    // Mass Assignment Protection: Only Admins can modify role, status, isSuspended, userType, governorate, gender
     if (isAdmin) {
+        if (req.body.governorate !== undefined) updateData.governorate = req.body.governorate ? String(req.body.governorate).trim() : null;
+        if (req.body.gender !== undefined) updateData.gender = req.body.gender ? String(req.body.gender).trim() : null;
         if (req.body.userType) updateData.userType = req.body.userType;
         if (req.body.role) updateData.role = req.body.role;
 
