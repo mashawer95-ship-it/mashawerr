@@ -236,11 +236,11 @@ const options = {
                     type: 'object',
                     properties: {
                         baseFare: { type: 'number', example: 0, description: 'Fils only — fixed fee per trip (decimals OK, e.g. 0.5 fils)' },
-                        baseFare_name_ar: { type: 'string', example: '0 د.ك', description: 'Human-readable (Arabic); numeric fields above are fils' },
-                        pricePerMeter: { type: 'number', example: 1, description: '**فلس لكل متر.** مثال: 1 = 1 فلس/متر | 2 = 2 فلس/متر | 0.5 = نص فلس/متر' },
-                        pricePerMeter_name_ar: { type: 'string', example: 'سعر المتر: 1 فلس (0.001 د.ك)', description: 'Display only — سعر المتر الواحد بالفلس' },
+                        baseFare_name_ar: { type: 'string', example: '0 ج.م', description: 'Human-readable (Arabic); numeric fields above are fils' },
+                        pricePerMeter: { type: 'number', example: 1, description: '**قرش لكل متر.**' },
+                        pricePerMeter_name_ar: { type: 'string', example: 'سعر المتر: 1 قرش (0.01 ج.م)', description: 'Display only' },
                         minFare: { type: 'number', example: 0, description: 'Fils only — stored; **not used** in calculate-price' },
-                        minFare_name_ar: { type: 'string', example: '0 د.ك', description: 'Display only' },
+                        minFare_name_ar: { type: 'string', example: '0 ج.م', description: 'Display only' },
                         surgeMultiplier: { type: 'number', example: 1, description: 'Surge multiplier (1 = no surge)' },
                         updatedAt: { type: 'string', format: 'date-time', description: 'Last update timestamp' },
                     },
@@ -249,15 +249,15 @@ const options = {
                     type: 'object',
                     required: ['distance_meters'],
                     properties: {
-                        distance_meters: { type: 'number', minimum: 0, example: 5000, description: 'Trip distance in meters (e.g. 5000 m at 1 fil/m = 5000 fils = 5 KD)' },
+                        distance_meters: { type: 'number', minimum: 0, example: 5000, description: 'Trip distance in meters' },
                     },
                 },
                 CalculatePriceResponse: {
                     type: 'object',
                     properties: {
                         distance_meters: { type: 'number', example: 5000 },
-                        price: { type: 'number', example: 5000, description: 'Final fare in fils (may be fractional if per-meter rate is fractional)' },
-                        name_ar: { type: 'string', example: '5 د.ك', description: 'Arabic display name' },
+                        price: { type: 'number', example: 5000, description: 'Final fare' },
+                        name_ar: { type: 'string', example: '5 ج.م', description: 'Arabic display name' },
                     },
                 },
                 UpdatePricingRequest: {

@@ -24,13 +24,13 @@ function trimKdDisplay(kd) {
  */
 function filsToArabicName(fils) {
     const n = Number(Number(fils).toFixed(6));
-    if (n === 0) return '0 د.ك';
-    const kd = n / FILS_PER_KD;
-    if (Number.isInteger(n) && n === 500) return 'نص دينار (0.500)';
-    if (Number.isInteger(n) && n === 1000) return '1 د.ك';
-    if (n < 1000) return `${n} فلس (${trimKdDisplay(kd)} د.ك)`;
-    if (Number.isInteger(kd) && kd === Math.trunc(kd)) return `${Math.trunc(kd)} د.ك`;
-    return `${trimKdDisplay(kd)} د.ك`;
+    if (n === 0) return '0 ج.م';
+    const egp = n / FILS_PER_KD;
+    if (Number.isInteger(n) && n === 500) return 'نصف جنيه (0.50 ج.م)';
+    if (Number.isInteger(n) && n === 1000) return '1 ج.م';
+    if (n < 1000) return `${trimKdDisplay(egp)} ج.م`;
+    if (Number.isInteger(egp) && egp === Math.trunc(egp)) return `${Math.trunc(egp)} ج.م`;
+    return `${trimKdDisplay(egp)} ج.م`;
 }
 
 const DEFAULT_PRICING = {

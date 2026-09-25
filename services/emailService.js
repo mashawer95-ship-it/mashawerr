@@ -386,9 +386,9 @@ const normalizeToKD = (val) => {
 /**
  * Format currency nicely for emails (KD or Fils) with thousands separators and 3 decimals (identical to CurrencyFormatter.formatFils)
  */
-const formatKD = (val, unit = 'د.ك') => {
+const formatKD = (val, unit = 'ج.م') => {
     const kd = normalizeToKD(val);
-    const str = kd.toFixed(3);
+    const str = kd.toFixed(2);
     const parts = str.split('.');
     const intPart = parts[0].replace(/(\d{1,3})(?=(\d{3})+(?!\d))/g, '$1,');
     return `${intPart}.${parts[1]} ${unit}`;

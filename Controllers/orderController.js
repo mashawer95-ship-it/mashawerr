@@ -2386,11 +2386,11 @@ const releaseOrder = asyncHandler(async (req, res) => {
     }
 
     if (cancellationFeeApplied && oldRepId) {
-        const feeKd = (cancellationFeeFils / 1000).toFixed(3);
+        const feeKd = (cancellationFeeFils / 1000).toFixed(2);
         notifyClient(
             oldRepId,
             '⚠️ خصم رسوم إلغاء الطلب',
-            `تم خصم ${feeKd} د.ك من محفظتك كرسوم لإلغاء الطلب بعد انقضاء مهلة الإلغاء المحددة.`,
+            `تم خصم ${feeKd} ج.م من محفظتك كرسوم لإلغاء الطلب بعد انقضاء مهلة الإلغاء المحددة.`,
             { type: 'wallet_debit', orderId: refId, feeFils: String(cancellationFeeFils) },
         ).catch(() => { });
     }
@@ -2400,7 +2400,7 @@ const releaseOrder = asyncHandler(async (req, res) => {
     return res.status(200).json({
         succeeded: true,
         message: cancellationFeeApplied
-            ? `تم إلغاء قبول الطلب وعاد للانتظار، وتم خصم ${(cancellationFeeFils / 1000).toFixed(3)} د.ك كرسوم إلغاء لتجاوز المهلة.`
+            ? `تم إلغاء قبول الطلب وعاد للانتظار، وتم خصم ${(cancellationFeeFils / 1000).toFixed(2)} ج.م كرسوم إلغاء لتجاوز المهلة.`
             : 'Order released back to waiting successfully',
         cancellationFeeApplied,
         cancellationFeeFils,
@@ -2543,12 +2543,12 @@ const getAdminOrderFinancialStats = asyncHandler(async (req, res) => {
     const { Tafgeet } = require('tafgeet-arabic');
 
     function getFilsAsText(fils) {
-        if (!fils || fils <= 0) return 'صفر دينار';
+        if (!fils || fils <= 0) return 'صفر جنيه';
         const amountInKD = fils / 1000;
         try {
-            return new Tafgeet(amountInKD, 'KWD').parse();
+            return new Tafgeet(amountInKD, 'EGP').parse();
         } catch (e) {
-            return `${amountInKD} دينار`;
+            return `${amountInKD} جنيه`;
         }
     }
 

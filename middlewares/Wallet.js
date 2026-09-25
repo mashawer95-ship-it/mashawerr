@@ -138,53 +138,53 @@ function dispatchWalletNotification({ userId, type, amountFils, balanceAfterFils
         switch (type) {
             case 'credit':
                 title = '💰 تم إضافة رصيد إلى محفظتك';
-                body = `تمت إضافة ${amountKD} د.ك إلى محفظتك.${description ? ' ' + description : ''} رصيدك الحالي: ${balanceKD} د.ك`;
+                body = `تمت إضافة ${amountKD} ج.م إلى محفظتك.${description ? ' ' + description : ''} رصيدك الحالي: ${balanceKD} ج.م`;
                 break;
             case 'order_earnings':
                 title = '🎉 إيداع أرباح توصيل';
                 const orderRefStr = refId ? ` للطلب #${refId}` : '';
-                body = `تم إيداع ${amountKD} د.ك أرباح توصيل${orderRefStr} في محفظتك. رصيدك الحالي: ${balanceKD} د.ك`;
+                body = `تم إيداع ${amountKD} ج.م أرباح توصيل${orderRefStr} في محفظتك. رصيدك الحالي: ${balanceKD} ج.م`;
                 break;
             case 'target_reward':
                 title = '🏆 مكافأة تحقيق الهدف';
-                body = `تهانينا! تمت إضافة مكافأة بقيمة ${amountKD} د.ك إلى محفظتك.${description ? ' ' + description : ''} رصيدك الحالي: ${balanceKD} د.ك`;
+                body = `تهانينا! تمت إضافة مكافأة بقيمة ${amountKD} ج.م إلى محفظتك.${description ? ' ' + description : ''} رصيدك الحالي: ${balanceKD} ج.م`;
                 break;
             case 'delay_reward':
                 title = '⏰ مكافأة تأخير العميل';
-                body = `تمت إضافة ${amountKD} د.ك مكافأة انتظار إلى محفظتك.${description ? ' ' + description : ''} رصيدك الحالي: ${balanceKD} د.ك`;
+                body = `تمت إضافة ${amountKD} ج.م مكافأة انتظار إلى محفظتك.${description ? ' ' + description : ''} رصيدك الحالي: ${balanceKD} ج.م`;
                 break;
             case 'cancellation_reward':
                 title = '❌ تعويض إلغاء الطلب';
-                body = `تمت إضافة ${amountKD} د.ك تعويض إلى محفظتك.${description ? ' ' + description : ''} رصيدك الحالي: ${balanceKD} د.ك`;
+                body = `تمت إضافة ${amountKD} ج.م تعويض إلى محفظتك.${description ? ' ' + description : ''} رصيدك الحالي: ${balanceKD} ج.م`;
                 break;
             case 'company_commission_refund':
                 title = '🔄 استرجاع عمولة الشركة';
-                body = `تم استرجاع ${amountKD} د.ك إلى محفظتك.${description ? ' ' + description : ''} رصيدك الحالي: ${balanceKD} د.ك`;
+                body = `تم استرجاع ${amountKD} ج.م إلى محفظتك.${description ? ' ' + description : ''} رصيدك الحالي: ${balanceKD} ج.م`;
                 break;
             case 'delay_fee':
                 title = '⏰ خصم رسوم تأخير';
-                body = `تم خصم ${amountKD} د.ك رسوم تأخير من محفظتك.${description ? ' ' + description : ''} رصيدك الحالي: ${balanceKD} د.ك`;
+                body = `تم خصم ${amountKD} ج.م رسوم تأخير من محفظتك.${description ? ' ' + description : ''} رصيدك الحالي: ${balanceKD} ج.م`;
                 break;
             case 'cancellation_fee':
                 title = '❌ خصم رسوم إلغاء';
-                body = `تم خصم ${amountKD} د.ك رسوم إلغاء من محفظتك.${description ? ' ' + description : ''} رصيدك الحالي: ${balanceKD} د.ك`;
+                body = `تم خصم ${amountKD} ج.م رسوم إلغاء من محفظتك.${description ? ' ' + description : ''} رصيدك الحالي: ${balanceKD} ج.م`;
                 break;
             case 'company_commission':
                 title = '🏢 خصم عمولة الشركة';
-                body = `تم خصم ${amountKD} د.ك عمولة الشركة من محفظتك.${description ? ' ' + description : ''} رصيدك الحالي: ${balanceKD} د.ك`;
+                body = `تم خصم ${amountKD} ج.م عمولة الشركة من محفظتك.${description ? ' ' + description : ''} رصيدك الحالي: ${balanceKD} ج.م`;
                 break;
             case 'debit':
                 title = '💳 تم خصم مبلغ من محفظتك';
-                body = `تم خصم ${amountKD} د.ك من محفظتك.${description ? ' ' + description : ''} رصيدك الحالي: ${balanceKD} د.ك`;
+                body = `تم خصم ${amountKD} ج.م من محفظتك.${description ? ' ' + description : ''} رصيدك الحالي: ${balanceKD} ج.م`;
                 break;
             case 'admin_adjustment':
                 const isCredit = (description || '').includes('إضافة') || (description || '').includes('شحن');
                 title = isCredit ? '⚙️ تعديل إداري (إضافة رصيد)' : '⚙️ تعديل إداري (خصم رصيد)';
-                body = `${isCredit ? 'تمت إضافة' : 'تم خصم'} ${amountKD} د.ك${description ? ' (' + description + ')' : ''}. رصيدك الحالي: ${balanceKD} د.ك`;
+                body = `${isCredit ? 'تمت إضافة' : 'تم خصم'} ${amountKD} ج.م${description ? ' (' + description + ')' : ''}. رصيدك الحالي: ${balanceKD} ج.م`;
                 break;
             default:
                 title = '💰 تحديث في رصيد المحفظة';
-                body = `تم تحديث رصيد محفظتك بمبلغ ${amountKD} د.ك.${description ? ' ' + description : ''} رصيدك الحالي: ${balanceKD} د.ك`;
+                body = `تم تحديث رصيد محفظتك بمبلغ ${amountKD} ج.م.${description ? ' ' + description : ''} رصيدك الحالي: ${balanceKD} ج.م`;
                 break;
         }
 
@@ -252,8 +252,8 @@ async function debitWalletAllowNegative({ userId, amountFils, type = 'debit', de
     const newBalance = wallet.balanceFils - amountFils;
     const minAllowedFils = await getMinWalletBalanceFils();
     if (newBalance < minAllowedFils) {
-        const limitKd = (Math.abs(minAllowedFils) / 1000).toFixed(3);
-        throw new Error(`الرصيد سيتجاوز الحد الأقصى للمديونية المسموح بها (${limitKd} د.ك). الرصيد الحالي: ${wallet.balanceFils} فلس.`);
+        const limitKd = (Math.abs(minAllowedFils) / 1000).toFixed(2);
+        throw new Error(`الرصيد سيتجاوز الحد الأقصى للمديونية المسموح بها (${limitKd} ج.م). الرصيد الحالي: ${wallet.balanceFils} قرش.`);
     }
     wallet.balanceFils = newBalance;
     wallet.transactions.push({
@@ -315,10 +315,10 @@ async function deductCompanyCommissionOnAccept({ order, repId, isBusiness = fals
     const minAllowedFils = await getMinWalletBalanceFils();
 
     if (potentialBalance < minAllowedFils) {
-        const limitKd = (Math.abs(minAllowedFils) / 1000).toFixed(3);
+        const limitKd = (Math.abs(minAllowedFils) / 1000).toFixed(2);
         return {
             allowed: false,
-            message: `برجاء شحن المحفظة لقبول الطلب، تم تجاوز الحد المسموح به للمديونية (${limitKd} د.ك)`,
+            message: `برجاء شحن المحفظة لقبول الطلب، تم تجاوز الحد المسموح به للمديونية (${limitKd} ج.م)`,
             code: 'INSUFFICIENT_WALLET_BALANCE',
             requiredFils: companyFeeFils,
             currentBalanceFils: wallet.balanceFils,
@@ -503,7 +503,7 @@ async function checkWalletCanOrder(userId) {
             minBalanceKWD: Number((minAllowedFils / 1000).toFixed(3)),
             message: canOrder
                 ? null
-                : `تجاوز رصيدك الحد الأقصى للمديونية المسموح بها (${limitKd} د.ك). رصيدك الحالي: ${currentBalanceKd} د.ك. يرجى سداد المديونية وشحن المحفظة لإنشاء طلب جديد.`,
+                : `تجاوز رصيدك الحد الأقصى للمديونية المسموح بها (${limitKd} ج.م). رصيدك الحالي: ${currentBalanceKd} ج.م. يرجى سداد المديونية وشحن المحفظة لإنشاء طلب جديد.`,
         };
     } catch (err) {
         console.error('[checkWalletCanOrder] Wallet check failed:', err.message);

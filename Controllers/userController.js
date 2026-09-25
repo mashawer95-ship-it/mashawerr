@@ -1090,12 +1090,12 @@ const unblockUser = asyncHandler(async (req, res) => {
 const { Tafgeet } = require('tafgeet-arabic');
 
 function getFilsAsText(fils) {
-    if (!fils) return 'صفر دينار';
+    if (!fils) return 'صفر جنيه';
     const amountInKD = fils / 1000;
     try {
-        return new Tafgeet(amountInKD, 'KWD').parse();
+        return new Tafgeet(amountInKD, 'EGP').parse();
     } catch (e) {
-        return `${amountInKD} دينار`;
+        return `${amountInKD} جنيه`;
     }
 }
 

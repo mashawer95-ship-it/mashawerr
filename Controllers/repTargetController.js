@@ -753,7 +753,7 @@ const approveTargetReward = asyncHandler(async (req, res) => {
         }
 
         return res.status(200).json({
-            message: `تم قبول التارجت بنجاح وإيداع ${filsToKwd(rewardFils)} KD في محفظة المندوب ${rep.firstName || ''} ${rep.lastName || ''}`.trim(),
+            message: `تم قبول التارجت بنجاح وإيداع ${filsToKwd(rewardFils)} ج.م في محفظة المندوب ${rep.firstName || ''} ${rep.lastName || ''}`.trim(),
             repId,
             rewardFils,
             rewardKWD: filsToKwd(rewardFils),
