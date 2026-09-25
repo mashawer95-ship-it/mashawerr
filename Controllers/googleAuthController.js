@@ -243,7 +243,7 @@ const completeGoogleProfile = asyncHandler(async (req, res) => {
     user.phone = phone;
     user.password = hashedPassword;
     if (governorate) user.governorate = String(governorate).trim();
-    if (gender) user.gender = String(gender).trim();
+    user.gender = gender ? String(gender).trim() : (user.gender || 'male');
     user.isProfileCompleted = true;
     await user.save();
 

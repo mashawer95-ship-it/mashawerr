@@ -84,7 +84,7 @@ const register = asyncHandler(async (req, res) => {
         password: hashedPassword,
         deviceId: deviceId || null,
         governorate: governorate ? String(governorate).trim() : null,
-        gender: gender ? String(gender).trim() : null,
+        gender: gender ? String(gender).trim() : 'male',
         emailVerificationCode: otp,
         emailVerificationExpires,
     });

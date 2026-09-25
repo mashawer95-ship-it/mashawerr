@@ -65,7 +65,7 @@ const UserSchema = new mongoose.Schema({
  gender: {
         type: String,
         enum: ['male', 'female', 'ذكر', 'أنثى', null],
-        default: null,
+        default: 'male',
         trim: true,
         description: 'النوع (ذكر / أنثى)',
  },
