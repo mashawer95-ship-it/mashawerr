@@ -58,7 +58,7 @@ const VehicleType = mongoose.model('VehicleType', VehicleTypeSchema);
 
 const filsField = (name) =>
     joi.number().min(0).max(1e12).empty('').default(0).messages({
-        'number.base': `${name} must be a number (fils, decimals allowed)`,
+        'number.base': `${name} must be a number (EGP, decimals allowed)`,
         'number.min': `${name} cannot be negative`,
         'number.max': `${name} is too large`,
     });

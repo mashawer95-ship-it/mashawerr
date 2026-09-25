@@ -61,13 +61,13 @@ router.get('/', getVehicleTypes);
  *                 format: binary
  *               baseFare:
  *                 type: number
- *                 description: Base fare in fils
+ *                 description: Base fare in Egyptian Pounds (EGP / ج.م)
  *               pricePerMeter:
  *                 type: number
- *                 description: Price per meter in fils
+ *                 description: Price per meter in Egyptian Pounds (EGP / ج.م)
  *               minFare:
  *                 type: number
- *                 description: Minimum fare in fils
+ *                 description: Minimum fare in Egyptian Pounds (EGP / ج.م)
  *               surgeMultiplier:
  *                 type: number
  *                 description: Surge multiplier

@@ -8,10 +8,33 @@ const {
 const { kdToFils, filsToKd, filsToArabicName } = require('../middlewares/Pricing');
 const { calculateRoute } = require('../services/googleRoutesService');
 
+function normalizeEgpInput(value, defaultValue = 0) {
+    if (value === undefined || value === null || value === '') return defaultValue;
+    const n = Number(value);
+    if (isNaN(n) || n < 0) return defaultValue;
+    // إذا أرسل المستخدم قيمة قديمة بالفلس (أكبر من أو تساوي 500)، يتم تحويلها تلقائياً إلى جنيه
+    if (n >= 500) {
+        return Number((n / 1000).toFixed(4));
+    }
+    return Number(n.toFixed(4));
+}
+
+function normalizeMeterPrice(value, defaultValue = 0) {
+    if (value === undefined || value === null || value === '') return defaultValue;
+    const n = Number(value);
+    if (isNaN(n) || n < 0) return defaultValue;
+    // إذا أدخل المستخدم سعر الكيلومتر (مثلاً 5 أو 7 أو 10 ج.م للكيلو) وهو >= 1، يتم تحويله لسعر المتر (قسمة على 1000)
+    if (n >= 1) {
+        return Number((n / 1000).toFixed(6));
+    }
+    return Number(n.toFixed(6));
+}
+
 function vehicleTypeToResponse(vt) {
-    const baseFare = kdToFils(vt.baseFare);
-    const pricePerMeter = kdToFils(vt.pricePerMeter);
-    const minFare = kdToFils(vt.minFare);
+    const baseFare = Number((vt.baseFare || 0).toFixed(2));
+    const pricePerMeter = Number((vt.pricePerMeter || 0).toFixed(6));
+    const pricePerKm = Number((pricePerMeter * 1000).toFixed(2));
+    const minFare = Number((vt.minFare || 0).toFixed(2));
     const iconKey = vt.icon_key || vt.iconKey || 'sedan';
     
     return {
@@ -24,12 +47,13 @@ function vehicleTypeToResponse(vt) {
         category: vt.category || 'both',
         isActive: vt.isActive,
         baseFare,
-        baseFare_name_ar: filsToArabicName(baseFare),
+        baseFare_name_ar: `${baseFare} ج.م`,
         pricePerMeter,
-        pricePerMeter_name_ar: `سعر المتر: ${filsToArabicName(pricePerMeter)}`,
+        pricePerKm,
+        pricePerMeter_name_ar: `سعر الكيلو: ${pricePerKm} ج.م (سعر المتر: ${pricePerMeter} ج.م)`,
         minFare,
-        minFare_name_ar: filsToArabicName(minFare),
-        surgeMultiplier: vt.surgeMultiplier,
+        minFare_name_ar: `${minFare} ج.م`,
+        surgeMultiplier: vt.surgeMultiplier || 1,
         createdAt: vt.createdAt,
         updatedAt: vt.updatedAt,
     };
@@ -68,9 +92,9 @@ const createVehicleType = asyncHandler(async (req, res) => {
         name_en: name_en || undefined,
         image: value.image || req.body.image || undefined,
         icon_key: icon_key || iconKey || 'sedan',
-        baseFare: filsToKd(baseFare),
-        pricePerMeter: filsToKd(pricePerMeter),
-        minFare: filsToKd(minFare),
+        baseFare: normalizeEgpInput(baseFare, 0),
+        pricePerMeter: normalizeMeterPrice(pricePerMeter, 0),
+        minFare: normalizeEgpInput(minFare, 0),
         surgeMultiplier: surgeMultiplier !== undefined ? Number(surgeMultiplier) : 1,
         category: category || 'both',
         isActive: isActive !== undefined ? Boolean(isActive) : true,
@@ -119,9 +143,9 @@ const updateVehicleType = asyncHandler(async (req, res) => {
     if (name_en !== undefined) vehicleType.name_en = name_en;
     if (icon_key !== undefined || iconKey !== undefined) vehicleType.icon_key = icon_key || iconKey;
     if (value.image !== undefined) vehicleType.image = value.image;
-    if (baseFare !== undefined) vehicleType.baseFare = filsToKd(baseFare);
-    if (pricePerMeter !== undefined) vehicleType.pricePerMeter = filsToKd(pricePerMeter);
-    if (minFare !== undefined) vehicleType.minFare = filsToKd(minFare);
+    if (baseFare !== undefined) vehicleType.baseFare = normalizeEgpInput(baseFare, vehicleType.baseFare);
+    if (pricePerMeter !== undefined) vehicleType.pricePerMeter = normalizeMeterPrice(pricePerMeter, vehicleType.pricePerMeter);
+    if (minFare !== undefined) vehicleType.minFare = normalizeEgpInput(minFare, vehicleType.minFare);
     if (surgeMultiplier !== undefined) vehicleType.surgeMultiplier = Number(surgeMultiplier);
     if (category !== undefined) vehicleType.category = category;
     if (isActive !== undefined) vehicleType.isActive = Boolean(isActive);
@@ -291,23 +315,24 @@ const calculateVehiclePrices = asyncHandler(async (req, res) => {
     const vehicleTypes = await VehicleType.find({ isActive: true });
 
     const results = vehicleTypes.map((vt) => {
-        // Base fare + distance * price per meter
-        let totalPriceKD = (vt.baseFare * numberOfTasks) + (distance_meters * vt.pricePerMeter);
+        // Base fare + distance * price per meter (in Egyptian Pounds)
+        let totalPriceEGP = (vt.baseFare * numberOfTasks) + (distance_meters * vt.pricePerMeter);
         
         // Ensure minimum fare
-        if (totalPriceKD < vt.minFare) {
-            totalPriceKD = vt.minFare;
+        if (totalPriceEGP < vt.minFare) {
+            totalPriceEGP = vt.minFare;
         }
 
         // Apply surge multiplier
-        totalPriceKD = totalPriceKD * vt.surgeMultiplier;
+        totalPriceEGP = totalPriceEGP * vt.surgeMultiplier;
 
-        const priceFils = kdToFils(totalPriceKD);
+        const priceFils = kdToFils(totalPriceEGP);
 
         return {
             vehicleType: vehicleTypeToResponse(vt),
             price: priceFils,
-            name_ar: filsToArabicName(priceFils),
+            price_egp: Number(totalPriceEGP.toFixed(2)),
+            name_ar: `${Number(totalPriceEGP.toFixed(2))} ج.م`,
         };
     });
 
