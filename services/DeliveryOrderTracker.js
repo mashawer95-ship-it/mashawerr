@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 const { Order } = require('../middlewares/Order');
-const { BusinessOrderTracker } = require('./BusinessOrderTracker');
+// BusinessOrderTracker removed – delivery-only
 
 class DeliveryOrderTracker {
     /**
@@ -30,14 +30,7 @@ class DeliveryOrderTracker {
         }
 
         if (!order) return null;
-
-        // Delegate store/business orders to BusinessOrderTracker
-        if (order.isBusinessOrder === true ||
-            order.orderCategory === 'business' ||
-            order.storeOrderId != null ||
-            (Array.isArray(order.items) && order.items.length > 0)) {
-            return await BusinessOrderTracker.getOrderTrack(orderId);
-        }
+        // BusinessOrderTracker delegation removed – delivery-only
 
         const stops = [];
         const allLocs = Array.isArray(order.allLocationsInOrder) ? order.allLocationsInOrder : [];

@@ -14,7 +14,6 @@ function normalizeRole(role) {
     if (clean === 'representative' || clean === 'driver') {
         return 'representative';
     }
-    if (clean === 'agent') return 'agent';
     if (clean === 'administration') return 'administration';
     if (clean === 'admin') return 'admin';
     return clean;

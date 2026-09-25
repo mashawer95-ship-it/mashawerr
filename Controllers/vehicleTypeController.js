@@ -112,18 +112,6 @@ const updateVehicleType = asyncHandler(async (req, res) => {
     });
 });
 
-/** Default Business Vehicle Types seed list */
-const DEFAULT_BUSINESS_TYPES = [
-    { name_ar: 'ملاكي', category: 'business', icon_key: 'sedan' },
-    { name_ar: 'هاف لوري صغير', category: 'business', icon_key: 'pickup' },
-    { name_ar: 'هاف لوري كبير', category: 'business', icon_key: 'truck' },
-    { name_ar: 'مبردة', category: 'business', icon_key: 'refrigerated' },
-    { name_ar: 'موتوسيكل', category: 'business', icon_key: 'motorcycle' },
-    { name_ar: 'ناقلة عربيات', category: 'business', icon_key: 'transporter' },
-    { name_ar: 'فان بضائع', category: 'business', icon_key: 'van' },
-    { name_ar: 'شاحنة كبيرة', category: 'business', icon_key: 'heavy_truck' },
-];
-
 /** Default Delivery Vehicle Types seed list */
 const DEFAULT_DELIVERY_TYPES = [
     { name_ar: 'ملاكي', category: 'delivery', icon_key: 'sedan' },
@@ -134,7 +122,7 @@ const DEFAULT_DELIVERY_TYPES = [
 ];
 
 /**
- * @description Get all vehicle types (filtered by active status and optional category: delivery, business, both)
+ * @description Get all vehicle types (filtered by active status)
  * @route GET /api/vehicle-types
  * @access Public / Private (JWT)
  */
@@ -143,60 +131,8 @@ const getVehicleTypes = asyncHandler(async (req, res) => {
     const filter = {};
     if (req.query.active === 'true') filter.isActive = true;
 
-    if (req.query.category === 'delivery') {
-        filter.category = { $ne: 'business' };
-    } else if (req.query.category === 'business') {
-        filter.$or = [
-            { category: 'business' },
-            { category: 'both' },
-            { category: { $exists: false } },
-            { category: null },
-            { category: '' },
-        ];
-    }
-
-    let rawDbList = await VehicleType.find(filter).sort({ createdAt: -1 });
-
-    let vehicleTypesList = rawDbList.map(vehicleTypeToResponse);
-    const existingNames = new Set(vehicleTypesList.map(v => (v.name_ar || '').trim()));
-
-    if (req.query.category === 'business') {
-
-        // 1. Merge default business vehicle types if missing
-        for (const bvt of DEFAULT_BUSINESS_TYPES) {
-            if (!existingNames.has(bvt.name_ar.trim())) {
-                vehicleTypesList.push({
-                    _id: null,
-                    name_ar: bvt.name_ar,
-                    name_en: bvt.name_ar,
-                    category: 'business',
-                    icon_key: bvt.icon_key,
-                    iconKey: bvt.icon_key,
-                    isActive: true,
-                });
-                existingNames.add(bvt.name_ar.trim());
-            }
-        }
-
-        // 2. Merge all requiredVehicleTypeName from Products added by Admin
-        try {
-            const productVehicleNames = await Product.distinct('requiredVehicleTypeName');
-            for (const pName of productVehicleNames) {
-                if (pName && pName.trim() !== '' && !existingNames.has(pName.trim())) {
-                    vehicleTypesList.push({
-                        _id: null,
-                        name_ar: pName.trim(),
-                        name_en: pName.trim(),
-                        category: 'business',
-                        icon_key: 'truck',
-                        iconKey: 'truck',
-                        isActive: true,
-                    });
-                    existingNames.add(pName.trim());
-                }
-            }
-        } catch (_) {}
-    }
+    const rawDbList = await VehicleType.find(filter).sort({ createdAt: -1 });
+    const vehicleTypesList = rawDbList.map(vehicleTypeToResponse);
 
     return res.status(200).json(vehicleTypesList);
 });

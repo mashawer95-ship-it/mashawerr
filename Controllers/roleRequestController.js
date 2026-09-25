@@ -10,8 +10,8 @@ const { User } = require('../middlewares/User');
 const createRoleRequest = asyncHandler(async (req, res) => {
     const { requestedRole, description, phone } = req.body;
 
-    if (!requestedRole || !['Representative', 'Agent'].includes(requestedRole)) {
-        return res.status(400).json({ message: 'requestedRole must be either Representative or Agent' });
+    if (!requestedRole || requestedRole !== 'Representative') {
+        return res.status(400).json({ message: 'requestedRole must be Representative' });
     }
 
     if (!description || !phone) {

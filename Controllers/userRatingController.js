@@ -46,7 +46,6 @@ const submitUserRating = asyncHandler(async (req, res) => {
     const filterConditions = [];
     if (!isNaN(orderIdNum) && orderIdNum > 0) {
         filterConditions.push({ orderId: orderIdNum });
-        filterConditions.push({ storeOrderId: orderIdNum });
     }
     const mongoose = require('mongoose');
     if (mongoose.Types.ObjectId.isValid(orderIdParam)) {
@@ -94,12 +93,8 @@ const submitUserRating = asyncHandler(async (req, res) => {
         });
     }
 
-    // ── جلب الأوردر (Order أو StoreOrder) إن وجد ──────────────────────────────
-    let order = await Order.findOne({ $or: filterConditions }).lean();
-    if (!order) {
-        const { StoreOrder } = require('../middlewares/StoreOrder');
-        order = await StoreOrder.findOne({ $or: filterConditions }).lean();
-    }
+    // ── جلب الأوردر إن وجد ──────────────────────────────────────────────────
+    const order = await Order.findOne({ $or: filterConditions }).lean();
 
     if (order) {
         // ── الأوردر موجود: التحقق من الحالة والمشاركين ──────────────────────────
@@ -135,7 +130,7 @@ const submitUserRating = asyncHandler(async (req, res) => {
     }
 
     const normalizedOrderId = order
-        ? (order.orderId || order.storeOrderId || (!isNaN(orderIdNum) ? orderIdNum : orderIdParam))
+        ? (order.orderId || (!isNaN(orderIdNum) ? orderIdNum : orderIdParam))
         : (!isNaN(orderIdNum) ? orderIdNum : orderIdParam);
 
     // ── Upsert: تقييم واحد لكل رايتر/رايتي/أوردر ─────────────────────────
@@ -253,7 +248,6 @@ const getOrderRatings = asyncHandler(async (req, res) => {
     const filterConditions = [];
     if (!isNaN(orderIdNum) && orderIdNum > 0) {
         filterConditions.push({ orderId: orderIdNum });
-        filterConditions.push({ storeOrderId: orderIdNum });
     }
     const mongoose = require('mongoose');
     if (mongoose.Types.ObjectId.isValid(orderIdParam)) {
@@ -264,15 +258,9 @@ const getOrderRatings = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: 'Invalid orderId parameter' });
     }
 
-    let order = await Order.findOne({ $or: filterConditions })
+    const order = await Order.findOne({ $or: filterConditions })
         .select('orderId clientId userId representativeId status')
         .lean();
-    if (!order) {
-        const { StoreOrder } = require('../middlewares/StoreOrder');
-        order = await StoreOrder.findOne({ $or: filterConditions })
-            .select('storeOrderId orderId clientId userId representativeId status')
-            .lean();
-    }
 
     if (!order) {
         return sanitizeErrorResponse(res, false, true);
@@ -290,7 +278,7 @@ const getOrderRatings = asyncHandler(async (req, res) => {
         return sanitizeErrorResponse(res, true, true);
     }
 
-    const normalizedOrderId = order.orderId || order.storeOrderId || (!isNaN(orderIdNum) ? orderIdNum : 0);
+    const normalizedOrderId = order.orderId || (!isNaN(orderIdNum) ? orderIdNum : 0);
     const ratings = await UserRating.find({ orderId: normalizedOrderId }).lean();
 
     // عزل التقييمات: العميل → المندوب و المندوب → العميل

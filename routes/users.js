@@ -12,7 +12,7 @@ router.get('/profile/:id', verifyToken, getProfile);
 // 📝 Change User Type / Role (Admin only)
 router.patch('/:id/change-user-type', verifyTokenAndAdmin, changeUserType);
 
-// 📝 Role Requests (Agent/Representative)
+// 📝 Role Requests (Representative)
 router.post('/request-role', verifyToken, createRoleRequest);
 router.get('/role-requests', verifyTokenAndAdmin, getAllRoleRequests);
 router.patch('/role-requests/:id/status', verifyTokenAndAdmin, updateRoleRequestStatus);

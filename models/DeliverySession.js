@@ -4,7 +4,7 @@ const DeliverySessionSchema = new mongoose.Schema(
     {
         sessionId: { type: String, required: true, unique: true },
         
-        // Referencing either regular Order or StoreOrder
+        // Referencing regular Order
         orderId: { type: mongoose.Schema.Types.Mixed, required: true },
         
         // References to driver and customer

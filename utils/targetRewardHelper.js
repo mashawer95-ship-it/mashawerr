@@ -12,7 +12,7 @@
 
 const mongoose = require('mongoose');
 const { Order } = require('../middlewares/Order');
-const { StoreOrder } = require('../middlewares/StoreOrder');
+// StoreOrder removed – delivery-only
 const { RepTarget, RepTargetAchievement, getPeriodKey, getPeriodRange } = require('../middlewares/RepTarget');
 const { creditWallet } = require('../middlewares/Wallet');
 const logger = require('./logger');

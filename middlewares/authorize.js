@@ -35,7 +35,6 @@ const ROLE_ALIASES = {
     normaluser: 'normaluser',
     driver:     'representative',
     representative: 'representative',
-    agent:      'agent',
     administration: 'administration',
     admin:      'admin',
 };
@@ -99,8 +98,6 @@ const restrictTo = (...roles) => authorize(...roles);
 // ─── Convenience shorthand middleware arrays ──────────────────────────────────
 // These bundle [authenticate, authorize(role)] for backward compatibility.
 const adminOnly            = [authenticate, authorize('admin')];
-const agentOnly            = [authenticate, authorize('agent')];
-const adminOrAgent         = [authenticate, authorize('admin', 'agent')];
 const administrationOnly   = [authenticate, authorize('administration')];
 const administrationOrAdmin= [authenticate, authorize('administration', 'admin')];
 const clientOnly           = [authenticate, authorize('normaluser')];
@@ -116,8 +113,6 @@ module.exports = {
 
     // 🔁 Shorthand bundles (deprecated but still work)
     adminOnly,
-    agentOnly,
-    adminOrAgent,
     administrationOnly,
     administrationOrAdmin,
     clientOnly,

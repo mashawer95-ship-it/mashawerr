@@ -270,32 +270,16 @@ async function debitWalletAllowNegative({ userId, amountFils, type = 'debit', de
 }
 
 /**
- * Helper to accurately extract delivery price in fils for both StoreOrders (KD) and Regular Orders (Fils).
+ * Helper to accurately extract delivery price in fils for Regular Orders (Fils / KD).
  */
 function extractDeliveryPriceFils(order) {
-    if (!order) return 0;
-    const isStore = !!(order.isBusinessOrder || order.storeOrderId || order.orderCategory === 'business' || (Array.isArray(order.items) && order.items.length > 0));
-
-    if (isStore) {
-        // StoreOrder stores deliveryPrice in KD (e.g. 1.500 KD, 0.012 KD)
-        const rawKd = order.totalDeliveryPrice != null ? order.totalDeliveryPrice : (order.deliveryPrice != null ? order.deliveryPrice : order.totalPrice);
-        const num = Number(rawKd) || 0;
-        if (num <= 0) return 0;
-        return num >= 50 ? Math.round(num) : Math.round(num * 1000);
-    } else {
-        // Regular Delivery Order stores totalDeliveryPrice directly in FILS (e.g. 12 fils, 1500 fils)
-        if (order.totalDeliveryPrice != null && !isNaN(order.totalDeliveryPrice)) {
-            return Math.round(Number(order.totalDeliveryPrice));
-        }
-        if (order.deliveryPrice != null && !isNaN(order.deliveryPrice)) {
-            return Math.round(Number(order.deliveryPrice));
-        }
-        if (order.totalPrice != null && !isNaN(order.totalPrice)) {
-            const num = Number(order.totalPrice);
-            return num < 50 ? Math.round(num * 1000) : Math.round(num);
-        }
-        return 0;
-    }
+    const raw = order.totalDeliveryPrice ?? order.deliveryPrice ?? order.totalPrice ?? 0;
+    let num = Number(raw);
+    if (num <= 0) return 0;
+    // Values > 1000 are already in fils (e.g. 1500 = 1.500 KD)
+    if (num > 1000) return Math.round(num);
+    // Values <= 1000 are in KD (e.g. 1.500 KD → 1500 fils)
+    return Math.round(num * 1000);
 }
 
 /**
@@ -313,9 +297,7 @@ async function deductCompanyCommissionOnAccept({ order, repId, isBusiness = fals
 
     let repCommissionPct = 100;
     if (commissionCfg) {
-        repCommissionPct = isBusiness || order.isBusinessOrder || order.orderCategory === 'business'
-            ? (commissionCfg.businessRepCommissionPct ?? 100)
-            : (commissionCfg.deliveryRepCommissionPct ?? 100);
+        repCommissionPct = commissionCfg.deliveryRepCommissionPct ?? 100;
     }
     repCommissionPct = Math.max(0, Math.min(100, Number(repCommissionPct)));
 
@@ -345,7 +327,7 @@ async function deductCompanyCommissionOnAccept({ order, repId, isBusiness = fals
     }
 
     wallet.balanceFils = potentialBalance;
-    const orderNum = order.orderId || order.storeOrderId || order._id || '';
+    const orderNum = order.orderId || order._id || '';
     const transDesc = `خصم نسبة الشركة (${companyPct}%) عند قبول الطلب #${orderNum}`;
     wallet.transactions.push({
         type: 'company_commission',
@@ -385,7 +367,7 @@ async function refundCompanyCommissionOnCancelOrRelease({ order }) {
     try {
         const wallet = await getOrCreateWallet(repId);
         wallet.balanceFils += order.companyCommissionFils;
-        const orderNum = order.orderId || order.storeOrderId || order._id || '';
+        const orderNum = order.orderId || order._id || '';
         const transDesc = `استرجاع عمولة الشركة بعد إلغاء/إفلات الطلب #${orderNum}`;
         wallet.transactions.push({
             type: 'company_commission_refund',
@@ -423,7 +405,7 @@ async function processOrderCompletionWallet(order) {
     const deliveryPriceFils = extractDeliveryPriceFils(order);
     if (deliveryPriceFils <= 0) return;
 
-    const refId = String(order.orderId || order.storeOrderId || order._id);
+    const refId = String(order.orderId || order._id);
     let clientDebited = false;
     let driverCredited = false;
 
@@ -435,7 +417,7 @@ async function processOrderCompletionWallet(order) {
                 userId: clientUserId,
                 amountFils: deliveryPriceFils,
                 type: 'debit',
-                description: `خصم قيمة توصيل الطلب #${order.orderId || order.storeOrderId || ''}`,
+                description: `خصم قيمة توصيل الطلب #${order.orderId || ''}`,
                 refId,
                 performedBy: 'system',
             });
@@ -453,9 +435,7 @@ async function processOrderCompletionWallet(order) {
 
             let repCommissionPct = 100;
             if (commissionCfg) {
-                repCommissionPct = order.isBusinessOrder || order.orderCategory === 'business'
-                    ? (commissionCfg.businessRepCommissionPct ?? 100)
-                    : (commissionCfg.deliveryRepCommissionPct ?? 100);
+                repCommissionPct = commissionCfg.deliveryRepCommissionPct ?? 100;
             }
             repCommissionPct = Math.max(0, Math.min(100, Number(repCommissionPct)));
 
@@ -466,7 +446,7 @@ async function processOrderCompletionWallet(order) {
                     userId: order.representativeId,
                     amountFils: repEarningsFils,
                     type: 'order_earnings',
-                    description: `أرباح توصيل الطلب #${order.orderId || order.storeOrderId || ''}`,
+                    description: `أرباح توصيل الطلب #${order.orderId || ''}`,
                     refId,
                     performedBy: 'system',
                 });

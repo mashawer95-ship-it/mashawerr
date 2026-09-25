@@ -50,7 +50,7 @@ const ORDER_STATUS_LABELS_AR = Object.freeze({
     delayed: 'متأخر',   // العميل تأخر في الاستلام
     return_pending: 'مرتجع - بانتظار المندوب',
     return_accepted: 'مرتجع - تم القبول',
-    return_delivering: 'مرتجع - جاري النقل للوكيل',
+    return_delivering: 'مرتجع - جاري النقل',
     returned: 'مرتجع - مكتمل',
     return_cancelled: 'مرتجع - ملغي',
 });

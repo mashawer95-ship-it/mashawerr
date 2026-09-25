@@ -8,7 +8,7 @@ const RoleRequestSchema = new mongoose.Schema({
     },
     requestedRole: {
         type: String,
-        enum: ['Representative', 'Agent'],
+        enum: ['Representative'],
         required: true,
     },
     description: {

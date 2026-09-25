@@ -844,12 +844,11 @@ const getLiveTracking = expressAsyncHandler(async (req, res) => {
             if (isObjectId) query.push({ _id: str });
             if (!isNaN(num)) {
                 query.push({ orderId: num });
-                query.push({ storeOrderId: num });
             }
             if (query.length === 0) return null;
 
             try {
-                return await Model.findOne({ $or: query }).select('_id orderId storeOrderId status representativeId driverId').lean();
+                return await Model.findOne({ $or: query }).select('_id orderId status representativeId driverId').lean();
             } catch (_) {
                 return null;
             }
@@ -859,7 +858,6 @@ const getLiveTracking = expressAsyncHandler(async (req, res) => {
 
         if (currentOrder && currentOrder.orderId) {
             const { Order } = require('../middlewares/Order');
-            const { StoreOrder } = require('../middlewares/StoreOrder');
 
             const delOrder = await findOrderByIdOrNumber(Order, currentOrder.orderId);
             if (delOrder) {
@@ -872,46 +870,29 @@ const getLiveTracking = expressAsyncHandler(async (req, res) => {
                     currentOrder = null;
                     await clearRepCurrentOrder(repId);
                 } else {
-                    const displayNum = delOrder.orderId || delOrder.storeOrderId || delOrder._id;
+                    const displayNum = delOrder.orderId || delOrder._id;
                     currentOrder.orderId = String(displayNum);
                     currentOrder.status = delOrder.status;
                     isRealActiveOrder = true;
                 }
             } else {
-                const stOrder = await findOrderByIdOrNumber(StoreOrder, currentOrder.orderId);
-                if (stOrder) {
-                    const statusStr = (stOrder.status || '').toString().toLowerCase();
-                    const orderRepId = (stOrder.representativeId || stOrder.driverId || '').toString();
-                    const isAssignedToThisRep = Boolean(orderRepId && orderRepId === repId);
-                    const isInactive = INACTIVE_STATUSES.includes(statusStr);
-
-                    if (isInactive || !isAssignedToThisRep) {
-                        currentOrder = null;
-                        await clearRepCurrentOrder(repId);
-                    } else {
-                        const displayNum = stOrder.orderId || stOrder.storeOrderId || stOrder._id;
-                        currentOrder.orderId = String(displayNum);
-                        currentOrder.status = stOrder.status;
-                        isRealActiveOrder = true;
-                    }
-                } else {
-                    currentOrder = null;
-                    await clearRepCurrentOrder(repId);
-                }
+                currentOrder = null;
+                await clearRepCurrentOrder(repId);
             }
         }
 
         if (!currentOrder || !currentOrder.orderId) {
             const { Order } = require('../middlewares/Order');
-            const { StoreOrder } = require('../middlewares/StoreOrder');
 
             const activeDeliveryOrder = await Order.findOne({
                 representativeId: rep._id,
                 status: { $in: ACTIVE_STATUSES },
-            }).select('_id orderId storeOrderId status').lean();
+                isBusinessOrder: { $ne: true },
+                orderCategory: { $ne: 'business' },
+            }).select('_id orderId status').lean();
 
             if (activeDeliveryOrder) {
-                const displayNum = activeDeliveryOrder.orderId || activeDeliveryOrder.storeOrderId || activeDeliveryOrder._id;
+                const displayNum = activeDeliveryOrder.orderId || activeDeliveryOrder._id;
                 currentOrder = {
                     orderId: String(displayNum),
                     status: activeDeliveryOrder.status,
@@ -920,24 +901,8 @@ const getLiveTracking = expressAsyncHandler(async (req, res) => {
                 await setRepCurrentOrder(repId, currentOrder);
                 isRealActiveOrder = true;
             } else {
-                const activeStoreOrder = await StoreOrder.findOne({
-                    representativeId: rep._id,
-                    status: { $in: ACTIVE_STATUSES },
-                }).select('_id orderId storeOrderId status').lean();
-
-                if (activeStoreOrder) {
-                    const displayNum = activeStoreOrder.orderId || activeStoreOrder.storeOrderId || activeStoreOrder._id;
-                    currentOrder = {
-                        orderId: String(displayNum),
-                        status: activeStoreOrder.status,
-                        type: 'store',
-                    };
-                    await setRepCurrentOrder(repId, currentOrder);
-                    isRealActiveOrder = true;
-                } else {
-                    currentOrder = null;
-                    await clearRepCurrentOrder(repId);
-                }
+                currentOrder = null;
+                await clearRepCurrentOrder(repId);
             }
         }
 

@@ -61,7 +61,7 @@ function isOwnerOrAuthorized(resource, req, options = {}) {
     // Direct ownership checks
     const ownerFields = options.ownerFields
         ? (Array.isArray(options.ownerFields) ? options.ownerFields : [options.ownerFields])
-        : ['userId', 'user', 'client', 'driverId', 'representativeId', 'agentId', 'fromUserId', 'toUserId'];
+        : ['userId', 'user', 'client', 'driverId', 'representativeId', 'fromUserId', 'toUserId'];
 
     for (const field of ownerFields) {
         const val = resource[field];

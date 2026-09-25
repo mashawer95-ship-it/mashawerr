@@ -122,22 +122,6 @@ app.all('/api/test-email', async (req, res) => {
     }
 });
 
-// ── ONE-TIME maintenance: drop unique index on storeOrderId ──────────────────
-const mongoose = require('mongoose');
-app.get('/api/maintenance/fix-order-index', async (req, res) => {
-    try {
-        const col = mongoose.connection.collection('storeorders');
-        const indexes = await col.indexes();
-        const target = indexes.find(i => i.key && i.key.storeOrderId !== undefined && i.unique);
-        if (!target) {
-            return res.json({ ok: true, message: 'No unique index on storeOrderId found – already clean.' });
-        }
-        await col.dropIndex(target.name);
-        return res.json({ ok: true, message: `Index "${target.name}" dropped successfully.` });
-    } catch (e) {
-        return res.status(500).json({ ok: false, error: e.message });
-    }
-});
 
 
 // DB readiness – wait before /api/* (not / or /api/health). Keep under ~25s so clients get JSON 503 before some proxies return 502.
@@ -173,15 +157,6 @@ app.use('/api/rep-commission', require('./routes/repCommission'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/feedback', require('./routes/feedback'));
 
-// ─── Business / Store Module ────────────────────────────────────────────────
-app.use('/api/store/agents', require('./routes/agents'));
-app.use('/api/store/products', require('./routes/products'));
-app.use('/api/store/cart', require('./routes/cart'));
-app.use('/api/store/orders', require('./routes/storeOrders'));
-app.use('/api/store/favorites', require('./routes/favorites'));
-app.use('/api/store/associations', require('./routes/associations'));
-app.use('/api/store/restaurants', require('./routes/restaurants'));
-app.use('/api/store/pricing', require('./routes/storePricing'));
 
 // ─── Wallet & Target System ───────────────────────────────────────────────────
 app.use('/api/wallet', require('./routes/wallet'));
@@ -282,7 +257,7 @@ io.on('connection', (socket) => {
             // • الأدمين والإدارة
             const isOrderOwner  = order.userId?.toString()       === userId;
             const isAssignedRep = order.representativeId?.toString() === userId;
-            const isStaff       = isAdmin || ['admin', 'administration', 'agent'].includes(userType);
+            const isStaff       = isAdmin || ['admin', 'administration'].includes(userType);
 
             if (!isOrderOwner && !isAssignedRep && !isStaff) {
                 logger.warn(`[Socket.IO] join_order DENIED: user ${userId} (${userType}) tried to join order ${orderId}`);

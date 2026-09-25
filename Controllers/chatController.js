@@ -2,7 +2,7 @@ const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
 const Message = require('../models/Message');
 const { Order } = require('../middlewares/Order');
-const { StoreOrder } = require('../middlewares/StoreOrder');
+// StoreOrder removed – delivery-only
 const { sanitizeErrorResponse } = require('../middlewares/objectAuthorization');
 
 /**
@@ -34,27 +34,14 @@ const getChatHistory = asyncHandler(async (req, res) => {
             orderConditions.push({ _id: orderId });
         }
 
-        const storeOrderConditions = [];
-        if (isNumeric) {
-            storeOrderConditions.push({ storeOrderId: numericOrderId });
-            storeOrderConditions.push({ orderId: numericOrderId });
-        }
-        if (isValidObjectId) {
-            storeOrderConditions.push({ _id: orderId });
-        }
-
-        const [isParticipant, normalOrder, storeOrder] = await Promise.all([
+        const [isParticipant, normalOrder] = await Promise.all([
             Message.exists({ orderId: String(orderId), $or: [{ senderId: userIdStr }, { receiverId: userIdStr }] }),
             orderConditions.length > 0
                 ? Order.findOne({ $or: orderConditions }).select('clientId representativeId').lean()
-                : null,
-            storeOrderConditions.length > 0
-                ? StoreOrder.findOne({ $or: storeOrderConditions }).select('userId representativeId agentId involvedAgents').lean()
                 : null
         ]);
 
-        const isOrderOwner = (normalOrder && (normalOrder.clientId?.toString() === userIdStr || normalOrder.representativeId?.toString() === userIdStr))
-            || (storeOrder && (storeOrder.userId?.toString() === userIdStr || storeOrder.representativeId?.toString() === userIdStr || storeOrder.agentId?.toString() === userIdStr));
+        const isOrderOwner = Boolean(normalOrder && (normalOrder.clientId?.toString() === userIdStr || normalOrder.representativeId?.toString() === userIdStr));
 
         if (!isParticipant && !isOrderOwner) {
             return sanitizeErrorResponse(res, true, true);

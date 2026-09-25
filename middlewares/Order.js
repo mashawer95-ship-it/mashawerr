@@ -134,9 +134,7 @@ const OrderSchema = new mongoose.Schema(
         orderId: { type: Number, unique: true },
         clientId: {
             type: String,
-            required: function () {
-                return !this.isBusinessOrder && this.orderCategory !== 'business';
-            },
+            required: true,
             trim: true,
         },
         representativeId: { type: String, trim: true, default: null },
@@ -241,37 +239,12 @@ OrderSchema.pre('save', async function () {
 
 const Order = mongoose.model('Order', OrderSchema, 'orders');
 
-/** One-time migration: assign unified global orderId (1, 2, 3...) to all existing Order and StoreOrder documents in 'orders' */
+/** One-time migration: assign unified global orderId (1, 2, 3...) to all existing Order documents in 'orders' */
 async function migrateUnifiedOrderIds() {
     try {
         const existingCounter = await Counter.findById('global_order_id');
         if (existingCounter && existingCounter.seq > 0) {
             return; // Migration already completed, skip scanning database on boot
-        }
-
-        const legacyStoreCol = mongoose.connection.collection('storeorders');
-        let legacyDocs = [];
-        try {
-            legacyDocs = await legacyStoreCol.find({}).toArray();
-        } catch (_) {}
-
-        if (legacyDocs.length > 0) {
-            console.log(`🔄 [Migration] Found ${legacyDocs.length} documents in legacy storeorders collection. Migrating to 'orders'...`);
-            const ordersCol = mongoose.connection.collection('orders');
-            for (const doc of legacyDocs) {
-                const existing = await ordersCol.findOne({ _id: doc._id });
-                if (!existing) {
-                    doc.orderCategory = doc.orderCategory || 'business';
-                    doc.isBusinessOrder = true;
-                    await ordersCol.insertOne(doc);
-                }
-            }
-            try {
-                await legacyStoreCol.drop();
-                console.log('✅ [Migration] Legacy storeorders collection dropped.');
-            } catch (dropErr) {
-                console.warn('⚠️ [Migration] Could not drop legacy storeorders collection:', dropErr.message);
-            }
         }
         
         console.log('🔄 [Migration] Starting unified global order ID assignment...');
@@ -286,15 +259,7 @@ async function migrateUnifiedOrderIds() {
         let currentSeq = 0;
         for (const doc of allDocs) {
             currentSeq++;
-            const updateFields = { orderId: currentSeq };
-            if (doc.items || doc.storeOrderId || doc.isBusinessOrder || doc.orderCategory === 'business') {
-                updateFields.storeOrderId = currentSeq;
-                updateFields.isBusinessOrder = true;
-                updateFields.orderCategory = 'business';
-            } else {
-                updateFields.isBusinessOrder = false;
-                updateFields.orderCategory = 'delivery';
-            }
+            const updateFields = { orderId: currentSeq, orderCategory: 'delivery', isBusinessOrder: false };
             await ordersCol.updateOne({ _id: doc._id }, { $set: updateFields });
         }
 

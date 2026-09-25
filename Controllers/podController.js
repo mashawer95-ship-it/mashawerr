@@ -3,97 +3,27 @@ const mongoose = require('mongoose');
 const { DeliverySession } = require('../models/DeliverySession');
 const { DeliveryAttempt } = require('../models/DeliveryAttempt');
 const { Order } = require('../middlewares/Order');
-const { StoreOrder } = require('../middlewares/StoreOrder');
+// StoreOrder removed – delivery-only
 const { generateAndStoreHMAC, getPlainOTP, verifyHMACOTP, checkAndSetFraudHash, redisLock, redisUnlock } = require('../config/redis');
 const { notifyClient } = require('../services/notifyClient');
 const { DeliveryEventBus } = require('../services/DeliveryEventBus');
-const { BusinessOrderTracker } = require('../services/BusinessOrderTracker');
+// BusinessOrderTracker removed – delivery-only
 const { DeliveryOrderTracker } = require('../services/DeliveryOrderTracker');
 const logger = require('../utils/logger');
 const cloudinary = require('../config/cloudinary');
 
 // ─── Utility: Get Parent Order ───────────────────────────────────────────────
-async function getParentOrder(orderId, isStoreOrder = false, subId = null) {
+async function getParentOrder(orderId) {
     if (!orderId) return null;
     const strId = String(orderId).trim();
-    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(strId);
-
-    // Helper: Check if an order document has business/store order characteristics
-    const isDocStoreOrder = (doc) => {
-        if (!doc) return false;
-        return doc.isBusinessOrder === true ||
-            doc.orderCategory === 'business' ||
-            doc.storeOrderId != null ||
-            doc.parentGroupId != null ||
-            (Array.isArray(doc.items) && doc.items.length > 0);
-    };
-
-    // 1. If subId is provided, try direct lookup by _id, storeOrderId, agentId, or item productId
-    if (subId) {
-        const isValidSubObjId = mongoose.isValidObjectId(subId);
-        const numSubId = !isNaN(Number(subId)) ? Number(subId) : -1;
-
-        let targetSub = await StoreOrder.findOne({
-            $or: [
-                ...(isValidSubObjId ? [{ _id: subId }, { 'items.product': subId }, { 'items._id': subId }] : []),
-                ...(numSubId > 0 ? [{ storeOrderId: numSubId }, { orderId: numSubId }] : []),
-                { agentId: String(subId) }
-            ]
-        });
-
-        if (targetSub) return targetSub;
-    }
-
-    // 2. If orderId is a direct ObjectId
     if (mongoose.isValidObjectId(strId)) {
-        const exactStoreOrder = await StoreOrder.findById(strId);
-        if (exactStoreOrder && (isStoreOrder || isDocStoreOrder(exactStoreOrder))) {
-            return exactStoreOrder;
-        }
-        const exactNormalOrder = await Order.findById(strId);
-        if (exactNormalOrder) {
-            if (isDocStoreOrder(exactNormalOrder)) {
-                return exactStoreOrder || exactNormalOrder;
-            }
-            return exactNormalOrder;
-        }
-        if (exactStoreOrder) return exactStoreOrder;
+        const order = await Order.findById(strId);
+        if (order) return order;
     }
-
-    // 3. If orderId is parentGroupId (UUID)
-    if (isUUID) {
-        const subs = await StoreOrder.find({ parentGroupId: strId });
-        if (subs.length > 0) {
-            const pendingSub = subs.find(s => s.status !== 'delivered' && s.status !== 'completed');
-            return pendingSub || subs[0];
-        }
-    }
-
-    // 4. Numeric orderId (Check StoreOrder first if it has store order signature)
     if (!isNaN(Number(strId))) {
-        const numId = Number(strId);
-        const storeSubs = await StoreOrder.find({ $or: [{ storeOrderId: numId }, { orderId: numId }] });
-        if (storeSubs.length > 0) {
-            const hasStoreSignature = storeSubs.some(s => isDocStoreOrder(s));
-            if (isStoreOrder || hasStoreSignature) {
-                const pendingSub = storeSubs.find(s => s.status !== 'delivered' && s.status !== 'completed');
-                return pendingSub || storeSubs[0];
-            }
-        }
-        const normalOrder = await Order.findOne({ orderId: numId });
-        if (normalOrder) {
-            if (isDocStoreOrder(normalOrder) && storeSubs.length > 0) {
-                const pendingSub = storeSubs.find(s => s.status !== 'delivered' && s.status !== 'completed');
-                return pendingSub || storeSubs[0];
-            }
-            return normalOrder;
-        }
-        if (storeSubs.length > 0) {
-            const pendingSub = storeSubs.find(s => s.status !== 'delivered' && s.status !== 'completed');
-            return pendingSub || storeSubs[0];
-        }
+        const order = await Order.findOne({ orderId: Number(strId) });
+        if (order) return order;
     }
-
     return null;
 }
 
@@ -103,10 +33,10 @@ exports.getUploadUrl = async (req, res) => {
     const startTime = Date.now();
     try {
         const { id } = req.params;
-        const isStoreOrder = req.baseUrl.includes('store');
-        const phase = (req.query.phase || req.body?.phase || 'DELIVERY').toUpperCase();
+        const isStoreOrder = false;
+const phase = (req.query.phase || req.body?.phase || 'DELIVERY').toUpperCase();
 
-        const order = await getParentOrder(id, isStoreOrder);
+        const order = await getParentOrder(id);
         if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
         let session = null;
@@ -446,179 +376,14 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
     const isStoreFromUrl = req.baseUrl?.includes('store') || false;
     const isStoreGuess = isStoreFromUrl || (session && String(session.orderId).includes('-'));
     const parentOrder = await getParentOrder(orderId, isStoreGuess);
-    const isExplicitStore = Boolean(
-        parentOrder && (
-            parentOrder.isBusinessOrder === true ||
-            parentOrder.orderCategory === 'business' ||
-            parentOrder.storeOrderId != null ||
-            parentOrder.parentGroupId != null ||
-            (Array.isArray(parentOrder.items) && parentOrder.items.length > 0)
-        )
-    );
-    const hasLocations = Array.isArray(parentOrder?.allLocationsInOrder) && parentOrder.allLocationsInOrder.length > 0;
-    const isStoreOrder = isExplicitStore || (!hasLocations && (isStoreFromUrl || (session && String(session.orderId).includes('-'))));
+    const isStoreOrder = false;
     const photoUrl = attempt?.photo?.cdnUrl || attempt?.photo?.url || attempt?.photo?.secure_url || (attempt?.photo?.objectKey ? `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME || 'dvhjawii0'}/image/upload/${attempt.photo.objectKey}` : null);
     let resolvedGroupId = null;
 
     if (isPickup) {
         let allPickedUp = true;
 
-        if (isStoreOrder) {
-            const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(orderId);
-            let subOrders = [];
-            resolvedGroupId = null;
-
-            if (isUUID) {
-                resolvedGroupId = orderId;
-                subOrders = await StoreOrder.find({ parentGroupId: orderId }).sort({ subOrderIndex: 1, createdAt: 1 });
-            } else if (mongoose.isValidObjectId(orderId)) {
-                const o = await StoreOrder.findById(orderId);
-                if (o?.parentGroupId) {
-                    resolvedGroupId = o.parentGroupId;
-                    subOrders = await StoreOrder.find({ parentGroupId: o.parentGroupId }).sort({ subOrderIndex: 1, createdAt: 1 });
-                } else if (o) {
-                    subOrders = [o];
-                }
-            } else if (!isNaN(Number(orderId))) {
-                const numId = Number(orderId);
-                const allByStoreId = await StoreOrder.find({ $or: [{ storeOrderId: numId }, { orderId: numId }] }).sort({ subOrderIndex: 1, createdAt: 1 });
-                if (allByStoreId.length > 0 && allByStoreId[0]?.parentGroupId) {
-                    resolvedGroupId = allByStoreId[0].parentGroupId;
-                    subOrders = await StoreOrder.find({ parentGroupId: allByStoreId[0].parentGroupId }).sort({ subOrderIndex: 1, createdAt: 1 });
-                } else {
-                    subOrders = allByStoreId;
-                }
-            }
-
-            if (subOrders.length === 0 && parentOrder?.parentGroupId) {
-                resolvedGroupId = parentOrder.parentGroupId;
-                subOrders = await StoreOrder.find({ parentGroupId: parentOrder.parentGroupId }).sort({ subOrderIndex: 1, createdAt: 1 });
-            }
-            if (subOrders.length === 0 && parentOrder) {
-                subOrders = [parentOrder];
-            }
-
-            const reqStopIndex = attempt?.stopIndex ?? req.body?.stopIndex ?? req.query?.stopIndex;
-            const reqSubId = attempt?.taskId || req.body?.taskId || req.body?.subOrderId || req.query?.subOrderId || req.query?.taskId;
-            const reqItemIndex = attempt?.itemIndex ?? req.body?.itemIndex ?? req.query?.itemIndex ?? req.body?.index ?? req.query?.index;
-            const reqProdId = attempt?.productId || req.body?.productId || req.query?.productId;
-
-            let targetSub = null;
-            let targetItem = null;
-            const orderRef = resolvedGroupId || parentOrder?.parentGroupId || parentOrder?.storeOrderId || parentOrder?._id || session?.orderId || orderId;
-            const initialTrack = await BusinessOrderTracker.getOrderTrack(orderRef).catch(() => null);
-            if (initialTrack && Array.isArray(initialTrack.stops) && reqStopIndex !== undefined && reqStopIndex !== null && reqStopIndex !== '') {
-                const sIdx = parseInt(reqStopIndex, 10);
-                const stopObj = initialTrack.stops[sIdx];
-                if (stopObj) {
-                    targetSub = subOrders.find(s => String(s._id) === String(stopObj.subOrderId));
-                    if (!targetSub && subOrders.length === 1) {
-                        targetSub = subOrders[0];
-                    }
-                    if (targetSub && Array.isArray(targetSub.items) && targetSub.items[stopObj.itemIndex]) {
-                        targetItem = targetSub.items[stopObj.itemIndex];
-                    }
-                }
-            }
-
-            if (!targetSub && reqSubId) {
-                targetSub = subOrders.find(s => String(s._id) === String(reqSubId));
-            }
-            if (!targetSub && initialTrack?.currentStop) {
-                targetSub = subOrders.find(s => String(s._id) === String(initialTrack.currentStop.subOrderId));
-                if (targetSub && Array.isArray(targetSub.items) && targetSub.items[initialTrack.currentStop.itemIndex]) {
-                    targetItem = targetSub.items[initialTrack.currentStop.itemIndex];
-                }
-            }
-            if (!targetSub) {
-                targetSub = subOrders.find(s => s.status !== 'shipped' && s.status !== 'delivering' && s.status !== 'delivered');
-            }
-            if (!targetSub && subOrders.length > 0) {
-                targetSub = subOrders[0];
-            }
-
-            if (targetSub) {
-                if (photoUrl) {
-                    targetSub.pickupPhoto = photoUrl;
-                    targetSub.pickupPhotoUrl = photoUrl;
-                    targetSub.itemPhotoBefore = photoUrl;
-                }
-                if (Array.isArray(targetSub.items) && targetSub.items.length > 0) {
-                    if (!targetItem && reqProdId) targetItem = targetSub.items.find(i => String(i.product || i._id) === String(reqProdId));
-                    if (!targetItem && reqItemIndex !== undefined && reqItemIndex !== null && reqItemIndex !== '') {
-                        const idx = parseInt(reqItemIndex, 10);
-                        if (!isNaN(idx) && targetSub.items[idx]) targetItem = targetSub.items[idx];
-                    }
-                    if (!targetItem && reqSubId !== undefined && reqSubId !== null && reqSubId !== '') {
-                        const tId = parseInt(reqSubId, 10);
-                        if (!isNaN(tId) && tId >= 1 && targetSub.items[tId - 1]) targetItem = targetSub.items[tId - 1];
-                    }
-                    if (!targetItem) {
-                        targetItem = targetSub.items.find(i => !i.isPickedUp && i.status !== 'shipped');
-                    }
-                    if (targetItem) {
-                        targetItem.status = 'shipped';
-                        targetItem.isPickedUp = true;
-                        if (photoUrl) {
-                            targetItem.pickupPhoto = photoUrl;
-                            targetItem.pickupPhotoUrl = photoUrl;
-                            targetItem.itemPhotoBefore = photoUrl;
-                        }
-                    } else if (targetSub.items.length === 1) {
-                        targetSub.items[0].status = 'shipped';
-                        targetSub.items[0].isPickedUp = true;
-                        if (photoUrl) {
-                            targetSub.items[0].pickupPhoto = photoUrl;
-                            targetSub.items[0].pickupPhotoUrl = photoUrl;
-                            targetSub.items[0].itemPhotoBefore = photoUrl;
-                        }
-                    } else {
-                        const firstUnpicked = targetSub.items.find(i => !i.isPickedUp && i.status !== 'shipped');
-                        if (firstUnpicked) {
-                            firstUnpicked.status = 'shipped';
-                            firstUnpicked.isPickedUp = true;
-                            if (photoUrl) {
-                                firstUnpicked.pickupPhoto = photoUrl;
-                                firstUnpicked.pickupPhotoUrl = photoUrl;
-                                firstUnpicked.itemPhotoBefore = photoUrl;
-                            }
-                        }
-                    }
-                    const allSubItemsShipped = targetSub.items.every(i => i.status === 'shipped' || i.isPickedUp === true || i.isDelivered === true);
-                    targetSub.status = allSubItemsShipped ? 'shipped' : targetSub.status;
-                    targetSub.isPickedUp = allSubItemsShipped;
-                    targetSub.markModified('items');
-                } else {
-                    targetSub.status = 'shipped';
-                    targetSub.isPickedUp = true;
-                }
-                await targetSub.save().catch(() => {});
-                await StoreOrder.updateOne(
-                    { _id: targetSub._id },
-                    {
-                        $set: {
-                            items: targetSub.items,
-                            status: targetSub.status,
-                            isPickedUp: targetSub.isPickedUp,
-                            ...(photoUrl ? { pickupPhoto: photoUrl, pickupPhotoUrl: photoUrl, itemPhotoBefore: photoUrl } : {})
-                        }
-                    }
-                ).catch(() => {});
-            }
-
-            const trackData = await BusinessOrderTracker.getOrderTrack(orderRef).catch(() => null);
-            allPickedUp = trackData ? trackData.allPickupsDone : true;
-
-            if (allPickedUp) {
-                const finalGroupId = resolvedGroupId || parentOrder?.parentGroupId;
-                if (finalGroupId) {
-                    await StoreOrder.updateMany({ parentGroupId: finalGroupId }, { status: 'delivering' }).catch(() => {});
-                } else if (parentOrder) {
-                    parentOrder.status = 'delivering';
-                    await parentOrder.save().catch(() => {});
-                }
-            }
-        } else if (parentOrder) {
+        if (parentOrder) {
             const photoUrl = attempt?.photo?.cdnUrl || attempt?.photo?.url || attempt?.photo?.secure_url || (attempt?.photo?.objectKey ? `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME || 'dvhjawii0'}/image/upload/${attempt.photo.objectKey}` : null);
 
             const hasLocations = Array.isArray(parentOrder.allLocationsInOrder) && parentOrder.allLocationsInOrder.length > 0;
@@ -686,22 +451,13 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
             await parentOrder.save().catch(() => {});
         }
 
-        const orderRef = resolvedGroupId || parentOrder?.parentGroupId || parentOrder?.storeOrderId || parentOrder?._id || session?.orderId || orderId;
-        const trackData = isStoreOrder
-            ? await BusinessOrderTracker.getOrderTrack(orderRef).catch(() => null)
-            : await DeliveryOrderTracker.getOrderTrack(orderId).catch(() => null);
+        const trackData = await DeliveryOrderTracker.getOrderTrack(orderId).catch(() => null);
 
         if (trackData) {
             allPickedUp = trackData.allPickupsDone;
         }
 
-        const extraRooms = [
-            parentOrder?.parentGroupId ? `order:${parentOrder.parentGroupId}` : null,
-            parentOrder?.storeOrderId ? `order:${parentOrder.storeOrderId}` : null,
-            parentOrder?._id ? `order:${parentOrder._id}` : null,
-            `order:${orderId}`,
-            session ? `order:${session.orderId}` : null
-        ].filter(Boolean);
+        const extraRooms = [`order:${orderId}`, session ? `order:${session.orderId}` : null].filter(Boolean);
 
         if (trackData) {
             trackData.extraRooms = extraRooms;
@@ -746,225 +502,7 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
     // Delivery Phase handling (Multi-task & Multi-stop aware)
     let allDone = true;
 
-    if (isStoreOrder) {
-        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(orderId);
-        let subOrders = [];
-        resolvedGroupId = null;
-
-        if (isUUID) {
-            resolvedGroupId = orderId;
-            subOrders = await StoreOrder.find({ parentGroupId: orderId }).sort({ subOrderIndex: 1, createdAt: 1 });
-        } else if (mongoose.isValidObjectId(orderId)) {
-            const o = await StoreOrder.findById(orderId);
-            if (o?.parentGroupId) {
-                resolvedGroupId = o.parentGroupId;
-                subOrders = await StoreOrder.find({ parentGroupId: o.parentGroupId }).sort({ subOrderIndex: 1, createdAt: 1 });
-            } else if (o) {
-                subOrders = [o];
-            }
-        } else if (!isNaN(Number(orderId))) {
-            const numId = Number(orderId);
-            const allByStoreId = await StoreOrder.find({ $or: [{ storeOrderId: numId }, { orderId: numId }] }).sort({ subOrderIndex: 1, createdAt: 1 });
-            if (allByStoreId.length > 0) {
-                const groupId = allByStoreId[0]?.parentGroupId;
-                if (groupId) {
-                    resolvedGroupId = groupId;
-                    subOrders = await StoreOrder.find({ parentGroupId: groupId }).sort({ subOrderIndex: 1, createdAt: 1 });
-                } else {
-                    subOrders = allByStoreId;
-                }
-            }
-        }
-
-        if (subOrders.length === 0 && parentOrder?.parentGroupId) {
-            resolvedGroupId = parentOrder.parentGroupId;
-            subOrders = await StoreOrder.find({ parentGroupId: parentOrder.parentGroupId }).sort({ subOrderIndex: 1, createdAt: 1 });
-        }
-        if (subOrders.length === 0 && parentOrder) {
-            subOrders = [parentOrder];
-        }
-
-        const photoUrl = attempt?.photo?.cdnUrl || attempt?.photo?.url || attempt?.photo?.secure_url || (attempt?.photo?.objectKey ? `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME || 'dvhjawii0'}/image/upload/${attempt.photo.objectKey}` : null);
-
-        if (subOrders.length > 0) {
-            const reqStopIndex = attempt?.stopIndex ?? req.body?.stopIndex ?? req.query?.stopIndex;
-            const reqSubId = attempt?.taskId || req.body?.taskId || req.body?.subOrderId || req.query?.subOrderId || req.query?.taskId;
-            const reqItemIndex = attempt?.itemIndex ?? req.body?.itemIndex ?? req.query?.itemIndex ?? req.body?.index ?? req.query?.index;
-            const reqProdId = attempt?.productId || req.body?.productId || req.query?.productId;
-
-            let targetSub = null;
-            let targetItem = null;
-            const orderRef = resolvedGroupId || parentOrder?.parentGroupId || parentOrder?.storeOrderId || parentOrder?._id || session?.orderId || orderId;
-            const initialTrack = await BusinessOrderTracker.getOrderTrack(orderRef).catch(() => null);
-            if (initialTrack && Array.isArray(initialTrack.stops) && reqStopIndex !== undefined && reqStopIndex !== null && reqStopIndex !== '') {
-                const sIdx = parseInt(reqStopIndex, 10);
-                const stopObj = initialTrack.stops[sIdx];
-                if (stopObj) {
-                    targetSub = subOrders.find(s => String(s._id) === String(stopObj.subOrderId));
-                    if (!targetSub && subOrders.length === 1) {
-                        targetSub = subOrders[0];
-                    }
-                    if (targetSub && Array.isArray(targetSub.items) && targetSub.items[stopObj.itemIndex]) {
-                        targetItem = targetSub.items[stopObj.itemIndex];
-                    }
-                }
-            }
-
-            if (!targetSub && reqSubId) {
-                targetSub = subOrders.find(s => String(s._id) === String(reqSubId));
-            }
-            if (!targetSub && initialTrack?.currentStop) {
-                targetSub = subOrders.find(s => String(s._id) === String(initialTrack.currentStop.subOrderId));
-                if (targetSub && Array.isArray(targetSub.items) && targetSub.items[initialTrack.currentStop.itemIndex]) {
-                    targetItem = targetSub.items[initialTrack.currentStop.itemIndex];
-                }
-            }
-            if (!targetSub) {
-                targetSub = subOrders.find(s => s.status !== 'delivered' && s.status !== 'completed');
-            }
-            if (!targetSub) {
-                targetSub = subOrders[0];
-            }
-
-            if (targetSub) {
-                if (Array.isArray(targetSub.items) && targetSub.items.length > 0) {
-                    if (!targetItem && reqProdId) {
-                        targetItem = targetSub.items.find(i => String(i.product || i._id) === String(reqProdId));
-                    }
-                    if (!targetItem && reqItemIndex !== undefined && reqItemIndex !== null && reqItemIndex !== '') {
-                        const idx = parseInt(reqItemIndex, 10);
-                        if (!isNaN(idx) && targetSub.items[idx]) targetItem = targetSub.items[idx];
-                    }
-                    if (!targetItem && reqSubId !== undefined && reqSubId !== null && reqSubId !== '') {
-                        const tId = parseInt(reqSubId, 10);
-                        if (!isNaN(tId) && tId >= 1 && targetSub.items[tId - 1]) targetItem = targetSub.items[tId - 1];
-                    }
-
-                    const isReturn = targetSub.isReturnOrder === true || (typeof targetSub.status === 'string' && targetSub.status.startsWith('return_'));
-                    const deliveredStatus = isReturn ? 'returned' : 'delivered';
-
-                    if (targetItem) {
-                        targetItem.status = deliveredStatus;
-                        targetItem.isDelivered = true;
-                        if (photoUrl) {
-                            targetItem.deliveryPhoto = photoUrl;
-                            targetItem.itemPhotoAfter = photoUrl;
-                        }
-                    } else if (targetSub.items.length === 1) {
-                        targetSub.items[0].status = deliveredStatus;
-                        targetSub.items[0].isDelivered = true;
-                        if (photoUrl) {
-                            targetSub.items[0].deliveryPhoto = photoUrl;
-                            targetSub.items[0].itemPhotoAfter = photoUrl;
-                        }
-                    } else {
-                        const undeliveredItem = targetSub.items.find(i => !i.isDelivered && i.status !== 'delivered' && i.status !== 'returned') || targetSub.items[0];
-                        if (undeliveredItem) {
-                            undeliveredItem.status = deliveredStatus;
-                            undeliveredItem.isDelivered = true;
-                            if (photoUrl) {
-                                undeliveredItem.deliveryPhoto = photoUrl;
-                                undeliveredItem.itemPhotoAfter = photoUrl;
-                            }
-                        }
-                    }
-
-                    const allItemsInSubDelivered = targetSub.items.every(i => i.status === 'delivered' || i.status === 'returned' || i.isDelivered === true);
-                    if (allItemsInSubDelivered) {
-                        targetSub.status = deliveredStatus;
-                        targetSub.isDelivered = true;
-                        if (isReturn) {
-                            targetSub.returnedAt = targetSub.returnedAt || new Date();
-                        } else {
-                            targetSub.deliveredAt = targetSub.deliveredAt || new Date();
-                        }
-                        if (photoUrl) {
-                            targetSub.deliveryPhoto = photoUrl;
-                            targetSub.itemPhotoAfter = photoUrl;
-                        }
-                    } else {
-                        targetSub.status = isReturn ? 'return_delivering' : 'delivering';
-                        targetSub.isDelivered = false;
-                    }
-                    targetSub.markModified('items');
-                } else {
-                    const isReturn = targetSub.isReturnOrder === true || (typeof targetSub.status === 'string' && targetSub.status.startsWith('return_'));
-                    const deliveredStatus = isReturn ? 'returned' : 'delivered';
-                    targetSub.status = deliveredStatus;
-                    targetSub.isDelivered = true;
-                    if (isReturn) {
-                        targetSub.returnedAt = targetSub.returnedAt || new Date();
-                    } else {
-                        targetSub.deliveredAt = targetSub.deliveredAt || new Date();
-                    }
-                    if (photoUrl) {
-                        targetSub.deliveryPhoto = photoUrl;
-                        targetSub.itemPhotoAfter = photoUrl;
-                    }
-                }
-                await targetSub.save().catch(() => {});
-                await StoreOrder.updateOne(
-                    { _id: targetSub._id },
-                    {
-                        $set: {
-                            items: targetSub.items,
-                            status: targetSub.status,
-                            isDelivered: targetSub.isDelivered,
-                            deliveredAt: targetSub.deliveredAt || new Date(),
-                            ...(targetSub.returnedAt ? { returnedAt: targetSub.returnedAt } : {}),
-                            ...(photoUrl ? { deliveryPhoto: photoUrl, deliveryPhotoUrl: photoUrl, itemPhotoAfter: photoUrl } : {})
-                        }
-                    }
-                ).catch(() => {});
-            }
-
-            // ─── إعادة جلب من DB بعد الحفظ للتأكد من الحالة الحقيقية ───
-            const finalGroupId = resolvedGroupId || parentOrder?.parentGroupId;
-            let updatedSubOrders;
-            if (finalGroupId) {
-                updatedSubOrders = await StoreOrder.find({ parentGroupId: finalGroupId }).lean();
-            } else {
-                const sid = targetSub?.storeOrderId || subOrders[0]?.storeOrderId;
-                updatedSubOrders = sid
-                    ? await StoreOrder.find({ storeOrderId: sid }).lean()
-                    : subOrders;
-            }
-
-            const trackData = isStoreOrder ? await BusinessOrderTracker.getOrderTrack(orderRef).catch(() => null) : null;
-            if (trackData) {
-                allDone = trackData.isAllCompleted;
-            } else {
-                allDone = updatedSubOrders.length > 0 && updatedSubOrders.every(s => {
-                    const isStatusDone = s.status === 'delivered' || s.status === 'completed' || s.status === 'returned';
-                    if (!isStatusDone) return false;
-                    if (Array.isArray(s.items) && s.items.length > 0) {
-                        return s.items.every(i => i.status === 'delivered' || i.status === 'returned' || i.isDelivered === true);
-                    }
-                    return true;
-                });
-            }
-
-            if (allDone && parentOrder) {
-                const isReturn = parentOrder.isReturnOrder === true || (typeof parentOrder.status === 'string' && parentOrder.status.startsWith('return_'));
-                parentOrder.status = isReturn ? 'returned' : 'delivered';
-                if (isReturn) {
-                    parentOrder.returnedAt = parentOrder.returnedAt || new Date();
-                } else {
-                    parentOrder.deliveredAt = parentOrder.deliveredAt || new Date();
-                }
-                await parentOrder.save().catch(() => {});
-            } else if (parentOrder) {
-                const isReturn = parentOrder.isReturnOrder === true || (typeof parentOrder.status === 'string' && parentOrder.status.startsWith('return_'));
-                parentOrder.status = isReturn ? 'return_delivering' : 'delivering';
-                await parentOrder.save().catch(() => {});
-            }
-        } else if (parentOrder) {
-            const isReturn = parentOrder.isReturnOrder === true || (typeof parentOrder.status === 'string' && parentOrder.status.startsWith('return_'));
-            parentOrder.status = isReturn ? 'return_delivering' : 'delivering';
-            await parentOrder.save().catch(() => {});
-            allDone = false;
-        }
-    } else if (parentOrder) {
+    if (parentOrder) {
         const photoUrl = attempt?.photo?.cdnUrl || attempt?.photo?.url || attempt?.photo?.secure_url || (attempt?.photo?.objectKey ? `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME || 'dvhjawii0'}/image/upload/${attempt.photo.objectKey}` : null);
 
         const hasLocations = Array.isArray(parentOrder.allLocationsInOrder) && parentOrder.allLocationsInOrder.length > 0;
@@ -1029,22 +567,13 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
         await parentOrder.save().catch(() => {});
     }
 
-    const orderRef = resolvedGroupId || parentOrder?.parentGroupId || parentOrder?.storeOrderId || parentOrder?._id || session?.orderId || orderId;
-    const trackData = isStoreOrder
-        ? await BusinessOrderTracker.getOrderTrack(orderRef).catch(() => null)
-        : await DeliveryOrderTracker.getOrderTrack(orderId).catch(() => null);
+    const trackData = await DeliveryOrderTracker.getOrderTrack(orderId).catch(() => null);
 
     if (trackData) {
         allDone = trackData.isAllCompleted;
     }
 
-    const extraRooms = [
-        parentOrder?.parentGroupId ? `order:${parentOrder.parentGroupId}` : null,
-        parentOrder?.storeOrderId ? `order:${parentOrder.storeOrderId}` : null,
-        parentOrder?._id ? `order:${parentOrder._id}` : null,
-        `order:${orderId}`,
-        session ? `order:${session.orderId}` : null
-    ].filter(Boolean);
+    const extraRooms = [`order:${orderId}`, session ? `order:${session.orderId}` : null].filter(Boolean);
 
     if (allDone) {
         if (session) {
@@ -1077,20 +606,9 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
 
             // ─── إرسال إيميل الإتمام بعد آخر تسليم للأوردر كله ─────────────────
             try {
-                const { sendDeliveryOrderCompletionEmail, sendBusinessOrderCompletionEmail, dispatchBackgroundEmail } = require('../services/emailService');
-                const isBusinessOrder = parentOrder.isBusinessOrder === true ||
-                    parentOrder.orderCategory === 'business' ||
-                    !!parentOrder.parentGroupId ||
-                    !!parentOrder.storeOrderId ||
-                    (Array.isArray(parentOrder.items) && parentOrder.items.length > 0);
-
-                const emailOrderRef = parentOrder.parentGroupId || parentOrder._id || parentOrder.storeOrderId || parentOrder.orderId;
+                const { sendDeliveryOrderCompletionEmail, dispatchBackgroundEmail } = require('../services/emailService');
                 dispatchBackgroundEmail(async () => {
-                    if (isBusinessOrder) {
-                        await sendBusinessOrderCompletionEmail(emailOrderRef);
-                    } else {
-                        await sendDeliveryOrderCompletionEmail(parentOrder);
-                    }
+                    await sendDeliveryOrderCompletionEmail(parentOrder);
                 });
             } catch (_) {}
         }
@@ -1237,25 +755,10 @@ exports.reviewAttempt = async (req, res) => {
             }
 
             // Update order status to 'review'
-            const isStoreOrder = req.baseUrl.includes('store') || (session && String(session.orderId).includes('-'));
-            if (isStoreOrder) {
-                const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(effectiveOrderId);
-                if (isUUID) {
-                    await StoreOrder.updateMany(
-                        { parentGroupId: effectiveOrderId },
-                        { $set: { status: 'review', reviewReason: reason || 'رفض العميل الاستلام' } }
-                    ).catch(() => {});
-                } else if (mongoose.isValidObjectId(effectiveOrderId)) {
-                    await StoreOrder.findByIdAndUpdate(effectiveOrderId, { status: 'review', reviewReason: reason || 'رفض العميل الاستلام' }).catch(() => {});
-                } else {
-                    await StoreOrder.findOneAndUpdate({ storeOrderId: Number(effectiveOrderId) }, { status: 'review', reviewReason: reason || 'رفض العميل الاستلام' }).catch(() => {});
-                }
-            } else {
-                await Order.findOneAndUpdate(
-                    { orderId: isNaN(Number(effectiveOrderId)) ? effectiveOrderId : Number(effectiveOrderId) },
-                    { $set: { status: 'review', reviewReason: reason || 'رفض العميل الاستلام' } }
-                ).catch(() => {});
-            }
+            await Order.findOneAndUpdate(
+                { orderId: isNaN(Number(effectiveOrderId)) ? effectiveOrderId : Number(effectiveOrderId) },
+                { $set: { status: 'review', reviewReason: reason || 'رفض العميل الاستلام' } }
+            ).catch(() => {});
 
             if (session && attempt) {
                 await DeliveryEventBus.emitAttemptRejected(req.app.get('io'), session, attempt, reason, traceId).catch(() => {});
@@ -1364,48 +867,19 @@ exports.getCustomerConfirmations = async (req, res) => {
             userOrConditions.push({ customerId: new mongoose.Types.ObjectId(userId) });
         }
 
-        // Find store orders & normal orders for this user to ensure zero missed sessions
-        const customerStoreOrders = await StoreOrder.find({
-            $or: [
-                { userId: String(userId) },
-                { userId: userId },
-                ...(mongoose.isValidObjectId(userId) ? [{ userId: new mongoose.Types.ObjectId(userId) }] : [])
-            ]
-        }).select('_id storeOrderId parentGroupId activeDeliverySessionId').lean();
-
-        const storeOrderIds = [];
-        const storeSessionIds = [];
-        for (const so of customerStoreOrders) {
-            if (so.parentGroupId) storeOrderIds.push(String(so.parentGroupId));
-            if (so.storeOrderId != null) {
-                storeOrderIds.push(so.storeOrderId);
-                storeOrderIds.push(String(so.storeOrderId));
-            }
-            if (so._id) storeOrderIds.push(so._id.toString());
-            if (so.activeDeliverySessionId) storeSessionIds.push(so.activeDeliverySessionId);
-        }
-
-        const customerNormalOrders = await Order.find({
+        // Find delivery orders for this user
+        const deliveryOrders = await Order.find({
             $or: [
                 { clientId: String(userId) },
-                { clientId: userId },
-                ...(mongoose.isValidObjectId(userId) ? [{ clientId: new mongoose.Types.ObjectId(userId) }] : [])
-            ]
-        }).select('_id orderId activeDeliverySessionId').lean();
-
-        const normalOrderIds = [];
-        const normalSessionIds = [];
-        for (const no of customerNormalOrders) {
-            if (no.orderId != null) {
-                normalOrderIds.push(no.orderId);
-                normalOrderIds.push(String(no.orderId));
-            }
-            if (no._id) normalOrderIds.push(no._id.toString());
-            if (no.activeDeliverySessionId) normalSessionIds.push(no.activeDeliverySessionId);
-        }
-
-        const allOrderIds = [...new Set([...storeOrderIds, ...normalOrderIds])];
-        const allSessionIds = [...new Set([...storeSessionIds, ...normalSessionIds])];
+                ...(mongoose.isValidObjectId(userId) ? [{ clientId: new mongoose.Types.ObjectId(userId) }] : []),
+                { userId: String(userId) },
+            ],
+            isBusinessOrder: { $ne: true },
+            orderCategory: { $ne: 'business' },
+        }).select('_id orderId').lean();
+        const normalOrderIds = deliveryOrders.map(o => o.orderId || String(o._id)).filter(Boolean);
+        const allOrderIds = [...new Set(normalOrderIds)];
+        const allSessionIds = [];
 
         let sessionQuery = {
             $or: [
@@ -1447,72 +921,22 @@ exports.getCustomerConfirmations = async (req, res) => {
             let orderType = 'DELIVERY';
             let orderDetails = null;
 
-            const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(session.orderId);
-            let storeOrders = [];
-
-            if (isUUID) {
-                storeOrders = await StoreOrder.find({ parentGroupId: session.orderId }).lean();
+            // Fetch delivery order details
+            let order = null;
+            if (!isNaN(Number(session.orderId))) {
+                order = await Order.findOne({ orderId: Number(session.orderId), isBusinessOrder: { $ne: true } }).lean();
             } else if (mongoose.isValidObjectId(session.orderId)) {
-                const so = await StoreOrder.findById(session.orderId).lean();
-                if (so) storeOrders = [so];
-            } else if (!isNaN(Number(session.orderId))) {
-                storeOrders = await StoreOrder.find({ storeOrderId: Number(session.orderId) }).lean();
+                order = await Order.findById(session.orderId).lean();
             }
 
-            if (!storeOrders || storeOrders.length === 0) {
-                storeOrders = await StoreOrder.find({
-                    $or: [
-                        { parentGroupId: session.orderId },
-                        { storeOrderId: isNaN(Number(session.orderId)) ? -1 : Number(session.orderId) },
-                        ...(mongoose.isValidObjectId(session.orderId) ? [{ _id: session.orderId }] : []),
-                    ]
-                }).lean();
-            }
-
-            if (storeOrders && storeOrders.length > 0) {
-                orderType = 'BUSINESS';
-                const items = [];
-                let totalAmount = 0;
-                let storeName = storeOrders[0]?.agentName || 'متجر مشاوير';
-
-                for (const so of storeOrders) {
-                    totalAmount += (so.totalPrice || 0);
-                    if (so.items && Array.isArray(so.items)) {
-                        for (const it of so.items) {
-                            items.push({
-                                productName: it.name || it.title || 'منتج تجاري',
-                                quantity: it.quantity || 1,
-                                price: it.price || 0,
-                                image: it.image || it.photoUrl || null,
-                            });
-                        }
-                    }
-                }
-
-                orderDetails = {
-                    storeName,
-                    items,
-                    totalAmount,
-                    status: storeOrders[0]?.status,
-                };
-            } else {
-                // Regular Delivery Order
-                let order = null;
-                if (!isNaN(Number(session.orderId))) {
-                    order = await Order.findOne({ orderId: Number(session.orderId) }).lean();
-                } else if (mongoose.isValidObjectId(session.orderId)) {
-                    order = await Order.findById(session.orderId).lean();
-                }
-
-                orderType = 'DELIVERY';
-                orderDetails = {
-                    pickupAddress: order?.pickupAddress || order?.pickupLocationName || 'عنوان الاستلام',
-                    deliveryAddress: order?.deliveryAddress || order?.dropoffLocationName || 'عنوان التسليم',
-                    details: order?.details || order?.itemDescription || 'طلب توصيل',
-                    totalPrice: order?.cost || order?.totalPrice || 0,
-                    status: order?.status || 'active',
-                };
-            }
+            orderType = 'DELIVERY';
+            orderDetails = {
+                pickupAddress: order?.pickupAddress || order?.pickupLocationName || 'عنوان الاستلام',
+                deliveryAddress: order?.deliveryAddress || order?.dropoffLocationName || 'عنوان التسليم',
+                details: order?.details || order?.itemDescription || 'طلب توصيل',
+                totalPrice: order?.cost || order?.totalPrice || 0,
+                status: order?.status || 'active',
+            };
 
             // Retrieve OTP code if available/generated
             let otpCode = session.activeOtpCode;
@@ -1577,9 +1001,7 @@ exports.getCustomerConfirmations = async (req, res) => {
 exports.getSessionStatus = async (req, res) => {
     try {
         const { id } = req.params;
-        const isStoreOrder = req.baseUrl.includes('store');
-
-        const order = await getParentOrder(id, isStoreOrder);
+        const order = await getParentOrder(id);
         if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
         let session = null;
@@ -1620,13 +1042,11 @@ exports.getSessionStatus = async (req, res) => {
             otpCode = await getPlainOTP(session.sessionId, session.otpVersion);
         }
 
-        const orderRef = order?.parentGroupId || order?._id || order?.storeOrderId || order?.orderId || session.orderId || id;
+        const orderRef = order?._id || order?.orderId || session.orderId || id;
         let trackData = null;
         try {
-            trackData = isStoreOrder
-                ? await BusinessOrderTracker.getOrderTrack(orderRef)
-                : await DeliveryOrderTracker.getOrderTrack(orderRef);
-        } catch (_) { }
+        trackData = await DeliveryOrderTracker.getOrderTrack(orderRef);
+} catch (_) { }
 
         res.json({
             success: true,
@@ -1675,7 +1095,7 @@ exports.renotifyCustomer = async (req, res) => {
     try {
         const { id, sessionId } = req.params;
 
-        const parentOrder = await getParentOrder(id, req.baseUrl.includes('store'));
+        const parentOrder = await getParentOrder(id);
         if (!parentOrder) return res.status(404).json({ success: false, message: 'Order not found' });
 
         let session = null;
@@ -1690,8 +1110,7 @@ exports.renotifyCustomer = async (req, res) => {
                 $or: [
                     { orderId: String(id) },
                     { orderId: isNaN(Number(id)) ? id : Number(id) },
-                    ...(parentOrder.parentGroupId ? [{ orderId: parentOrder.parentGroupId }] : []),
-                    ...(parentOrder.storeOrderId ? [{ orderId: parentOrder.storeOrderId }, { orderId: String(parentOrder.storeOrderId) }] : []),
+
                 ]
             }).sort({ createdAt: -1 });
         }

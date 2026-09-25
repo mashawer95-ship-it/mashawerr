@@ -1,12 +1,7 @@
 const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
 const { User, validateUpdateUser } = require('../middlewares/User');
-const { Product } = require('../middlewares/Product');
-const { Cart } = require('../middlewares/Cart');
-const { Favorite } = require('../middlewares/Favorite');
-const { Rating } = require('../middlewares/Rating');
 const { UserRating } = require('../middlewares/UserRating');
-const { StoreOrder } = require('../middlewares/StoreOrder');
 const { Order } = require('../middlewares/Order');
 const FcmToken = require('../models/FcmToken');
 const Message = require('../models/Message');
@@ -143,14 +138,7 @@ const getAllUser = asyncHandler(async (req, res) => {
     if (req.query.role) {
         const roleLower = req.query.role.toLowerCase();
         if (roleLower === 'representative' || roleLower === 'rep') {
-            filter.userType = { $regex: /^(representative|driver|business_representative|delivery_representative)$/i };
-        } else if (roleLower === 'agent' || roleLower === 'agents') {
-            filter.$or = [
-                { userType: { $regex: /agent/i } },
-                { role: { $regex: /agent/i } },
-                { isAgent: true }
-            ];
-            delete filter.userType;
+            filter.userType = { $regex: /^(representative|driver)$/i };
         } else if (roleLower === 'admin' || roleLower === 'admins') {
             filter.$or = [
                 { isAdmin: true },
@@ -186,124 +174,65 @@ const getAllUser = asyncHandler(async (req, res) => {
         User.countDocuments(filter)
     ]);
 
-    const users = await Promise.all(
-        rawUsers.map(async (u) => {
-            const typeLower = (u.userType || '').toLowerCase();
-            const roleLower = (u.role || '').toLowerCase();
+    const users = rawUsers.map((u) => {
+        const typeLower = (u.userType || '').toLowerCase();
+        const roleLower = (u.role || '').toLowerCase();
 
-            const isAdmin = u.isAdmin === true || typeLower === 'admin' || roleLower === 'admin';
-            const isAdministration = typeLower === 'administration' || roleLower === 'administration';
-            const isAgent = typeLower.includes('agent') || roleLower.includes('agent') || u.isAgent === true;
-            const isRep = typeLower.includes('representative') || typeLower.includes('driver') || typeLower.includes('rep');
+        const isAdmin = u.isAdmin === true || typeLower === 'admin' || roleLower === 'admin';
+        const isAdministration = typeLower === 'administration' || roleLower === 'administration';
+        const isRep = typeLower.includes('representative') || typeLower.includes('driver') || typeLower.includes('rep');
 
-            // 1. Admin Users (Super Admin)
-            if (isAdmin) {
-                return {
-                    ...u,
-                    id: u._id ? u._id.toString() : u.id,
-                    userType: 'Admin',
-                    repCategory: 'admin',
-                    repTypeTitle: 'أدمن ⚙️',
-                    isBusinessRep: false,
-                    isBusinessRepresentative: false,
-                };
-            }
-
-            // 1.5. Administration Users (إدارة)
-            if (isAdministration) {
-                return {
-                    ...u,
-                    id: u._id ? u._id.toString() : u.id,
-                    userType: 'administration',
-                    repCategory: 'administration',
-                    repTypeTitle: 'إدارة 🏛️',
-                    isBusinessRep: false,
-                    isBusinessRepresentative: false,
-                };
-            }
-
-            // 2. Agent Users
-            if (isAgent) {
-                return {
-                    ...u,
-                    id: u._id ? u._id.toString() : u.id,
-                    userType: 'Agent',
-                    repCategory: 'agent',
-                    repTypeTitle: 'وكيل معتمد 👔',
-                    isBusinessRep: false,
-                    isBusinessRepresentative: false,
-                };
-            }
-
-            // 3. Representative Users
-            if (isRep) {
-                let isBusinessRep = false;
-
-                if (typeLower.includes('business')) {
-                    isBusinessRep = true;
-                } else if (typeLower.includes('delivery')) {
-                    isBusinessRep = false;
-                } else {
-                    const preferred = (u.preferredOrderTypes || []).map((t) => t.toLowerCase());
-                    if (preferred.includes('business') || preferred.includes('store')) {
-                        isBusinessRep = true;
-                    } else if (preferred.includes('delivery')) {
-                        isBusinessRep = false;
-                    } else {
-                        const hasStoreOrder = await StoreOrder.exists({
-                            $or: [
-                                { representativeId: u._id },
-                                { representativeId: u._id.toString() }
-                            ]
-                        });
-                        if (hasStoreOrder) {
-                            isBusinessRep = true;
-                        } else {
-                            const hasBusinessOrder = await Order.exists({
-                                $or: [
-                                    { representativeId: u._id },
-                                    { representativeId: u._id.toString() }
-                                ],
-                                $or: [
-                                    { isBusinessOrder: true },
-                                    { orderCategory: 'business' }
-                                ]
-                            });
-                            if (hasBusinessOrder) {
-                                isBusinessRep = true;
-                            }
-                        }
-                    }
-                }
-
-                const repCategory = isBusinessRep ? 'business' : 'delivery';
-                const finalUserType = isBusinessRep ? 'BusinessRepresentative' : 'DeliveryRepresentative';
-                const repTypeTitle = isBusinessRep ? 'مندوب بيزنيس 🏪' : 'مندوب توصيل 🚚';
-
-                return {
-                    ...u,
-                    id: u._id ? u._id.toString() : u.id,
-                    repCategory,
-                    isBusinessRep,
-                    isBusinessRepresentative: isBusinessRep,
-                    userType: finalUserType,
-                    repTypeTitle,
-                };
-            }
-
-            // 4. Normal Users / Clients
-            const rawType = (u.userType && u.userType.trim() !== '') ? u.userType.trim() : 'NormalUser';
+        // 1. Admin Users (Super Admin)
+        if (isAdmin) {
             return {
                 ...u,
                 id: u._id ? u._id.toString() : u.id,
-                repCategory: 'client',
+                userType: 'Admin',
+                repCategory: 'admin',
+                repTypeTitle: 'أدمن ⚙️',
                 isBusinessRep: false,
                 isBusinessRepresentative: false,
-                userType: rawType,
-                repTypeTitle: 'عميل 👤',
             };
-        })
-    );
+        }
+
+        // 1.5. Administration Users (إدارة)
+        if (isAdministration) {
+            return {
+                ...u,
+                id: u._id ? u._id.toString() : u.id,
+                userType: 'administration',
+                repCategory: 'administration',
+                repTypeTitle: 'إدارة 🏛️',
+                isBusinessRep: false,
+                isBusinessRepresentative: false,
+            };
+        }
+
+        // 2. Representative Users (Delivery)
+        if (isRep) {
+            return {
+                ...u,
+                id: u._id ? u._id.toString() : u.id,
+                repCategory: 'delivery',
+                isBusinessRep: false,
+                isBusinessRepresentative: false,
+                userType: 'Representative',
+                repTypeTitle: 'مندوب توصيل 🚚',
+            };
+        }
+
+        // 3. Normal Users / Clients
+        const rawType = (u.userType && u.userType.trim() !== '') ? u.userType.trim() : 'NormalUser';
+        return {
+            ...u,
+            id: u._id ? u._id.toString() : u.id,
+            repCategory: 'client',
+            isBusinessRep: false,
+            isBusinessRepresentative: false,
+            userType: rawType,
+            repTypeTitle: 'عميل 👤',
+        };
+    });
     const totalPages = Math.ceil(total / limit);
     res.setHeader('X-Total-Count', total);
 
@@ -448,41 +377,30 @@ const DeleteUserbyid = asyncHandler(async (req, res) => {
     if (user.email) await unbanIdentifier(user.email).catch(() => {});
 
         // Cascade delete all user-related data across all collections
+        // Cascade delete all user-related data across all collections
         await Promise.all([
-            // 1. Delete Products owned by the user (Agent)
-            Product.deleteMany({ $or: [{ agentId: userId }, { agentId: userId.toString() }] }),
-            
-            // 2. Delete Cart owned by the user
-            Cart.deleteMany({ $or: [{ userId: userId }, { userId: userId.toString() }] }),
-            
-            // 3. Delete Favorites owned by the user
-            Favorite.deleteMany({ $or: [{ userId: userId }, { userId: userId.toString() }] }),
-            
-            // 4. Delete Product Ratings made by the user
-            Rating.deleteMany({ $or: [{ userId: userId }, { userId: userId.toString() }] }),
-            
-            // 5. Delete UserRatings where user is rater or ratee
+            // 1. Delete UserRatings where user is rater or ratee
             UserRating.deleteMany({ $or: [{ raterId: userId }, { rateeId: userId }, { raterId: userId.toString() }, { rateeId: userId.toString() }] }),
             
-            // 6. Delete FCM Tokens
+            // 2. Delete FCM Tokens
             FcmToken.deleteMany({ $or: [{ userId: userId }, { userId: userId.toString() }] }),
             
-            // 7. Delete Chat Messages
+            // 3. Delete Chat Messages
             Message.deleteMany({ $or: [{ senderId: userId }, { receiverId: userId }, { senderId: userId.toString() }, { receiverId: userId.toString() }] }),
             
-            // 8. Delete Role Requests
+            // 4. Delete Role Requests
             RoleRequest.deleteMany({ $or: [{ user: userId }, { userId: userId }, { user: userId.toString() }] }),
             
-            // 9. Delete personal user discount
+            // 5. Delete personal user discount
             UserDiscount.deleteMany({ $or: [{ userId: userId }, { userId: userId.toString() }] }),
             
-            // 10. Remove user from used discount codes
+            // 6. Remove user from used discount codes
             DiscountCode.updateMany(
                 { usedByUserIds: { $in: [userId, userId.toString()] } },
                 { $pull: { usedByUserIds: { $in: [userId, userId.toString()] } } }
             ),
             
-            // 11. Delete normal Orders (rides/mashawer) where user is client or representative
+            // 7. Delete normal Orders (rides/mashawer) where user is client or representative
             Order.deleteMany({
                 $or: [
                     { clientId: userId },
@@ -493,22 +411,8 @@ const DeleteUserbyid = asyncHandler(async (req, res) => {
                     { userId: userId.toString() }
                 ]
             }),
-            
-            // 12. Delete StoreOrders where user is buyer, representative, or agent
-            StoreOrder.deleteMany({
-                $or: [
-                    { userId: userId },
-                    { userId: userId.toString() },
-                    { agentId: userId },
-                    { agentId: userId.toString() },
-                    { representativeId: userId },
-                    { representativeId: userId.toString() },
-                    { involvedAgents: userId },
-                    { involvedAgents: userId.toString() }
-                ]
-            }),
 
-            // 13. Finally, hard delete the user account
+            // 8. Finally, hard delete the user account
             User.findByIdAndDelete(userId)
         ]);
 
@@ -700,7 +604,7 @@ const updateVehicleInfo = asyncHandler(async (req, res) => {
                 typesArr = preferredOrderTypes.split(',').map(s => s.trim());
             }
         }
-        user.preferredOrderTypes = typesArr.filter(t => ['delivery', 'business'].includes(t.toLowerCase()));
+        user.preferredOrderTypes = ['delivery'];
     }
 
     if (req.file) {
@@ -812,7 +716,7 @@ const updateOnlineLocation = asyncHandler(async (req, res) => {
 const getOnlineRepresentatives = asyncHandler(async (req, res) => {
     // Match any representative/driver who is marked as available and has location data
     const users = await User.find({
-        userType: { $regex: /^(representative|driver|agent)$/i },
+        userType: { $regex: /^(representative|driver)$/i },
         isAvailable: true,
         'lastLocation.lat': { $exists: true, $ne: null },
     }).select('_id firstName lastName phone profileImage vehicleModel vehicleNumber vehicleColor lastLocation preferredOrderTypes');
@@ -887,10 +791,6 @@ const suspendUser = asyncHandler(async (req, res) => {
             adminId: req.user?.id || 'ADMIN'
         }).catch(() => {});
     }
-
-    // Hide all products owned by these users
-    const allSuspendedUserIds = [user._id, ...linkedUsers.map((u) => u._id)];
-    await Product.updateMany({ agentId: { $in: allSuspendedUserIds } }, { isActive: false });
 
     // Broadcast Socket.io notification to force logout all linked accounts and device sessions immediately
     const io = req.app.get('io');
@@ -981,9 +881,6 @@ const unsuspendUser = asyncHandler(async (req, res) => {
             if (lu.email) await unbanIdentifier(lu.email).catch(() => {});
         }
     }
-
-    // Restore all products owned by these users
-    await Product.updateMany({ agentId: user._id }, { isActive: true });
 
     return res.status(200).json({
         message: 'User account and all device-linked accounts have been activated',
@@ -1079,10 +976,6 @@ const blockUser = asyncHandler(async (req, res) => {
         }).catch(() => {});
     }
 
-    // Hide all products owned by these users
-    const allSuspendedUserIds = [user._id, ...linkedUsers.map((u) => u._id)];
-    await Product.updateMany({ agentId: { $in: allSuspendedUserIds } }, { isActive: false });
-
     // Broadcast Socket.io notification to force logout all linked accounts and device sessions immediately
     const io = req.app.get('io');
     if (io) {
@@ -1173,9 +1066,6 @@ const unblockUser = asyncHandler(async (req, res) => {
         }
     }
 
-    // Restore all products owned by this user
-    await Product.updateMany({ agentId: user._id }, { isActive: true });
-
     return res.status(200).json({
         message: 'User account and all device-linked accounts have been unblocked',
         userId: user._id,
@@ -1264,44 +1154,34 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
     }
 
     const { Order } = require('../middlewares/Order');
-    const { StoreOrder } = require('../middlewares/StoreOrder');
     const { getCachedRepCommission, calcRepEarnings } = require('../middlewares/RepCommission');
     const commissionCfg = await getCachedRepCommission().catch(() => ({ deliveryRepCommissionPct: 100, businessRepCommissionPct: 100 }));
 
     // Helper to normalize any raw numeric price to fils integer
-    function normalizeFils(val, isStore = false) {
+    function normalizeFils(val) {
         if (val == null || isNaN(val)) return 0;
         let num = Number(val);
         if (num <= 0) return 0;
-        if (isStore && num < 50 && num !== Math.round(num)) return Math.round(num * 1000);
         return Math.round(num);
     }
 
-    // Query both models (they share the unified 'orders' collection)
-    const [regularFilter, storeFilter] = [
-        { ...baseFilter, $or: [{ isBusinessOrder: false }, { orderCategory: 'delivery' }, { isBusinessOrder: { $exists: false } }] },
-        { ...baseFilter, $or: [{ isBusinessOrder: true }, { orderCategory: 'business' }] }
-    ];
+    const deliveryFilter = {
+        ...baseFilter,
+        isBusinessOrder: { $ne: true },
+        orderCategory: { $ne: 'business' }
+    };
 
     const [
-        regularOrdersRaw,
-        regularTotal,
-        storeOrdersRaw,
-        storeTotal,
-        allOrdersRaw,
-        allTotal
+        ordersRaw,
+        total
     ] = await Promise.all([
-        Order.find(regularFilter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
-        Order.countDocuments(regularFilter),
-        StoreOrder.find(storeFilter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
-        StoreOrder.countDocuments(storeFilter),
-        Order.find(baseFilter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
-        Order.countDocuments(baseFilter)
+        Order.find(deliveryFilter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+        Order.countDocuments(deliveryFilter)
     ]);
 
     // Gather all client user IDs for full client info population
     const clientUserIds = new Set();
-    [...regularOrdersRaw, ...storeOrdersRaw, ...allOrdersRaw].forEach(o => {
+    ordersRaw.forEach(o => {
         if (o.clientId) clientUserIds.add(o.clientId.toString());
         if (o.userId) clientUserIds.add(o.userId.toString());
     });
@@ -1338,15 +1218,14 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
     };
 
     const enrichOrderData = (orderDoc) => {
-        const isStore = orderDoc.isBusinessOrder === true || orderDoc.orderCategory === 'business';
         const cId = (orderDoc.clientId || orderDoc.userId || '').toString();
         const clientInfo = clientMap[cId] || orderDoc.userInfo || {};
 
-        const deliveryPriceFils = normalizeFils(orderDoc.totalDeliveryPrice ?? orderDoc.deliveryPrice, isStore);
-        const originalDeliveryPriceFils = normalizeFils(orderDoc.originalDeliveryPrice, isStore) || deliveryPriceFils;
-        const discountAmountFils = normalizeFils(orderDoc.discountAmount, isStore);
+        const deliveryPriceFils = normalizeFils(orderDoc.totalDeliveryPrice ?? orderDoc.deliveryPrice);
+        const originalDeliveryPriceFils = normalizeFils(orderDoc.originalDeliveryPrice) || deliveryPriceFils;
+        const discountAmountFils = normalizeFils(orderDoc.discountAmount);
 
-        let totalPriceFils = normalizeFils(orderDoc.totalPrice, isStore);
+        let totalPriceFils = normalizeFils(orderDoc.totalPrice);
         if (totalPriceFils === 0) {
             totalPriceFils = deliveryPriceFils;
         }
@@ -1356,9 +1235,7 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
         const discountAmountKD = Number((discountAmountFils / 1000).toFixed(3));
         const totalPriceKD = Number((totalPriceFils / 1000).toFixed(3));
 
-        const commissionPct = isStore 
-            ? (commissionCfg?.businessRepCommissionPct ?? 100)
-            : (commissionCfg?.deliveryRepCommissionPct ?? 100);
+        const commissionPct = commissionCfg?.deliveryRepCommissionPct ?? 100;
 
         const repEarningsKD = calcRepEarnings(deliveryPriceKD, commissionPct);
         const repEarningsFils = Math.round(repEarningsKD * 1000);
@@ -1386,76 +1263,19 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
             };
         });
 
-        let tasksFormatted = [];
-        if (isStore && itemsArr.length > 1 && tasksArr.length <= 1) {
-            tasksFormatted = itemsFormatted.map((item, idx) => {
-                const itemPickupLoc = item.pickupLocation || orderDoc.pickupLocation || {};
-                const itemDeliveryLoc = item.deliveryLocation || orderDoc.deliveryLocation || {};
-                const iP = item.pickupPhoto || item.pickupPhotoUrl || item.itemPhotoBefore || null;
-                const iD = item.deliveryPhoto || item.deliveryPhotoUrl || item.itemPhotoAfter || null;
-
-                const itemRawStatus = item.status || (orderDoc.status === 'delivered' ? 'delivered' : orderDoc.status);
-                let itemNormStatus = itemRawStatus || 'pending';
-                if (itemRawStatus === 'delivered' || itemRawStatus === 'completed') itemNormStatus = 'completed';
-                else if (itemRawStatus === 'cancelled') itemNormStatus = 'cancelled';
-                else if (['confirmed', 'processing', 'shipped', 'picked_up'].includes(itemRawStatus)) itemNormStatus = 'inprogress';
-
-                const isItemDelivered = item.status === 'delivered' || item.isDelivered === true || ['completed', 'delivered'].includes((orderDoc.status || '').toLowerCase());
-                const isItemPickedUp = item.isPickedUp === true || item.status === 'shipped' || isItemDelivered || ['shipped', 'delivered', 'completed'].includes((orderDoc.status || '').toLowerCase()) || !!iP;
-
-                return {
-                    taskId: idx + 1,
-                    originalSubOrderId: orderDoc._id ? orderDoc._id.toString() : null,
-                    storeOrderId: orderDoc.storeOrderId || orderDoc.orderId || null,
-                    taskStatus: itemNormStatus,
-                    status: itemNormStatus,
-                    isDelivered: isItemDelivered,
-                    isDelevered: isItemDelivered,
-                    isPickedUp: isItemPickedUp,
-                    pickedUp: isItemPickedUp,
-                    pickupLocation: {
-                        streetName: itemPickupLoc.address || orderDoc.associationName || orderDoc.agentName || 'موقع الاستلام',
-                        entranceNumber: '',
-                        phoneNumber: '',
-                    },
-                    deliveryLocation: {
-                        streetName: itemDeliveryLoc.address || 'موقع التسليم (العميل)',
-                        entranceNumber: '',
-                        phoneNumber: orderDoc.userInfo?.phone || '',
-                    },
-                    googleMapAddressFrom: itemPickupLoc.address || orderDoc.associationName || orderDoc.agentName || '',
-                    googleMapAddressTo: itemDeliveryLoc.address || '',
-                    fromLatitude: itemPickupLoc.lat || null,
-                    fromLongitude: itemPickupLoc.lng || null,
-                    toLatitude: itemDeliveryLoc.lat || null,
-                    toLongitude: itemDeliveryLoc.lng || null,
-                    type: 'delivery',
-                    deliveryDescription: `${item.name} (x${item.quantity || 1})`,
-                    itemPhotoBefore: iP,
-                    itemPhotoAfter: iD,
-                    pickupPhoto: iP,
-                    deliveryPhoto: iD,
-                    pickupPhotoUrl: iP,
-                    deliveryPhotoUrl: iD,
-                    purchaseItems: [{ name: item.name, quantity: item.quantity || 1, price: item.price || 0 }],
-                    items: [item],
-                };
-            });
-        } else {
-            tasksFormatted = tasksArr.map(t => {
-                const tP = buildPhotoUrl(t.itemPhotoBefore || t.pickupPhoto || t.pickupPhotoUrl) || (isSingleTask ? rootPickup : null);
-                const tD = buildPhotoUrl(t.itemPhotoAfter || t.deliveryPhoto || t.deliveryPhotoUrl || t.podPhoto || t.proofPhoto) || (isSingleTask ? rootDelivery : null);
-                return {
-                    ...t,
-                    itemPhotoBefore: tP,
-                    itemPhotoAfter: tD,
-                    pickupPhoto: tP,
-                    deliveryPhoto: tD,
-                    pickupPhotoUrl: tP,
-                    deliveryPhotoUrl: tD,
-                };
-            });
-        }
+        const tasksFormatted = tasksArr.map(t => {
+            const tP = buildPhotoUrl(t.itemPhotoBefore || t.pickupPhoto || t.pickupPhotoUrl) || (isSingleTask ? rootPickup : null);
+            const tD = buildPhotoUrl(t.itemPhotoAfter || t.deliveryPhoto || t.deliveryPhotoUrl || t.podPhoto || t.proofPhoto) || (isSingleTask ? rootDelivery : null);
+            return {
+                ...t,
+                itemPhotoBefore: tP,
+                itemPhotoAfter: tD,
+                pickupPhoto: tP,
+                deliveryPhoto: tD,
+                pickupPhotoUrl: tP,
+                deliveryPhotoUrl: tD,
+            };
+        });
 
         const pickupPhotoSet = new Set([rootPickup, ...tasksFormatted.map(t => t.pickupPhoto), ...itemsFormatted.map(i => i.pickupPhoto)].filter(Boolean));
         const deliveryPhotoSet = new Set([rootDelivery, ...tasksFormatted.map(t => t.deliveryPhoto), ...itemsFormatted.map(i => i.deliveryPhoto)].filter(Boolean));
@@ -1463,9 +1283,9 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
         return {
             ...orderDoc,
             id: orderDoc._id,
-            orderId: orderDoc.orderId || orderDoc.storeOrderId || null,
-            orderCategory: isStore ? 'business' : 'delivery',
-            isBusinessOrder: isStore,
+            orderId: orderDoc.orderId || null,
+            orderCategory: 'delivery',
+            isBusinessOrder: false,
             clientInfo: {
                 userId: cId,
                 name: clientInfo.name || `${orderDoc.userInfo?.firstName || ''} ${orderDoc.userInfo?.lastName || ''}`.trim() || 'عميل',
@@ -1504,11 +1324,11 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
             },
             totalPrice: totalPriceKD,
             totalPriceKD: totalPriceKD,
-            totalDeliveryPrice: isStore ? deliveryPriceFils : deliveryPriceKD,
+            totalDeliveryPrice: deliveryPriceKD,
             totalDeliveryPriceKD: deliveryPriceKD,
-            deliveryPrice: isStore ? deliveryPriceFils : deliveryPriceKD,
+            deliveryPrice: deliveryPriceKD,
             deliveryPriceKD: deliveryPriceKD,
-            repEarnings: isStore ? repEarningsFils : repEarningsKD,
+            repEarnings: repEarningsKD,
             repEarningsKD: repEarningsKD,
             repEarningsFils: repEarningsFils,
             vehicleDetails: {
@@ -1528,60 +1348,50 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
         };
     };
 
+    const regularOrdersRaw = ordersRaw;
+    const storeOrdersRaw   = [];
+    const allOrdersRaw     = ordersRaw;
+    const regularTotal     = total;
+    const storeTotal       = 0;
+    const allTotal         = total;
+
     const { enrichOrdersWithDeliveryPhotos } = require('./orderController');
     let regularOrdersEnriched = regularOrdersRaw.map(enrichOrderData);
-    let storeOrdersEnriched   = storeOrdersRaw.map(enrichOrderData);
-    let allOrdersEnriched     = allOrdersRaw.map(enrichOrderData);
+    let storeOrdersEnriched   = [];
+    let allOrdersEnriched     = regularOrdersEnriched;
 
     if (typeof enrichOrdersWithDeliveryPhotos === 'function') {
         regularOrdersEnriched = await enrichOrdersWithDeliveryPhotos(req, regularOrdersEnriched);
-        storeOrdersEnriched   = await enrichOrdersWithDeliveryPhotos(req, storeOrdersEnriched);
-        allOrdersEnriched     = await enrichOrdersWithDeliveryPhotos(req, allOrdersEnriched);
+        allOrdersEnriched     = regularOrdersEnriched;
     }
 
     // Compute comprehensive summary stats across all rep orders in period
-    const allRepOrdersForStats = await Order.find(baseFilter).select('status totalPrice totalDeliveryPrice deliveryPrice isBusinessOrder orderCategory').lean();
+    const allRepOrdersForStats = await Order.find(deliveryFilter).select('status totalPrice totalDeliveryPrice deliveryPrice').lean();
 
     let regCompletedCount = 0, regCompletedRevFils = 0, regCompletedProfitFils = 0, regCancelledCount = 0, regCancelledRevFils = 0, regActiveCount = 0;
-    let storeCompletedCount = 0, storeCompletedRevFils = 0, storeCompletedProfitFils = 0, storeCancelledCount = 0, storeCancelledRevFils = 0, storeActiveCount = 0;
 
     for (const o of allRepOrdersForStats) {
-        const isStore = o.isBusinessOrder === true || o.orderCategory === 'business';
         const status  = (o.status || '').toLowerCase();
 
-        const dPriceFils = normalizeFils(o.totalDeliveryPrice ?? o.deliveryPrice, isStore);
-        let tPriceFils = normalizeFils(o.totalPrice, isStore);
+        const dPriceFils = normalizeFils(o.totalDeliveryPrice ?? o.deliveryPrice);
+        let tPriceFils = normalizeFils(o.totalPrice);
         if (tPriceFils === 0) tPriceFils = dPriceFils;
 
-        const commPct = isStore
-            ? (commissionCfg?.businessRepCommissionPct ?? 100)
-            : (commissionCfg?.deliveryRepCommissionPct ?? 100);
+        const commPct = commissionCfg?.deliveryRepCommissionPct ?? 100;
 
         const dPriceKD = Number((dPriceFils / 1000).toFixed(3));
         const profitKD = calcRepEarnings(dPriceKD, commPct);
         const profitFils = Math.round(profitKD * 1000);
 
         if (['completed', 'delivered'].includes(status)) {
-            if (isStore) {
-                storeCompletedCount++;
-                storeCompletedRevFils += tPriceFils;
-                storeCompletedProfitFils += profitFils;
-            } else {
-                regCompletedCount++;
-                regCompletedRevFils += tPriceFils;
-                regCompletedProfitFils += profitFils;
-            }
+            regCompletedCount++;
+            regCompletedRevFils += tPriceFils;
+            regCompletedProfitFils += profitFils;
         } else if (['cancelled', 'canceled'].includes(status)) {
-            if (isStore) {
-                storeCancelledCount++;
-                storeCancelledRevFils += tPriceFils;
-            } else {
-                regCancelledCount++;
-                regCancelledRevFils += tPriceFils;
-            }
+            regCancelledCount++;
+            regCancelledRevFils += tPriceFils;
         } else {
-            if (isStore) storeActiveCount++;
-            else regActiveCount++;
+            regActiveCount++;
         }
     }
 
@@ -1589,13 +1399,9 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
     const regCompletedProfitKD = Number((regCompletedProfitFils / 1000).toFixed(3));
     const regCancelledRevKD = Number((regCancelledRevFils / 1000).toFixed(3));
 
-    const storeCompletedRevKD = Number((storeCompletedRevFils / 1000).toFixed(3));
-    const storeCompletedProfitKD = Number((storeCompletedProfitFils / 1000).toFixed(3));
-    const storeCancelledRevKD = Number((storeCancelledRevFils / 1000).toFixed(3));
-
-    const totalCompletedRevFils = regCompletedRevFils + storeCompletedRevFils;
-    const totalCompletedProfitFils = regCompletedProfitFils + storeCompletedProfitFils;
-    const totalCancelledRevFils = regCancelledRevFils + storeCancelledRevFils;
+    const totalCompletedRevFils = regCompletedRevFils;
+    const totalCompletedProfitFils = regCompletedProfitFils;
+    const totalCancelledRevFils = regCancelledRevFils;
 
     return res.status(200).json({
         representativeId:   repId,
@@ -1628,23 +1434,23 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
                 totalCount:           regCompletedCount + regCancelledCount + regActiveCount,
             },
             storeOrders: {
-                completedCount:       storeCompletedCount,
-                completedRevenue:     storeCompletedRevKD,
-                completedRevenueFils: storeCompletedRevFils,
-                completedRevenueText: getFilsAsText(storeCompletedRevFils),
-                completedProfit:      storeCompletedProfitKD,
-                completedProfitFils:  storeCompletedProfitFils,
-                completedProfitText:  getFilsAsText(storeCompletedProfitFils),
+                completedCount:       0,
+                completedRevenue:     0,
+                completedRevenueFils: 0,
+                completedRevenueText: '0 فلس',
+                completedProfit:      0,
+                completedProfitFils:  0,
+                completedProfitText:  '0 فلس',
 
-                cancelledCount:       storeCancelledCount,
-                cancelledRevenue:     storeCancelledRevKD,
-                cancelledRevenueFils: storeCancelledRevFils,
-                cancelledRevenueText: getFilsAsText(storeCancelledRevFils),
-                inProgressCount:      storeActiveCount,
-                totalCount:           storeCompletedCount + storeCancelledCount + storeActiveCount,
+                cancelledCount:       0,
+                cancelledRevenue:     0,
+                cancelledRevenueFils: 0,
+                cancelledRevenueText: '0 فلس',
+                inProgressCount:      0,
+                totalCount:           0,
             },
             total: {
-                completedCount:       regCompletedCount + storeCompletedCount,
+                completedCount:       regCompletedCount,
                 completedRevenue:     Number((totalCompletedRevFils / 1000).toFixed(3)),
                 completedRevenueFils: totalCompletedRevFils,
                 completedRevenueText: getFilsAsText(totalCompletedRevFils),
@@ -1652,11 +1458,11 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
                 completedProfitFils:  totalCompletedProfitFils,
                 completedProfitText:  getFilsAsText(totalCompletedProfitFils),
 
-                cancelledCount:       regCancelledCount + storeCancelledCount,
+                cancelledCount:       regCancelledCount,
                 cancelledRevenue:     Number((totalCancelledRevFils / 1000).toFixed(3)),
                 cancelledRevenueFils: totalCancelledRevFils,
                 cancelledRevenueText: getFilsAsText(totalCancelledRevFils),
-                inProgressCount:      regActiveCount + storeActiveCount,
+                inProgressCount:      regActiveCount,
                 totalCount:           allRepOrdersForStats.length,
             },
         },
@@ -1841,7 +1647,7 @@ const toggleVehicleEditPermission = asyncHandler(async (req, res) => {
 /**
  * @description Admin: Change user role / userType
  *   PATCH /api/users/:id/change-user-type
- *   Body: { userType: string }  ('NormalUser' | 'Representative' | 'Agent' | 'administration')
+ *   Body: { userType: string }  ('NormalUser' | 'Representative' | 'administration')
  *   Access: Admin only
  */
 const changeUserType = asyncHandler(async (req, res) => {
@@ -1858,9 +1664,9 @@ const changeUserType = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: 'لا يمكن الترقية إلى رتبة أدمن الأساسية من هذه الخاصية' });
     }
 
-    const validRoles = ['normaluser', 'client', 'representative', 'agent', 'administration'];
+    const validRoles = ['normaluser', 'client', 'representative', 'administration'];
     if (!validRoles.includes(typeLower)) {
-        return res.status(400).json({ message: 'نوع المستخدم غير صالح. الأنواع المتاحة: NormalUser, Representative, Agent, administration' });
+        return res.status(400).json({ message: 'نوع المستخدم غير صالح. الأنواع المتاحة: NormalUser, Representative, administration' });
     }
 
     const user = await User.findById(req.params.id);
@@ -1875,12 +1681,10 @@ const changeUserType = asyncHandler(async (req, res) => {
 
     let formattedUserType = 'NormalUser';
     if (typeLower === 'representative') formattedUserType = 'Representative';
-    else if (typeLower === 'agent') formattedUserType = 'Agent';
     else if (typeLower === 'administration') formattedUserType = 'administration';
 
     const updateFields = {
-        userType: formattedUserType,
-        isAgent: typeLower === 'agent'
+        userType: formattedUserType
     };
 
     const updatedUser = await User.findByIdAndUpdate(
