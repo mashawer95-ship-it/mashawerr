@@ -43,7 +43,7 @@ const VehicleTypeSchema = new mongoose.Schema(
         },
         category: {
             type: String,
-            enum: ['delivery', 'business', 'both'],
+            enum: ['delivery', 'passenger', 'business', 'both'],
             default: 'both',
         },
         isActive: {
@@ -77,7 +77,7 @@ function validateCreateVehicleType(object) {
         pricePerMeter: filsField('pricePerMeter').optional(),
         minFare: filsField('minFare').optional(),
         surgeMultiplier: joi.number().min(0).empty('').default(1).optional(),
-        category: joi.string().valid('delivery', 'business', 'both').empty('').default('both').optional(),
+        category: joi.string().valid('delivery', 'passenger', 'business', 'both').empty('').default('both').optional(),
         isActive: joi.boolean().empty('').default(true).optional(),
     });
     return schema.validate(object, { allowUnknown: true });
@@ -94,7 +94,7 @@ function validateUpdateVehicleType(object) {
         pricePerMeter: filsField('pricePerMeter').optional(),
         minFare: filsField('minFare').optional(),
         surgeMultiplier: joi.number().min(0).empty('').optional(),
-        category: joi.string().valid('delivery', 'business', 'both').empty('').optional(),
+        category: joi.string().valid('delivery', 'passenger', 'business', 'both').empty('').optional(),
         isActive: joi.boolean().empty('').optional(),
     }).min(1);
     return schema.validate(object, { allowUnknown: true });

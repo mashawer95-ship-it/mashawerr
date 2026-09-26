@@ -608,7 +608,10 @@ const updateVehicleInfo = asyncHandler(async (req, res) => {
                 typesArr = preferredOrderTypes.split(',').map(s => s.trim());
             }
         }
-        user.preferredOrderTypes = ['delivery'];
+        const cleanTypes = typesArr
+            .map(t => String(t).toLowerCase().trim())
+            .filter(t => ['delivery', 'passenger'].includes(t));
+        user.preferredOrderTypes = cleanTypes.length > 0 ? [cleanTypes[0]] : ['delivery'];
     }
 
     if (req.file) {

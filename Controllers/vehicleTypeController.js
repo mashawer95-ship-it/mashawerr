@@ -176,6 +176,10 @@ const getVehicleTypes = asyncHandler(async (req, res) => {
     // Optionally filter by isActive if requested, else return all
     const filter = {};
     if (req.query.active === 'true') filter.isActive = true;
+    if (req.query.category) {
+        const cat = String(req.query.category).toLowerCase().trim();
+        filter.category = { $in: [cat, 'both'] };
+    }
 
     const rawDbList = await VehicleType.find(filter).sort({ createdAt: -1 });
     const vehicleTypesList = rawDbList.map(vehicleTypeToResponse);

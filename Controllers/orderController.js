@@ -1756,15 +1756,23 @@ const listWaitingOrders = asyncHandler(async (req, res) => {
         }
     } catch (_) { }
 
-    // 1. If representative explicitly turned OFF delivery orders, return empty list
+    // 1. Filter orders strictly based on representative role/specialization:
+    // - Passenger delegate (مندوب توصيل أفراد): sees ONLY passenger orders
+    // - Delivery delegate (مندوب توصيل وشراء طلبات): sees ONLY delivery & purchase orders
+    let orderCategoryFilter = { $in: ['delivery', 'purchase', null] };
     if (repUser && Array.isArray(repUser.preferredOrderTypes) && repUser.preferredOrderTypes.length > 0) {
-        const hasDelivery = repUser.preferredOrderTypes.some(t => t.toLowerCase() === 'delivery');
-        if (!hasDelivery) {
-            return res.status(200).json({ succeeded: true, data: [], count: 0 });
+        const isPassenger = repUser.preferredOrderTypes.some(t => t && t.toString().toLowerCase().trim() === 'passenger');
+        if (isPassenger) {
+            orderCategoryFilter = 'passenger';
+        } else {
+            orderCategoryFilter = { $in: ['delivery', 'purchase', null] };
         }
     }
 
-    let orders = await Order.find({ status: 'waiting' }).sort({ orderId: -1 }).lean();
+    let orders = await Order.find({
+        status: 'waiting',
+        orderCategory: orderCategoryFilter
+    }).sort({ orderId: -1 }).lean();
 
     // 2. Filter orders by representative vehicle type if set
     if (repUser && (repUser.vehicleTypeId || repUser.vehicleTypeName)) {
@@ -1878,7 +1886,7 @@ const acceptOrder = asyncHandler(async (req, res) => {
     const repId = value.representativeId || req.user?.id;
     if (repId) {
         const { checkRepCanAcceptOrder } = require('../utils/orderAcceptanceGuard');
-        const guardResult = await checkRepCanAcceptOrder(repId);
+        const guardResult = await checkRepCanAcceptOrder(repId, order);
         if (!guardResult.canAccept) {
             return res.status(guardResult.statusCode || 403).json({
                 message: guardResult.message,
