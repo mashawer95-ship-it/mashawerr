@@ -43,7 +43,7 @@ const getAllWallets = asyncHandler(async (req, res) => {
     const page = Math.max(1, parseInt(req.query.page || '1', 10));
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '20', 10)));
     const skip = (page - 1) * limit;
-    const { search, minBalance, maxBalance, userType } = req.query;
+    const { search, minBalance, maxBalance, userType, governorate } = req.query;
 
     // 1. Build User query filter
     const userFilter = {};
@@ -64,6 +64,12 @@ const getAllWallets = asyncHandler(async (req, res) => {
                 userType: { $regex: typeClean, $options: 'i' },
             });
         }
+    }
+
+    if (governorate && governorate.trim() !== '') {
+        conditions.push({
+            governorate: { $regex: governorate.trim(), $options: 'i' },
+        });
     }
 
     if (search && search.trim() !== '') {
@@ -87,7 +93,7 @@ const getAllWallets = asyncHandler(async (req, res) => {
     // 2. Fetch Users matching filter
     const [users, totalUsers] = await Promise.all([
         User.find(userFilter)
-            .select('firstName lastName email phone userType profileImage createdAt')
+            .select('firstName lastName email phone userType profileImage createdAt governorate')
             .sort({ createdAt: -1 })
             .skip(skip)
             .limit(limit)
@@ -122,6 +128,7 @@ const getAllWallets = asyncHandler(async (req, res) => {
                 lastName: user.lastName || '',
                 email: user.email || '',
                 phone: user.phone || null,
+                governorate: user.governorate || '',
                 userType: user.isAdmin ? 'Admin' : (user.userType || 'NormalUser'),
                 profileImage: user.profileImage || null,
             },

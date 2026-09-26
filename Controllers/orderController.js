@@ -192,7 +192,7 @@ async function enrichOrdersWithClientData(req, formattedOrders) {
 
             if (objectIds.length > 0) {
                 const clients = await User.find({ _id: { $in: objectIds } })
-                    .select('firstName lastName phone profileImage')
+                    .select('firstName lastName phone profileImage governorate')
                     .lean();
 
                 for (const c of clients) {
@@ -200,6 +200,8 @@ async function enrichOrdersWithClientData(req, formattedOrders) {
                         clientName: `${c.firstName || ''} ${c.lastName || ''}`.trim() || null,
                         clientPhoneNumber: c.phone || null,
                         clientPhotoUrl: sanitizeImageUrl(buildUrl(req, c.profileImage)),
+                        governorate: c.governorate || null,
+                        clientGovernorate: c.governorate || null,
                     };
                 }
             }
@@ -213,12 +215,15 @@ async function enrichOrdersWithClientData(req, formattedOrders) {
 
             const clientPhoneNumber = cData.clientPhoneNumber || o.clientPhoneNumber || o.userInfo?.phone || o.customerPhone || null;
             const clientPhotoUrl = cData.clientPhotoUrl || o.clientPhotoUrl || (o.userInfo?.profileImage ? sanitizeImageUrl(buildUrl(req, o.userInfo.profileImage)) : null) || null;
+            const clientGov = cData.clientGovernorate || o.userInfo?.governorate || o.governorate || null;
 
             return {
                 ...o,
                 clientName,
                 clientPhoneNumber,
                 clientPhotoUrl,
+                clientGovernorate: clientGov,
+                governorate: clientGov,
             };
         });
     } catch (err) {
@@ -394,6 +399,7 @@ const listOrders = asyncHandler(async (req, res) => {
             address: joi.string().trim().optional().allow(''),
             orderStatus: joi.number().optional().allow(null), // 0=pending/waiting, 1=accepted/review, 2=cancelled, 3=completed
             orderType: joi.string().trim().optional().allow(''), // فلتر نوع الأوردر (delivery, store, etc.)
+            governorate: joi.string().trim().optional().allow(''), // فلتر المحافظة
             page: joi.number().integer().min(1).default(1),
             limit: joi.number().integer().min(1).max(100).default(20),
         })
@@ -469,6 +475,32 @@ const listOrders = asyncHandler(async (req, res) => {
             { 'tasks.pickupLocation.streetName': { $regex: value.address, $options: 'i' } },
             { 'tasks.deliveryLocation.streetName': { $regex: value.address, $options: 'i' } }
         ];
+    }
+
+    if (value.governorate && value.governorate.trim()) {
+        const govTerm = value.governorate.trim();
+        const matchingUsers = await User.find({
+            governorate: { $regex: new RegExp(govTerm, 'i') }
+        }).select('_id phone').lean();
+        const userIds = matchingUsers.map((u) => u._id.toString());
+        const userPhones = matchingUsers.map((u) => u.phone).filter(Boolean);
+        const govConditions = [
+            { clientId: { $in: userIds } },
+            { userId: { $in: userIds } },
+        ];
+        if (userPhones.length > 0) {
+            govConditions.push({ clientId: { $in: userPhones } });
+            govConditions.push({ userId: { $in: userPhones } });
+        }
+        if (filter.$or) {
+            filter.$and = [
+                { $or: filter.$or },
+                { $or: govConditions }
+            ];
+            delete filter.$or;
+        } else {
+            filter.$or = govConditions;
+        }
     }
 
     const pageNum = Math.max(1, parseInt(value.page || 1));

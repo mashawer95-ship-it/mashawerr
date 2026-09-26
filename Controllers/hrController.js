@@ -491,13 +491,18 @@ const getLiveTracking = expressAsyncHandler(async (req, res) => {
         if (cached) return res.json(cached);
     }
 
-    const reps = await User.find({
+    const filter = {
         $or: [
             { userType: { $regex: /representative|driver/i } },
             { vehicleNumber: { $ne: null } }
         ]
-    })
-        .select('firstName lastName email phone profileImage isAvailable lastLocation status vehicleNumber vehicleModel')
+    };
+    if (req.query.governorate && req.query.governorate.trim()) {
+        filter.governorate = { $regex: new RegExp(req.query.governorate.trim(), 'i') };
+    }
+
+    const reps = await User.find(filter)
+        .select('firstName lastName email phone profileImage isAvailable lastLocation status vehicleNumber vehicleModel governorate')
         .lean();
 
     const activeShifts = await Shift.find({ isActive: true }).lean();
@@ -610,6 +615,7 @@ const getLiveTracking = expressAsyncHandler(async (req, res) => {
                 isAvailable: rep.isAvailable,
                 vehicleNumber: rep.vehicleNumber,
                 vehicleModel: rep.vehicleModel,
+                governorate: rep.governorate || '',
             },
             appState: isOnline ? 'open' : 'closed',
             lastSeen: rawLastSeen,

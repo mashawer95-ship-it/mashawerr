@@ -166,6 +166,10 @@ const getAllUser = asyncHandler(async (req, res) => {
     if (req.query.isAvailable !== undefined) {
         filter.isAvailable = req.query.isAvailable === 'true';
     }
+    // Support governorate filter
+    if (req.query.governorate && req.query.governorate.trim()) {
+        filter.governorate = { $regex: new RegExp(req.query.governorate.trim(), 'i') };
+    }
 
     const page = Math.max(1, parseInt(req.query.page || 1));
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || 20)));
@@ -722,11 +726,16 @@ const updateOnlineLocation = asyncHandler(async (req, res) => {
  */
 const getOnlineRepresentatives = asyncHandler(async (req, res) => {
     // Match any representative/driver who is marked as available and has location data
-    const users = await User.find({
+    const filter = {
         userType: { $regex: /^(representative|driver)$/i },
         isAvailable: true,
         'lastLocation.lat': { $exists: true, $ne: null },
-    }).select('_id firstName lastName phone profileImage vehicleModel vehicleNumber vehicleColor lastLocation preferredOrderTypes');
+    };
+    if (req.query.governorate && req.query.governorate.trim()) {
+        filter.governorate = { $regex: new RegExp(req.query.governorate.trim(), 'i') };
+    }
+
+    const users = await User.find(filter).select('_id firstName lastName phone profileImage vehicleModel vehicleNumber vehicleColor lastLocation preferredOrderTypes governorate');
 
     res.status(200).json(users);
 });

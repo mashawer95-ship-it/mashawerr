@@ -54,9 +54,14 @@ const getAllRoleRequests = asyncHandler(async (req, res) => {
         filter.status = status;
     }
 
-    const requests = await RoleRequest.find(filter)
-        .populate('user', 'firstName lastName email profileImage userType')
+    let requests = await RoleRequest.find(filter)
+        .populate('user', 'firstName lastName email profileImage userType governorate phone')
         .sort({ createdAt: -1 });
+
+    if (req.query.governorate && req.query.governorate.trim()) {
+        const govLower = req.query.governorate.trim().toLowerCase();
+        requests = requests.filter(r => r.user && r.user.governorate && r.user.governorate.toLowerCase().includes(govLower));
+    }
 
     res.status(200).json(requests);
 });
