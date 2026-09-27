@@ -161,6 +161,7 @@ const OrderSchema = new mongoose.Schema(
         vehicleTypeId: { type: String, trim: true, default: null },
         vehicleName: { type: String, trim: true, default: null },
         vehicleTypeName: { type: String, trim: true, default: null },
+        is_ladies_only: { type: Boolean, default: false },
         orderType: { type: String, trim: true, default: null },
         orderCategory: {
             type: String,
@@ -375,6 +376,7 @@ function validateCreateOrder(object) {
         vehicleTypeId: joi.string().trim().allow(null, '').default(null),
         vehicleName: joi.string().trim().allow(null, '').default(null),
         vehicleTypeName: joi.string().trim().allow(null, '').default(null),
+        is_ladies_only: joi.boolean().allow(null).default(false),
         orderType: joi.string().trim().allow(null, '').default(null),
         orderCategory: joi.string().trim().valid('delivery', 'purchase', 'passenger').default('delivery'),
         paymentMethod: joi.string().trim().allow(null, '').default('cash'),

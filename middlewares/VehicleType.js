@@ -50,6 +50,10 @@ const VehicleTypeSchema = new mongoose.Schema(
             type: Boolean,
             default: true,
         },
+        is_ladies_only: {
+            type: Boolean,
+            default: false,
+        },
     },
     { versionKey: false, timestamps: true }
 );
@@ -79,6 +83,8 @@ function validateCreateVehicleType(object) {
         surgeMultiplier: joi.number().min(0).empty('').default(1).optional(),
         category: joi.string().valid('delivery', 'passenger', 'business', 'both').empty('').default('both').optional(),
         isActive: joi.boolean().empty('').default(true).optional(),
+        is_ladies_only: joi.boolean().empty('').default(false).optional(),
+        isLadiesOnly: joi.boolean().empty('').default(false).optional(),
     });
     return schema.validate(object, { allowUnknown: true });
 }
@@ -96,6 +102,8 @@ function validateUpdateVehicleType(object) {
         surgeMultiplier: joi.number().min(0).empty('').optional(),
         category: joi.string().valid('delivery', 'passenger', 'business', 'both').empty('').optional(),
         isActive: joi.boolean().empty('').optional(),
+        is_ladies_only: joi.boolean().empty('').optional(),
+        isLadiesOnly: joi.boolean().empty('').optional(),
     }).min(1);
     return schema.validate(object, { allowUnknown: true });
 }

@@ -253,16 +253,21 @@ async function enrichOrdersWithVehicleData(req, formattedOrders) {
         const vehicleTypes = await VehicleType.find({ _id: { $in: validObjectIds } }).lean();
         const vMap = {};
         for (const vt of vehicleTypes) {
-            vMap[vt._id.toString()] = vt.name_ar || vt.name_en || null;
+            vMap[vt._id.toString()] = {
+                name: vt.name_ar || vt.name_en || null,
+                is_ladies_only: Boolean(vt.is_ladies_only),
+            };
         }
 
         return formattedOrders.map((o) => {
-            if (o.vehicleTypeId && (!o.vehicleName || !o.vehicleTypeName) && vMap[o.vehicleTypeId]) {
-                const name = vMap[o.vehicleTypeId];
+            const vtInfo = o.vehicleTypeId ? vMap[o.vehicleTypeId] : null;
+            if (vtInfo) {
                 return {
                     ...o,
-                    vehicleName: o.vehicleName || name,
-                    vehicleTypeName: o.vehicleTypeName || name,
+                    vehicleName: o.vehicleName || vtInfo.name,
+                    vehicleTypeName: o.vehicleTypeName || vtInfo.name,
+                    is_ladies_only: o.is_ladies_only !== undefined ? o.is_ladies_only : vtInfo.is_ladies_only,
+                    isLadiesOnly: o.isLadiesOnly !== undefined ? o.isLadiesOnly : vtInfo.is_ladies_only,
                 };
             }
             return o;
@@ -336,6 +341,8 @@ function formatOrder(req, order, commissionCfg) {
         vehicleTypeId: order.vehicleTypeId || null,
         vehicleName: vName,
         vehicleTypeName: vName,
+        is_ladies_only: Boolean(order.is_ladies_only),
+        isLadiesOnly: Boolean(order.is_ladies_only),
         // ─── بيانات السعر والخصم ──────────────────────
         originalDeliveryPrice: hasDiscount && (order.originalDeliveryPrice ?? order.totalDeliveryPrice)
             ? Number(((order.originalDeliveryPrice ?? order.totalDeliveryPrice) / 1000).toFixed(3))
@@ -932,6 +939,38 @@ const createOrder = asyncHandler(async (req, res) => {
         }
     }
 
+    // ─── فحص مركبة السيدات فقط (Ladies Only Vehicle Guard) ───────────
+    let targetVehicleTypeDoc = null;
+    const { VehicleType } = require('../middlewares/VehicleType');
+    const mongoose = require('mongoose');
+
+    if (value.vehicleTypeId && mongoose.Types.ObjectId.isValid(value.vehicleTypeId)) {
+        targetVehicleTypeDoc = await VehicleType.findById(value.vehicleTypeId);
+    } else if (value.vehicleName || value.vehicleTypeName) {
+        const vName = (value.vehicleName || value.vehicleTypeName).trim();
+        targetVehicleTypeDoc = await VehicleType.findOne({
+            $or: [{ name_ar: vName }, { name_en: vName }],
+        });
+    }
+
+    if (targetVehicleTypeDoc && targetVehicleTypeDoc.is_ladies_only) {
+        let clientGender = req.fullUser?.gender;
+        if (!clientGender && value.clientId) {
+            const clientDoc = await User.findById(value.clientId).select('gender').lean();
+            clientGender = clientDoc?.gender;
+        }
+        const normalizedGender = String(clientGender || '').trim().toLowerCase();
+        const isFemale = ['female', 'أنثى', 'انثى'].includes(normalizedGender);
+
+        if (!isFemale) {
+            return res.status(403).json({
+                code: 'LADIES_ONLY_VEHICLE',
+                message: 'عذراً، هذه المركبة مخصصة حصرياً لرحلات السيدات لتوفير أقصى درجات الخصوصية والأمان. حسابك مسجل كـ (ذكر)، يرجى اختيار إحدى المركبات الأخرى المتاحة لخدمتكم بكل سرور.',
+                selectedVehicle: targetVehicleTypeDoc.name_ar,
+            });
+        }
+    }
+
     const amt = Number(value.discountAmount) || 0;
     const dtype = value.discountType ? String(value.discountType).trim() : '';
     if (amt > 0 && (dtype === 'percentage' || dtype === 'fixed') && value.discountCode) {
@@ -1176,6 +1215,7 @@ const createOrder = asyncHandler(async (req, res) => {
         vehicleTypeId: value.vehicleTypeId,
         vehicleName: resolvedVehicleName,
         vehicleTypeName: resolvedVehicleName,
+        is_ladies_only: Boolean(targetVehicleTypeDoc?.is_ladies_only),
         orderType: value.orderType || value.orderCategory || null,
         orderCategory: value.orderCategory || (value.orderType === 'passenger' ? 'passenger' : (value.orderType === 'purchase' ? 'purchase' : 'delivery')),
         governorate: orderGov,

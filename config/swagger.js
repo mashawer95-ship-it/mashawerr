@@ -68,6 +68,7 @@ const options = {
                         minFare: { type: 'number', description: 'Minimum fare in fils' },
                         minFare_name_ar: { type: 'string' },
                         isActive: { type: 'boolean' },
+                        is_ladies_only: { type: 'boolean', description: 'Exclusive to female users' },
                     }
                 },
                 RoleRequest: {

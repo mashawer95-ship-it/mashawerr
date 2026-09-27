@@ -30,12 +30,20 @@ function normalizeMeterPrice(value, defaultValue = 0) {
     return Number(n.toFixed(6));
 }
 
+function parseBoolean(val, defaultVal = false) {
+    if (val === undefined || val === null || val === '') return defaultVal;
+    if (typeof val === 'boolean') return val;
+    if (typeof val === 'string') return val.toLowerCase() === 'true' || val === '1';
+    return Boolean(val);
+}
+
 function vehicleTypeToResponse(vt) {
     const baseFare = Number((vt.baseFare || 0).toFixed(2));
     const pricePerMeter = Number((vt.pricePerMeter || 0).toFixed(6));
     const pricePerKm = Number((pricePerMeter * 1000).toFixed(2));
     const minFare = Number((vt.minFare || 0).toFixed(2));
     const iconKey = vt.icon_key || vt.iconKey || 'sedan';
+    const isLadiesOnly = Boolean(vt.is_ladies_only);
     
     return {
         _id: vt._id,
@@ -46,6 +54,8 @@ function vehicleTypeToResponse(vt) {
         iconKey: iconKey,
         category: vt.category || 'both',
         isActive: vt.isActive,
+        is_ladies_only: isLadiesOnly,
+        isLadiesOnly: isLadiesOnly,
         baseFare,
         baseFare_name_ar: `${baseFare} ج.م`,
         pricePerMeter,
@@ -85,7 +95,11 @@ const createVehicleType = asyncHandler(async (req, res) => {
         surgeMultiplier = 1,
         category = 'both',
         isActive = true,
+        is_ladies_only,
+        isLadiesOnly,
     } = value;
+
+    const ladiesOnlyVal = is_ladies_only !== undefined ? is_ladies_only : isLadiesOnly;
 
     const vehicleType = await VehicleType.create({
         name_ar,
@@ -98,6 +112,7 @@ const createVehicleType = asyncHandler(async (req, res) => {
         surgeMultiplier: surgeMultiplier !== undefined ? Number(surgeMultiplier) : 1,
         category: category || 'both',
         isActive: isActive !== undefined ? Boolean(isActive) : true,
+        is_ladies_only: parseBoolean(ladiesOnlyVal, false),
     });
 
     return res.status(201).json({
@@ -137,6 +152,8 @@ const updateVehicleType = asyncHandler(async (req, res) => {
         surgeMultiplier,
         category,
         isActive,
+        is_ladies_only,
+        isLadiesOnly,
     } = value;
 
     if (name_ar !== undefined) vehicleType.name_ar = name_ar;
@@ -149,6 +166,11 @@ const updateVehicleType = asyncHandler(async (req, res) => {
     if (surgeMultiplier !== undefined) vehicleType.surgeMultiplier = Number(surgeMultiplier);
     if (category !== undefined) vehicleType.category = category;
     if (isActive !== undefined) vehicleType.isActive = Boolean(isActive);
+    
+    const ladiesOnlyVal = is_ladies_only !== undefined ? is_ladies_only : isLadiesOnly;
+    if (ladiesOnlyVal !== undefined) {
+        vehicleType.is_ladies_only = parseBoolean(ladiesOnlyVal, vehicleType.is_ladies_only);
+    }
 
     await vehicleType.save();
 

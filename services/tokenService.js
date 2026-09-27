@@ -60,6 +60,7 @@ function generateAccessToken(user) {
         id:       String(user._id || user.id),
         isAdmin:  !!user.isAdmin,
         userType: user.userType || 'NormalUser',
+        gender:   user.gender || null,
     };
     return jwt.sign(payload, ACCESS_SECRET, { expiresIn: ACCESS_EXPIRES });
 }
