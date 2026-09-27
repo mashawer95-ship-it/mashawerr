@@ -10,22 +10,25 @@ const { User } = require('../middlewares/User');
 const createRoleRequest = asyncHandler(async (req, res) => {
     const { requestedRole, description, phone } = req.body;
 
-    if (!requestedRole || requestedRole !== 'Representative') {
-        return res.status(400).json({ message: 'requestedRole must be Representative' });
+    if (!requestedRole || !['Representative', 'Agent'].includes(requestedRole)) {
+        return res.status(400).json({ message: 'requestedRole must be Representative or Agent' });
     }
 
     if (!description || !phone) {
         return res.status(400).json({ message: 'description and phone are required' });
     }
 
-    // Check if user already has a pending request for the same role
+    // Check if user already has a pending request
     const existingRequest = await RoleRequest.findOne({
         user: req.user.id,
         status: 'pending'
     });
 
     if (existingRequest) {
-        return res.status(400).json({ message: 'You already have a pending role request.' });
+        const roleName = existingRequest.requestedRole === 'Agent' ? 'وكيل' : 'مندوب';
+        return res.status(400).json({
+            message: `لديك طلب انضمام معلق سابق كـ (${roleName}). يرجى انتظار مراجعة الإدارة.`
+        });
     }
 
     const roleRequest = await RoleRequest.create({
