@@ -569,13 +569,32 @@ const updateVehicleInfo = asyncHandler(async (req, res) => {
 
     const { vehicleNumber, vehicleColor, vehicleModel, vehicleTypeId, vehicleTypeName, preferredOrderTypes } = req.body;
 
-    // ─── حظر التعديل إذا كانت البيانات مسجلة ومكتملة مسبقاً والأدمن لم يفتح التعديل ────
+    // ─── حظر التعديل إذا كانت البيانات مسجلة ومكتملة مسبقاً أو التخصص محدد والأدمن لم يفتح التعديل ────
     const isAlreadyComplete = !!(user.vehicleNumber && user.vehicleColor && user.vehicleModel && user.vehicleImage && (user.vehicleTypeId || user.vehicleTypeName));
-    if (isAlreadyComplete && !user.canEditVehicleInfo) {
-        return res.status(400).json({
-            message: 'تم قفل تعديل بيانات المركبة من قبل الإدارة. يرجى التواصل مع الأدمن لفتح التعديل.',
-            code: 'VEHICLE_INFO_LOCKED'
-        });
+    const hasExistingSpecialization = Array.isArray(user.preferredOrderTypes) && user.preferredOrderTypes.length > 0;
+
+    if (!user.canEditVehicleInfo && !isAdmin) {
+        if (isAlreadyComplete) {
+            return res.status(400).json({
+                message: 'تم قفل تعديل بيانات المركبة وتخصص المندوب من قبل الإدارة. يرجى التواصل مع الأدمن لفتح التعديل.',
+                code: 'VEHICLE_INFO_LOCKED'
+            });
+        }
+        if (hasExistingSpecialization && preferredOrderTypes !== undefined) {
+            let incomingType = null;
+            if (Array.isArray(preferredOrderTypes) && preferredOrderTypes.length > 0) {
+                incomingType = String(preferredOrderTypes[0]).toLowerCase().trim();
+            } else if (typeof preferredOrderTypes === 'string') {
+                incomingType = preferredOrderTypes.toLowerCase().trim();
+            }
+            const currentType = String(user.preferredOrderTypes[0]).toLowerCase().trim();
+            if (incomingType && incomingType !== currentType) {
+                return res.status(400).json({
+                    message: 'تم اعتماد وقفل تخصص المندوب مسبقاً ولا يمكن تغييره إلا بعد قيام الأدمن بفتح التعديل من الإعدادات.',
+                    code: 'SPECIALIZATION_LOCKED'
+                });
+            }
+        }
     }
 
     if (vehicleNumber !== undefined) user.vehicleNumber = vehicleNumber?.trim() || null;
@@ -621,6 +640,11 @@ const updateVehicleInfo = asyncHandler(async (req, res) => {
     if (req.file) {
         // multer-storage-cloudinary stores the Cloudinary URL in req.file.path
         user.vehicleImage = req.file.path;
+    }
+
+    // بمجرد أن يحفظ المندوب بياناته، يتم قفل الاختيار والبيانات تلقائياً ولا يُفتح إلا من قبل الأدمن
+    if (!isAdmin) {
+        user.canEditVehicleInfo = false;
     }
 
     await user.save();
@@ -1171,7 +1195,7 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
 
     const { Order } = require('../middlewares/Order');
     const { getCachedRepCommission, calcRepEarnings } = require('../middlewares/RepCommission');
-    const commissionCfg = await getCachedRepCommission().catch(() => ({ deliveryRepCommissionPct: 100, businessRepCommissionPct: 100 }));
+    const commissionCfg = await getCachedRepCommission().catch(() => ({ deliveryRepCommissionPct: 100, passengerRepCommissionPct: 100, businessRepCommissionPct: 100 }));
 
     // Helper to normalize any raw numeric price to fils integer
     function normalizeFils(val) {
@@ -1251,7 +1275,10 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
         const discountAmountKD = Number((discountAmountFils / 1000).toFixed(3));
         const totalPriceKD = Number((totalPriceFils / 1000).toFixed(3));
 
-        const commissionPct = commissionCfg?.deliveryRepCommissionPct ?? 100;
+        const isPassenger = (orderDoc.orderCategory || '').toLowerCase().trim() === 'passenger';
+        const commissionPct = isPassenger
+            ? (commissionCfg?.passengerRepCommissionPct ?? 100)
+            : (commissionCfg?.deliveryRepCommissionPct ?? 100);
 
         const repEarningsKD = calcRepEarnings(deliveryPriceKD, commissionPct);
         const repEarningsFils = Math.round(repEarningsKD * 1000);
@@ -1393,7 +1420,10 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
         let tPriceFils = normalizeFils(o.totalPrice);
         if (tPriceFils === 0) tPriceFils = dPriceFils;
 
-        const commPct = commissionCfg?.deliveryRepCommissionPct ?? 100;
+        const isPassenger = (o.orderCategory || '').toLowerCase().trim() === 'passenger';
+        const commPct = isPassenger
+            ? (commissionCfg?.passengerRepCommissionPct ?? 100)
+            : (commissionCfg?.deliveryRepCommissionPct ?? 100);
 
         const dPriceKD = Number((dPriceFils / 1000).toFixed(3));
         const profitKD = calcRepEarnings(dPriceKD, commPct);
@@ -1616,18 +1646,39 @@ const getRepresentativeRatingsAdmin = asyncHandler(async (req, res) => {
  *   Access: Admin
  */
 const toggleVehicleEditPermission = asyncHandler(async (req, res) => {
-    const user = await User.findById(req.params.id).select('_id firstName lastName userType canEditVehicleInfo vehicleNumber vehicleModel');
+    const user = await User.findById(req.params.id).select('_id firstName lastName userType canEditVehicleInfo vehicleNumber vehicleModel preferredOrderTypes');
     if (!user) {
         return res.status(404).json({ message: 'User not found' });
     }
 
-    const { canEditVehicleInfo } = req.body;
+    const { canEditVehicleInfo, preferredOrderTypes } = req.body;
 
     if (typeof canEditVehicleInfo === 'boolean') {
         user.canEditVehicleInfo = canEditVehicleInfo;
-    } else {
-        // Toggle if not explicitly specified
+    } else if (preferredOrderTypes === undefined) {
+        // Toggle if not explicitly specified and no other fields provided
         user.canEditVehicleInfo = !user.canEditVehicleInfo;
+    }
+
+    if (preferredOrderTypes !== undefined) {
+        let typesArr = [];
+        if (Array.isArray(preferredOrderTypes)) {
+            typesArr = preferredOrderTypes;
+        } else if (typeof preferredOrderTypes === 'string') {
+            try {
+                const parsed = JSON.parse(preferredOrderTypes);
+                if (Array.isArray(parsed)) typesArr = parsed;
+                else typesArr = preferredOrderTypes.split(',').map(s => s.trim());
+            } catch (_) {
+                typesArr = preferredOrderTypes.split(',').map(s => s.trim());
+            }
+        }
+        const cleanTypes = typesArr
+            .map(t => String(t).toLowerCase().trim())
+            .filter(t => ['delivery', 'passenger'].includes(t));
+        if (cleanTypes.length > 0) {
+            user.preferredOrderTypes = [cleanTypes[0]];
+        }
     }
 
     await user.save();
@@ -1639,9 +1690,10 @@ const toggleVehicleEditPermission = asyncHandler(async (req, res) => {
             type: 'vehicle_edit_status_changed',
             userId: user._id,
             canEditVehicleInfo: user.canEditVehicleInfo,
+            preferredOrderTypes: user.preferredOrderTypes,
             message: user.canEditVehicleInfo
-                ? 'تم فتح إمكانية تعديل بيانات المركبة لك من قِبَل الأدمن'
-                : 'تم قفل تعديل بيانات المركبة من قِبَل الأدمن',
+                ? 'تم فتح إمكانية تعديل بيانات المركبة والتخصص لك من قِبَل الأدمن 🔓'
+                : 'تم قفل تعديل بيانات المركبة والتخصص من قِبَل الأدمن 🔒',
         };
         io.to(`user:${user._id}`).emit('vehicle_edit_status_changed', payload);
         if (io.of) {
@@ -1653,10 +1705,11 @@ const toggleVehicleEditPermission = asyncHandler(async (req, res) => {
 
     return res.status(200).json({
         message: user.canEditVehicleInfo
-            ? 'تم فتح إمكانية تعديل بيانات المركبة للمندوب بنجاح'
-            : 'تم قفل تعديل بيانات المركبة للمندوب بنجاح',
+            ? 'تم فتح إمكانية تعديل بيانات المركبة والتخصص للمندوب بنجاح'
+            : 'تم قفل تعديل بيانات المركبة والتخصص للمندوب بنجاح',
         userId: user._id,
         canEditVehicleInfo: user.canEditVehicleInfo,
+        preferredOrderTypes: user.preferredOrderTypes,
     });
 });
 

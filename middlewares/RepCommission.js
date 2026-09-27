@@ -8,8 +8,16 @@ const joi = require('joi');
 
 const RepCommissionConfigSchema = new mongoose.Schema(
     {
-        // نسبة مندوب التوصيل العادي (0-100)
+        // نسبة مندوب توصيل وشراء الطلبات (0-100)
         deliveryRepCommissionPct: {
+            type: Number,
+            required: true,
+            min: 0,
+            max: 100,
+            default: 100,
+        },
+        // نسبة مندوب توصيل الأفراد (0-100)
+        passengerRepCommissionPct: {
             type: Number,
             required: true,
             min: 0,
@@ -34,11 +42,14 @@ const RepCommissionConfig = mongoose.model('RepCommissionConfig', RepCommissionC
 
 async function getOrCreateRepCommission() {
     if (mongoose.connection.readyState !== 1) {
-        return { deliveryRepCommissionPct: 100, businessRepCommissionPct: 100 };
+        return { deliveryRepCommissionPct: 100, passengerRepCommissionPct: 100, businessRepCommissionPct: 100 };
     }
     let config = await RepCommissionConfig.findOne();
     if (!config) {
         config = await RepCommissionConfig.create({});
+    }
+    if (config.passengerRepCommissionPct === undefined) {
+        config.passengerRepCommissionPct = 100;
     }
     return config;
 }
@@ -76,6 +87,14 @@ function validateUpdateRepCommission(obj) {
                 .messages({
                     'number.min': 'deliveryRepCommissionPct cannot be negative',
                     'number.max': 'deliveryRepCommissionPct cannot exceed 100',
+                }),
+            passengerRepCommissionPct: joi
+                .number()
+                .min(0)
+                .max(100)
+                .messages({
+                    'number.min': 'passengerRepCommissionPct cannot be negative',
+                    'number.max': 'passengerRepCommissionPct cannot exceed 100',
                 }),
             businessRepCommissionPct: joi
                 .number()

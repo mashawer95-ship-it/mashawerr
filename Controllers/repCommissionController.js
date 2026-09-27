@@ -14,6 +14,7 @@ const getRepCommission = asyncHandler(async (req, res) => {
     const config = await getOrCreateRepCommission();
     return res.status(200).json({
         deliveryRepCommissionPct: config.deliveryRepCommissionPct,
+        passengerRepCommissionPct: config.passengerRepCommissionPct ?? 100,
         businessRepCommissionPct: config.businessRepCommissionPct,
         updatedAt: config.updatedAt,
     });
@@ -37,6 +38,9 @@ const updateRepCommission = asyncHandler(async (req, res) => {
     if (value.deliveryRepCommissionPct !== undefined) {
         config.deliveryRepCommissionPct = value.deliveryRepCommissionPct;
     }
+    if (value.passengerRepCommissionPct !== undefined) {
+        config.passengerRepCommissionPct = value.passengerRepCommissionPct;
+    }
     if (value.businessRepCommissionPct !== undefined) {
         config.businessRepCommissionPct = value.businessRepCommissionPct;
     }
@@ -49,6 +53,7 @@ const updateRepCommission = asyncHandler(async (req, res) => {
     return res.status(200).json({
         message: 'تم تحديث نسب عمولة المناديب بنجاح',
         deliveryRepCommissionPct: config.deliveryRepCommissionPct,
+        passengerRepCommissionPct: config.passengerRepCommissionPct,
         businessRepCommissionPct: config.businessRepCommissionPct,
         updatedAt: config.updatedAt,
     });

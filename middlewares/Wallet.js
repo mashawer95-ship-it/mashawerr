@@ -295,9 +295,12 @@ async function deductCompanyCommissionOnAccept({ order, repId, isBusiness = fals
     const { getCachedRepCommission } = require('./RepCommission');
     const commissionCfg = await getCachedRepCommission().catch(() => null);
 
+    const isPassenger = (order.orderCategory || '').toLowerCase().trim() === 'passenger';
     let repCommissionPct = 100;
     if (commissionCfg) {
-        repCommissionPct = commissionCfg.deliveryRepCommissionPct ?? 100;
+        repCommissionPct = isPassenger
+            ? (commissionCfg.passengerRepCommissionPct ?? 100)
+            : (commissionCfg.deliveryRepCommissionPct ?? 100);
     }
     repCommissionPct = Math.max(0, Math.min(100, Number(repCommissionPct)));
 
@@ -433,9 +436,12 @@ async function processOrderCompletionWallet(order) {
             const { getCachedRepCommission } = require('./RepCommission');
             const commissionCfg = await getCachedRepCommission().catch(() => null);
 
+            const isPassenger = (order.orderCategory || '').toLowerCase().trim() === 'passenger';
             let repCommissionPct = 100;
             if (commissionCfg) {
-                repCommissionPct = commissionCfg.deliveryRepCommissionPct ?? 100;
+                repCommissionPct = isPassenger
+                    ? (commissionCfg.passengerRepCommissionPct ?? 100)
+                    : (commissionCfg.deliveryRepCommissionPct ?? 100);
             }
             repCommissionPct = Math.max(0, Math.min(100, Number(repCommissionPct)));
 

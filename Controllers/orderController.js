@@ -317,8 +317,11 @@ function formatOrder(req, order, commissionCfg) {
     const vName = order.vehicleName || order.vehicleTypeName || null;
 
     const deliveryPriceKD = order.totalDeliveryPrice ? Number((order.totalDeliveryPrice / 1000).toFixed(3)) : 0;
+    const isPassengerOrder = (order.orderCategory || '').toLowerCase().trim() === 'passenger';
     const deliveryPct = commissionCfg?.deliveryRepCommissionPct ?? 100;
-    const repEarnings = calcRepEarnings(deliveryPriceKD, deliveryPct);
+    const passengerPct = commissionCfg?.passengerRepCommissionPct ?? 100;
+    const activePct = isPassengerOrder ? passengerPct : deliveryPct;
+    const repEarnings = calcRepEarnings(deliveryPriceKD, activePct);
 
     const rootPickupRaw = order.pickupPhoto || order.pickupPhotoUrl || order.itemPhotoBefore || (tasksWithIds[0] ? (tasksWithIds[0].itemPhotoBefore || tasksWithIds[0].pickupPhoto) : null);
     const rootDeliveryRaw = order.deliveryPhoto || order.deliveryPhotoUrl || order.itemPhotoAfter || order.podPhoto || order.proofPhoto || (tasksWithIds[0] ? (tasksWithIds[0].itemPhotoAfter || tasksWithIds[0].deliveryPhoto) : null);
@@ -344,7 +347,9 @@ function formatOrder(req, order, commissionCfg) {
         discountType: order.discountType || null,
         // ─── أرباح المندوب (نسبة من سعر التوصيل) ──────
         repEarnings,
+        repCommissionPct: activePct,
         deliveryRepCommissionPct: deliveryPct,
+        passengerRepCommissionPct: passengerPct,
         // ──────────────────────────────────────────────────────────────────────────────────
         totalPrice: order.totalPrice != null
             ? Number((order.totalPrice > 100 ? order.totalPrice / 1000 : order.totalPrice).toFixed(3))
@@ -2641,10 +2646,12 @@ const getAdminOrderFinancialStats = asyncHandler(async (req, res) => {
 
     const commissionCfg = await getCachedRepCommission().catch(() => ({
         deliveryRepCommissionPct: 100,
+        passengerRepCommissionPct: 100,
         businessRepCommissionPct: 100,
     }));
 
     const deliveryRepCommissionPct = commissionCfg?.deliveryRepCommissionPct ?? 100;
+    const passengerRepCommissionPct = commissionCfg?.passengerRepCommissionPct ?? 100;
     const businessRepCommissionPct = commissionCfg?.businessRepCommissionPct ?? 100;
 
     // Single-pass high performance MongoDB Aggregation Facet pipeline
@@ -2706,6 +2713,18 @@ const getAdminOrderFinancialStats = asyncHandler(async (req, res) => {
         {
             $facet: {
                 delivery: [
+                    { $match: { orderCategory: { $in: ['delivery', 'purchase', null] } } },
+                    {
+                        $group: {
+                            _id: null,
+                            completedOrdersCount: { $sum: 1 },
+                            totalOrdersAmountFils: { $sum: '$totalPriceFils' },
+                            totalDeliveryFeesFils: { $sum: '$deliveryPriceFils' }
+                        }
+                    }
+                ],
+                passenger: [
+                    { $match: { orderCategory: 'passenger' } },
                     {
                         $group: {
                             _id: null,
@@ -2721,6 +2740,7 @@ const getAdminOrderFinancialStats = asyncHandler(async (req, res) => {
 
     const facetData = aggResult[0] || {};
     const deliveryRaw = (facetData.delivery && facetData.delivery[0]) || { completedOrdersCount: 0, totalOrdersAmountFils: 0, totalDeliveryFeesFils: 0 };
+    const passengerRaw = (facetData.passenger && facetData.passenger[0]) || { completedOrdersCount: 0, totalOrdersAmountFils: 0, totalDeliveryFeesFils: 0 };
 
     // ── Delivery Breakdown ──
     const delCount = deliveryRaw.completedOrdersCount || 0;
@@ -2738,6 +2758,22 @@ const getAdminOrderFinancialStats = asyncHandler(async (req, res) => {
         companyNetProfit: formatFinancialAmount(delCompanyNetProfitFils),
     };
 
+    // ── Passenger Breakdown ──
+    const passCount = passengerRaw.completedOrdersCount || 0;
+    const passOrdersAmountFils = passengerRaw.totalOrdersAmountFils || 0;
+    const passDeliveryFeesFils = passengerRaw.totalDeliveryFeesFils || 0;
+    const passDriversShareFils = Math.round((passDeliveryFeesFils * passengerRepCommissionPct) / 100);
+    const passCompanyNetProfitFils = passDeliveryFeesFils - passDriversShareFils;
+
+    const passengerFormatted = {
+        completedOrdersCount: passCount,
+        commissionPct: passengerRepCommissionPct,
+        totalOrdersAmount: formatFinancialAmount(passOrdersAmountFils),
+        totalDeliveryFees: formatFinancialAmount(passDeliveryFeesFils),
+        driversShare: formatFinancialAmount(passDriversShareFils),
+        companyNetProfit: formatFinancialAmount(passCompanyNetProfitFils),
+    };
+
     const businessFormatted = {
         completedOrdersCount: 0,
         commissionPct: deliveryRepCommissionPct,
@@ -2747,12 +2783,18 @@ const getAdminOrderFinancialStats = asyncHandler(async (req, res) => {
         companyNetProfit: formatFinancialAmount(0),
     };
 
+    const totalOrdersCount = delCount + passCount;
+    const totalOrdersAmountFils = delOrdersAmountFils + passOrdersAmountFils;
+    const totalDeliveryFeesFils = delDeliveryFeesFils + passDeliveryFeesFils;
+    const totalDriversShareFils = delDriversShareFils + passDriversShareFils;
+    const totalCompanyNetProfitFils = delCompanyNetProfitFils + passCompanyNetProfitFils;
+
     const totalFormatted = {
-        totalCompletedOrdersCount: delCount,
-        totalOrdersAmount: formatFinancialAmount(delOrdersAmountFils),
-        totalDeliveryFees: formatFinancialAmount(delDeliveryFeesFils),
-        totalDriversShare: formatFinancialAmount(delDriversShareFils),
-        totalCompanyNetProfit: formatFinancialAmount(delCompanyNetProfitFils),
+        totalCompletedOrdersCount: totalOrdersCount,
+        totalOrdersAmount: formatFinancialAmount(totalOrdersAmountFils),
+        totalDeliveryFees: formatFinancialAmount(totalDeliveryFeesFils),
+        totalDriversShare: formatFinancialAmount(totalDriversShareFils),
+        totalCompanyNetProfit: formatFinancialAmount(totalCompanyNetProfitFils),
     };
 
     return res.status(200).json({
@@ -2763,10 +2805,11 @@ const getAdminOrderFinancialStats = asyncHandler(async (req, res) => {
             endDate: endDate || null,
             month: isNaN(month) ? null : month,
             year: isNaN(year) ? null : year,
-            orderCategory: 'delivery',
             deliveryRepCommissionPct,
+            passengerRepCommissionPct,
         },
         delivery: deliveryFormatted,
+        passenger: passengerFormatted,
         business: businessFormatted,
         total: totalFormatted,
     });
