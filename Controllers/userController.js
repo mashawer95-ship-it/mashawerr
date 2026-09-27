@@ -569,31 +569,21 @@ const updateVehicleInfo = asyncHandler(async (req, res) => {
 
     const { vehicleNumber, vehicleColor, vehicleModel, vehicleTypeId, vehicleTypeName, preferredOrderTypes } = req.body;
 
-    // ─── حظر التعديل إذا كانت البيانات مسجلة ومكتملة مسبقاً أو التخصص محدد والأدمن لم يفتح التعديل ────
-    const isAlreadyComplete = !!(user.vehicleNumber && user.vehicleColor && user.vehicleModel && user.vehicleImage && (user.vehicleTypeId || user.vehicleTypeName));
-    const hasExistingSpecialization = Array.isArray(user.preferredOrderTypes) && user.preferredOrderTypes.length > 0;
+    // ─── حظر التعديل إذا كانت البيانات مسجلة ومكتملة مسبقاً والأدمن لم يفتح التعديل ────
+    const isAlreadyComplete = !!(
+        user.vehicleNumber &&
+        user.vehicleColor &&
+        user.vehicleModel &&
+        user.vehicleImage &&
+        (user.vehicleTypeId || user.vehicleTypeName)
+    );
 
     if (!user.canEditVehicleInfo && !isAdmin) {
         if (isAlreadyComplete) {
             return res.status(400).json({
-                message: 'تم قفل تعديل بيانات المركبة وتخصص المندوب من قبل الإدارة. يرجى التواصل مع الأدمن لفتح التعديل.',
+                message: 'تم اعتماد وقفل بيانات المركبة وتخصص المندوب مسبقاً ولا يمكن التعديل إلا بعد قيام الأدمن بفتح التعديل من الإعدادات.',
                 code: 'VEHICLE_INFO_LOCKED'
             });
-        }
-        if (hasExistingSpecialization && preferredOrderTypes !== undefined) {
-            let incomingType = null;
-            if (Array.isArray(preferredOrderTypes) && preferredOrderTypes.length > 0) {
-                incomingType = String(preferredOrderTypes[0]).toLowerCase().trim();
-            } else if (typeof preferredOrderTypes === 'string') {
-                incomingType = preferredOrderTypes.toLowerCase().trim();
-            }
-            const currentType = String(user.preferredOrderTypes[0]).toLowerCase().trim();
-            if (incomingType && incomingType !== currentType) {
-                return res.status(400).json({
-                    message: 'تم اعتماد وقفل تخصص المندوب مسبقاً ولا يمكن تغييره إلا بعد قيام الأدمن بفتح التعديل من الإعدادات.',
-                    code: 'SPECIALIZATION_LOCKED'
-                });
-            }
         }
     }
 
