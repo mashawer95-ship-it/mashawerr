@@ -78,7 +78,19 @@ const updateUser = asyncHandler(async (req, res) => {
 
     // Allow owner or Admin to modify governorate & gender
     if (isOwner || isAdmin) {
-        if (req.body.governorate !== undefined) updateData.governorate = req.body.governorate ? String(req.body.governorate).trim() : null;
+        if (req.body.governorate !== undefined) {
+            const isRep = targetUser.userType === 'representative' || ['representative'].includes(String(targetUser.userType).toLowerCase());
+            if (isRep && !isAdmin) {
+                const hasExistingGov = targetUser.governorate && targetUser.governorate.trim().length > 0;
+                if (hasExistingGov && !targetUser.canEditVehicleInfo) {
+                    return res.status(400).json({
+                        message: 'تم قفل تعديل المحافظة للمندوب. لا يمكن تعديلها إلا بعد قيام الأدمن بفتح التعديل من الإعدادات 🔒',
+                        code: 'GOVERNORATE_LOCKED'
+                    });
+                }
+            }
+            updateData.governorate = req.body.governorate ? String(req.body.governorate).trim() : null;
+        }
         if (req.body.gender !== undefined) updateData.gender = req.body.gender ? String(req.body.gender).trim() : null;
     }
 
@@ -1692,8 +1704,8 @@ const toggleVehicleEditPermission = asyncHandler(async (req, res) => {
             canEditVehicleInfo: user.canEditVehicleInfo,
             preferredOrderTypes: user.preferredOrderTypes,
             message: user.canEditVehicleInfo
-                ? 'تم فتح إمكانية تعديل بيانات المركبة والتخصص لك من قِبَل الأدمن 🔓'
-                : 'تم قفل تعديل بيانات المركبة والتخصص من قِبَل الأدمن 🔒',
+                ? 'تم فتح إمكانية تعديل بيانات المركبة والمحافظة والتخصص لك من قِبَل الأدمن 🔓'
+                : 'تم قفل تعديل بيانات المركبة والمحافظة والتخصص من قِبَل الأدمن 🔒',
         };
         io.to(`user:${user._id}`).emit('vehicle_edit_status_changed', payload);
         if (io.of) {
@@ -1705,8 +1717,8 @@ const toggleVehicleEditPermission = asyncHandler(async (req, res) => {
 
     return res.status(200).json({
         message: user.canEditVehicleInfo
-            ? 'تم فتح إمكانية تعديل بيانات المركبة والتخصص للمندوب بنجاح'
-            : 'تم قفل تعديل بيانات المركبة والتخصص للمندوب بنجاح',
+            ? 'تم فتح إمكانية تعديل بيانات المركبة والمحافظة والتخصص للمندوب بنجاح 🔓'
+            : 'تم قفل تعديل بيانات المركبة والمحافظة والتخصص للمندوب بنجاح 🔒',
         userId: user._id,
         canEditVehicleInfo: user.canEditVehicleInfo,
         preferredOrderTypes: user.preferredOrderTypes,
@@ -1972,16 +1984,26 @@ const updateUserGovernorate = asyncHandler(async (req, res) => {
         return res.status(403).json({ message: 'غير مصرح لك بتعديل بيانات هذا المستخدم' });
     }
 
-    const cleanGov = governorate.trim();
-    const user = await User.findByIdAndUpdate(
-        req.params.id,
-        { $set: { governorate: cleanGov } },
-        { new: true }
-    ).select('_id firstName lastName governorate userType');
-
+    const user = await User.findById(req.params.id);
     if (!user) {
         return res.status(404).json({ message: 'المستخدم غير موجود' });
     }
+
+    // ── حظر تعديل المحافظة للمندوب إذا كانت مسجلة مسبقاً والأدمن لم يفتح التعديل ──
+    const isRep = user.userType === 'representative' || ['representative'].includes(String(user.userType).toLowerCase());
+    if (isRep && !isAdmin) {
+        const hasExistingGov = user.governorate && user.governorate.trim().length > 0;
+        if (hasExistingGov && !user.canEditVehicleInfo) {
+            return res.status(400).json({
+                message: 'تم قفل تعديل المحافظة للمندوب. لا يمكن تعديلها إلا بعد قيام الأدمن بفتح التعديل من الإعدادات 🔒',
+                code: 'GOVERNORATE_LOCKED'
+            });
+        }
+    }
+
+    const cleanGov = governorate.trim();
+    user.governorate = cleanGov;
+    await user.save();
 
     return res.status(200).json({
         message: 'تم تحديث محافظة العمل بنجاح 📍',
