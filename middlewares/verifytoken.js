@@ -115,11 +115,15 @@ const protect = authenticate;
  */
 function verifyTokenAndAdmin(req, res, next) {
     authenticate(req, res, () => {
-        const isAdmin = req.user?.isAdmin || req.fullUser?.isAdmin;
+        const userType = (req.fullUser?.userType || req.user?.userType || '').toString().trim().toLowerCase();
+        const isAdmin = req.user?.isAdmin === true ||
+                        req.fullUser?.isAdmin === true ||
+                        userType === 'admin' ||
+                        userType === 'administration';
         if (isAdmin) return next();
         return res.status(403).json({
             code:    'FORBIDDEN',
-            message: 'Access denied. Admin role required.',
+            message: 'عذراً، هذا الإجراء مخصص لمدير النظام (الأدمن) فقط.',
         });
     });
 }
