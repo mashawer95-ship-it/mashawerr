@@ -168,6 +168,7 @@ const OrderSchema = new mongoose.Schema(
             default: 'delivery',
             trim: true,
         },
+        governorate: { type: String, trim: true, default: null, index: true },
         paymentMethod: { type: String, trim: true, default: 'cash' },
         representativeWillPay: { type: Boolean, default: false },
         representativePaymentAmount: { type: Number, default: 0 },

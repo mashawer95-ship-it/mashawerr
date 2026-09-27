@@ -1155,6 +1155,14 @@ const createOrder = asyncHandler(async (req, res) => {
         resolvedVehicleName = pricing.name_ar || pricing.name_en || null;
     }
 
+    let orderGov = value.governorate || req.body.governorate || null;
+    if (!orderGov && value.clientId) {
+        try {
+            const cDoc = await User.findById(value.clientId).select('governorate').lean();
+            orderGov = cDoc?.governorate || null;
+        } catch (_) {}
+    }
+
     const order = new Order({
         clientId: value.clientId,
         originalDeliveryPrice: value.originalDeliveryPrice,
@@ -1170,6 +1178,7 @@ const createOrder = asyncHandler(async (req, res) => {
         vehicleTypeName: resolvedVehicleName,
         orderType: value.orderType || value.orderCategory || null,
         orderCategory: value.orderCategory || (value.orderType === 'passenger' ? 'passenger' : (value.orderType === 'purchase' ? 'purchase' : 'delivery')),
+        governorate: orderGov,
         paymentMethod: value.paymentMethod || 'cash',
         representativeWillPay: Boolean(value.representativeWillPay),
         representativePaymentAmount: Number(value.representativePaymentAmount) || 0,
@@ -1776,6 +1785,23 @@ function calculateOrderTripDistance(order) {
 const jwt = require('jsonwebtoken');
 
 /**
+ * Helper to normalize Egyptian governorate names for accurate comparison
+ */
+function normalizeGovernorate(gov) {
+    if (!gov || typeof gov !== 'string') return '';
+    return gov
+        .trim()
+        .toLowerCase()
+        .replace(/محافظ[ةه]\s*/g, '')
+        .replace(/[أإآ]/g, 'ا')
+        .replace(/ة/g, 'ه')
+        .replace(/ى/g, 'ي')
+        .replace(/[\u064B-\u065F]/g, '')
+        .replace(/\s+/g, '')
+        .trim();
+}
+
+/**
  * @description List all waiting orders (for representative dashboard)
  * @route GET /api/orders/waiting
  * @access Public (representative)
@@ -1789,7 +1815,7 @@ const listWaitingOrders = asyncHandler(async (req, res) => {
         const token = req.user?.id ? null : (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.substring(7) : req.headers.token);
         const userId = req.user?.id || (token ? jwt.verify(token, process.env.JWT_SECRET)?.id : null);
         if (userId) {
-            repUser = await User.findById(userId).select('vehicleTypeId vehicleTypeName preferredOrderTypes').lean();
+            repUser = await User.findById(userId).select('vehicleTypeId vehicleTypeName preferredOrderTypes governorate').lean();
         }
     } catch (_) { }
 
@@ -1811,7 +1837,42 @@ const listWaitingOrders = asyncHandler(async (req, res) => {
         orderCategory: orderCategoryFilter
     }).sort({ orderId: -1 }).lean();
 
-    // 2. Filter orders by representative vehicle type if set
+    // 2. Filter orders strictly by representative governorate (المحافظة):
+    // إذا كان المندوب محدد له محافظة، تظهر له فقط طلبات محافظته
+    const queryGov = req.query.governorate ? String(req.query.governorate).trim() : null;
+    const repGov = queryGov || repUser?.governorate || null;
+
+    if (repGov && repGov.trim()) {
+        const normRepGov = normalizeGovernorate(repGov);
+
+        // جلب محافظات العملاء لأصحاب الطلبات المعلقة لمقارنتها بدقة
+        const clientIds = [...new Set(orders.map(o => o.clientId).filter(Boolean))];
+        const clients = clientIds.length > 0
+            ? await User.find({ _id: { $in: clientIds } }).select('_id governorate').lean()
+            : [];
+        const clientGovMap = {};
+        for (const c of clients) {
+            if (c && c._id) clientGovMap[c._id.toString()] = c.governorate || '';
+        }
+
+        orders = orders.filter(o => {
+            const orderGov = o.governorate || '';
+            const clientGov = clientGovMap[o.clientId?.toString()] || '';
+            const addresses = (o.tasks || []).map(t => `${t.googleMapAddressFrom || ''} ${t.googleMapAddressTo || ''}`).join(' ');
+
+            const normOrderGov = normalizeGovernorate(orderGov);
+            const normClientGov = normalizeGovernorate(clientGov);
+            const normAddresses = normalizeGovernorate(addresses);
+
+            const matchesOrderGov = normOrderGov && (normOrderGov.includes(normRepGov) || normRepGov.includes(normOrderGov));
+            const matchesClientGov = normClientGov && (normClientGov.includes(normRepGov) || normRepGov.includes(normClientGov));
+            const matchesAddress = normAddresses && normAddresses.includes(normRepGov);
+
+            return matchesOrderGov || matchesClientGov || matchesAddress;
+        });
+    }
+
+    // 3. Filter orders by representative vehicle type if set
     if (repUser && (repUser.vehicleTypeId || repUser.vehicleTypeName)) {
         const driverVtIdStr = repUser.vehicleTypeId ? repUser.vehicleTypeId.toString() : null;
         const driverVtName = (repUser.vehicleTypeName || '').toLowerCase().trim();
@@ -1833,7 +1894,8 @@ const listWaitingOrders = asyncHandler(async (req, res) => {
         });
     }
 
-    // Apply progressive filtering and distanceToPickup calculation if lat and lng are provided
+    // 4. Apply progressive filtering and distanceToPickup calculation if lat and lng are provided
+    // الفلو: 5 كم ثم 10 كم ثم 15 كم فقط — غير كدا لا تظهر أي طلبات
     if (lat && lng) {
         const userLat = parseFloat(lat);
         const userLng = parseFloat(lng);
@@ -1849,8 +1911,8 @@ const listWaitingOrders = asyncHandler(async (req, res) => {
             return { ...order, distanceToPickup };
         });
 
-        // Try progressive radius: 5km, 7km, 10km, 15km
-        const radii = [5, 7, 10, 15];
+        // Try progressive radius: 5km, 10km, 15km
+        const radii = [5, 10, 15];
         let filteredOrders = [];
 
         for (const radius of radii) {
@@ -1864,7 +1926,8 @@ const listWaitingOrders = asyncHandler(async (req, res) => {
             filteredOrders.sort((a, b) => (a.distanceToPickup || 9999) - (b.distanceToPickup || 9999));
             orders = filteredOrders;
         } else {
-            orders = ordersWithDistance;
+            // لا تظهر أي طلبات خارج نطاق الـ 15 كم
+            orders = [];
         }
     }
 

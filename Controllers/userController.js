@@ -76,10 +76,14 @@ const updateUser = asyncHandler(async (req, res) => {
     }
     if (req.body.phone) updateData.phone = req.body.phone;
 
-    // Mass Assignment Protection: Only Admins can modify role, status, isSuspended, userType, governorate, gender
-    if (isAdmin) {
+    // Allow owner or Admin to modify governorate & gender
+    if (isOwner || isAdmin) {
         if (req.body.governorate !== undefined) updateData.governorate = req.body.governorate ? String(req.body.governorate).trim() : null;
         if (req.body.gender !== undefined) updateData.gender = req.body.gender ? String(req.body.gender).trim() : null;
+    }
+
+    // Mass Assignment Protection: Only Admins can modify role, status, isSuspended, userType
+    if (isAdmin) {
         if (req.body.userType) updateData.userType = req.body.userType;
         if (req.body.role) updateData.role = req.body.role;
 
@@ -627,6 +631,11 @@ const updateVehicleInfo = asyncHandler(async (req, res) => {
         user.preferredOrderTypes = cleanTypes.length > 0 ? [cleanTypes[0]] : ['delivery'];
     }
 
+    if (req.body.governorate !== undefined && req.body.governorate !== null) {
+        const govClean = String(req.body.governorate).trim();
+        if (govClean) user.governorate = govClean;
+    }
+
     if (req.file) {
         // multer-storage-cloudinary stores the Cloudinary URL in req.file.path
         user.vehicleImage = req.file.path;
@@ -649,6 +658,7 @@ const updateVehicleInfo = asyncHandler(async (req, res) => {
         vehicleTypeName:     user.vehicleTypeName || null,
         preferredOrderTypes: (user.preferredOrderTypes && user.preferredOrderTypes.length > 0) ? [user.preferredOrderTypes[0]] : ['delivery'],
         canEditVehicleInfo:  user.canEditVehicleInfo || false,
+        governorate:         user.governorate || null,
     });
 });
 
@@ -1944,6 +1954,68 @@ const unbanBannedDevice = asyncHandler(async (req, res) => {
     });
 });
 
-module.exports = { updateUser, getAllUser, getProfile, getUserbyid, uploadProfileImageHandler, DeleteUserbyid, toggleRepresentativeAvailability, setUserAsRepresentative, migrateRepresentatives, updateVehicleInfo, clearStaleImages, updateOnlineLocation, getOnlineRepresentatives, suspendUser, unsuspendUser, getSuspendedUsers, blockUser, unblockUser, getRepresentativeOrders, getRepresentativeRatingsAdmin, toggleVehicleEditPermission, changeUserType, getBannedDevices, unbanBannedDevice };
+/**
+ * @description Update user / representative governorate
+ * @route PATCH /api/users/:id/governorate
+ * @access Private (Owner or Admin)
+ */
+const updateUserGovernorate = asyncHandler(async (req, res) => {
+    const { governorate } = req.body;
+    if (!governorate || typeof governorate !== 'string' || !governorate.trim()) {
+        return res.status(400).json({ message: 'يرجى اختيار المحافظة بشكل صحيح' });
+    }
+
+    const isOwner = req.user?.id?.toString() === req.params.id?.toString();
+    const isAdmin = req.user?.isAdmin === true || ['admin', 'administration'].includes(req.user?.userType?.toLowerCase());
+
+    if (!isOwner && !isAdmin) {
+        return res.status(403).json({ message: 'غير مصرح لك بتعديل بيانات هذا المستخدم' });
+    }
+
+    const cleanGov = governorate.trim();
+    const user = await User.findByIdAndUpdate(
+        req.params.id,
+        { $set: { governorate: cleanGov } },
+        { new: true }
+    ).select('_id firstName lastName governorate userType');
+
+    if (!user) {
+        return res.status(404).json({ message: 'المستخدم غير موجود' });
+    }
+
+    return res.status(200).json({
+        message: 'تم تحديث محافظة العمل بنجاح 📍',
+        governorate: user.governorate,
+        userId: user._id,
+    });
+});
+
+module.exports = {
+    updateUser,
+    getAllUser,
+    getProfile,
+    getUserbyid,
+    uploadProfileImageHandler,
+    DeleteUserbyid,
+    toggleRepresentativeAvailability,
+    setUserAsRepresentative,
+    migrateRepresentatives,
+    updateVehicleInfo,
+    clearStaleImages,
+    updateOnlineLocation,
+    getOnlineRepresentatives,
+    suspendUser,
+    unsuspendUser,
+    getSuspendedUsers,
+    blockUser,
+    unblockUser,
+    getRepresentativeOrders,
+    getRepresentativeRatingsAdmin,
+    toggleVehicleEditPermission,
+    changeUserType,
+    getBannedDevices,
+    unbanBannedDevice,
+    updateUserGovernorate,
+};
 
 
