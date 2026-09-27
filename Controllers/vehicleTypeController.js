@@ -178,14 +178,23 @@ const getVehicleTypes = asyncHandler(async (req, res) => {
     if (req.query.active === 'true') filter.isActive = true;
     if (req.query.category) {
         const cat = String(req.query.category).toLowerCase().trim();
-        if (cat === 'delivery') {
-            filter.$or = [
-                { category: { $in: ['delivery', 'both'] } },
-                { category: { $exists: false } },
-                { category: null },
+        if (cat === 'delivery' || cat === 'purchase') {
+            filter.$and = [
+                {
+                    $or: [
+                        { category: { $in: ['delivery', 'both'] } },
+                        { category: { $exists: false } },
+                        { category: null },
+                    ],
+                },
+                { category: { $ne: 'passenger' } },
             ];
         } else if (cat === 'passenger') {
-            filter.category = { $in: ['passenger', 'both'] };
+            filter.$and = [
+                { category: { $in: ['passenger', 'both'] } },
+                { icon_key: { $nin: ['motorcycle', 'bike', 'scooter'] } },
+                { name_ar: { $not: /موتوسيكل|سكوتر|دراجة|دباب/i } },
+            ];
         } else if (cat !== 'all') {
             filter.category = cat;
         }
@@ -331,19 +340,38 @@ const calculateVehiclePrices = asyncHandler(async (req, res) => {
     if (rawCat) {
         const cat = String(rawCat).toLowerCase().trim();
         if (cat === 'delivery' || cat === 'purchase') {
-            filter.$or = [
-                { category: { $in: ['delivery', 'both'] } },
-                { category: { $exists: false } },
-                { category: null },
+            filter.$and = [
+                {
+                    $or: [
+                        { category: { $in: ['delivery', 'both'] } },
+                        { category: { $exists: false } },
+                        { category: null },
+                    ],
+                },
+                { category: { $ne: 'passenger' } },
             ];
         } else if (cat === 'passenger') {
-            filter.category = { $in: ['passenger', 'both'] };
+            filter.$and = [
+                { category: { $in: ['passenger', 'both'] } },
+                { icon_key: { $nin: ['motorcycle', 'bike', 'scooter'] } },
+                { name_ar: { $not: /موتوسيكل|سكوتر|دراجة|دباب/i } },
+            ];
         } else if (cat !== 'all') {
             filter.category = cat;
         }
     }
 
-    const vehicleTypes = await VehicleType.find(filter).sort({ createdAt: -1 });
+    let vehicleTypes = await VehicleType.find(filter).sort({ createdAt: -1 });
+
+    // Fallback safety: If passenger category was requested but no vehicle matched,
+    // fallback to any active vehicle that is not a motorcycle or scooter
+    if (rawCat && String(rawCat).toLowerCase().trim() === 'passenger' && vehicleTypes.length === 0) {
+        vehicleTypes = await VehicleType.find({
+            isActive: true,
+            icon_key: { $nin: ['motorcycle', 'bike', 'scooter'] },
+            name_ar: { $not: /موتوسيكل|سكوتر|دراجة|دباب/i },
+        }).sort({ createdAt: -1 });
+    }
 
     const results = vehicleTypes.map((vt) => {
         // Base fare + distance * price per meter (in Egyptian Pounds)

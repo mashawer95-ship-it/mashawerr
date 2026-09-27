@@ -127,9 +127,51 @@ function validateCalculatePrice(object) {
     return schema.validate(object, { allowUnknown: true });
 }
 
+async function autoFixVehicleCategories() {
+    try {
+        // Any vehicle with motorcycle / scooter / bike name or icon must be 'delivery'
+        await VehicleType.updateMany(
+            {
+                $or: [
+                    { icon_key: { $in: ['motorcycle', 'bike', 'scooter'] } },
+                    { name_ar: { $regex: /موتوسيكل|سكوتر|دراجة|دباب/i } },
+                ],
+                category: { $ne: 'delivery' },
+            },
+            { $set: { category: 'delivery' } }
+        );
+
+        // Any vehicle with car / sedan / taxi name or icon that has no category, set to 'passenger'
+        await VehicleType.updateMany(
+            {
+                $and: [
+                    {
+                        $or: [
+                            { icon_key: { $in: ['sedan', 'car', 'taxi'] } },
+                            { name_ar: { $regex: /ملاكي|تاكسي|سيارة/i } },
+                        ],
+                    },
+                    {
+                        $or: [
+                            { category: { $exists: false } },
+                            { category: null },
+                        ],
+                    },
+                ],
+            },
+            { $set: { category: 'passenger' } }
+        );
+        console.log('✅ [VehicleType] Auto-fixed vehicle categories for delivery & passenger');
+    } catch (e) {
+        console.warn('⚠️ [VehicleType] autoFixVehicleCategories error:', e.message);
+    }
+}
+
 module.exports = {
     VehicleType,
     validateCreateVehicleType,
     validateUpdateVehicleType,
     validateCalculatePrice,
+    autoFixVehicleCategories,
 };
+

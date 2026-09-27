@@ -24,8 +24,10 @@ async function connectToDB() {
             const { migrateOrderStatusFromNumbersToStrings, migrateUnifiedOrderIds } = require('../middlewares/Order');
             await migrateOrderStatusFromNumbersToStrings();
             await migrateUnifiedOrderIds();
+            const { autoFixVehicleCategories } = require('../middlewares/VehicleType');
+            if (autoFixVehicleCategories) await autoFixVehicleCategories();
         } catch (migrationErr) {
-            console.warn('⚠️  Order migration skipped:', migrationErr.message);
+            console.warn('⚠️  Order/Vehicle migration skipped:', migrationErr.message);
         }
 
     } catch (err) {
