@@ -325,8 +325,25 @@ const calculateVehiclePrices = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: 'Failed to calculate route from Google API' });
     }
 
-    // 2. Only calculate for active vehicle types
-    const vehicleTypes = await VehicleType.find({ isActive: true });
+    // 2. Only calculate for active vehicle types (filtered by category if provided)
+    const filter = { isActive: true };
+    const rawCat = req.body.category || req.query.category || req.body.orderCategory;
+    if (rawCat) {
+        const cat = String(rawCat).toLowerCase().trim();
+        if (cat === 'delivery' || cat === 'purchase') {
+            filter.$or = [
+                { category: { $in: ['delivery', 'both'] } },
+                { category: { $exists: false } },
+                { category: null },
+            ];
+        } else if (cat === 'passenger') {
+            filter.category = { $in: ['passenger', 'both'] };
+        } else if (cat !== 'all') {
+            filter.category = cat;
+        }
+    }
+
+    const vehicleTypes = await VehicleType.find(filter).sort({ createdAt: -1 });
 
     const results = vehicleTypes.map((vt) => {
         // Base fare + distance * price per meter (in Egyptian Pounds)

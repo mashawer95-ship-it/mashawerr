@@ -118,11 +118,13 @@ function validateCalculatePrice(object) {
                 toLatitude: joi.number().required(),
                 toLongitude: joi.number().required(),
             }).unknown(true)
-        ).min(1).optional()
+        ).min(1).optional(),
+        category: joi.string().optional(),
+        orderCategory: joi.string().optional(),
     }).or('locations', 'tasks').messages({
         'object.missing': 'You must provide either locations or tasks'
     });
-    return schema.validate(object);
+    return schema.validate(object, { allowUnknown: true });
 }
 
 module.exports = {
