@@ -6,8 +6,8 @@ const {
     updateRepCommission,
 } = require('../Controllers/repCommissionController');
 
-// GET /api/rep-commission — جلب إعدادات العمولة الحالية
-router.get('/', verifyToken, getRepCommission);
+// GET /api/rep-commission — جلب إعدادات العمولة الحالية (عام للقراءة)
+router.get('/', getRepCommission);
 
 // PUT /api/rep-commission — تحديث نسب العمولة (Admin)
 router.put('/', verifyTokenAndAdmin, updateRepCommission);
