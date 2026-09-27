@@ -18,7 +18,7 @@ async function checkRepCanAcceptOrder(repId, order = null) {
     }
 
     // 1. Check User profile & Receiving Orders status (isAvailable)
-    const rep = await User.findById(repId).select('vehicleNumber vehicleColor vehicleModel vehicleImage vehicleTypeId vehicleTypeName preferredOrderTypes isAvailable');
+    const rep = await User.findById(repId).select('vehicleNumber vehicleColor vehicleModel vehicleImage vehicleTypeId vehicleTypeName preferredOrderTypes isAvailable gender');
     if (!rep) {
         return {
             canAccept: false,
@@ -73,6 +73,46 @@ async function checkRepCanAcceptOrder(repId, order = null) {
                 code: 'CATEGORY_MISMATCH',
                 message: 'عذراً، هذا الطلب مخصص لمندوب توصيل وشراء الطلبات فقط ولا يمكنك قبوله.',
             };
+        }
+
+        function isFemaleGender(g) {
+            if (!g) return false;
+            const norm = String(g).toLowerCase().trim();
+            return norm === 'female' || norm === 'أنثى' || norm === 'انثى' || norm === 'woman';
+        }
+
+        // 4. Gender restriction for passenger trips:
+        // - Female representative: only allowed to accept trips of female passengers (ladies-only vehicle or female client)
+        // - Male representative: strictly forbidden from accepting ladies-only vehicle trips
+        if (orderCat === 'passenger') {
+            const isRepFemale = isFemaleGender(rep.gender);
+            const isLadiesOnly = Boolean(order.is_ladies_only);
+
+            let clientIsFemale = false;
+            if (order.clientId) {
+                const clientDoc = await User.findById(order.clientId).select('gender').lean();
+                clientIsFemale = isFemaleGender(clientDoc?.gender);
+            }
+
+            const isLadiesTrip = isLadiesOnly || clientIsFemale;
+
+            if (isRepFemale && !isLadiesTrip) {
+                return {
+                    canAccept: false,
+                    statusCode: 403,
+                    code: 'LADIES_ONLY_RESTRICTION',
+                    message: 'عذراً، بصفتك مندوبة فإن توصيل الأفراد مقتصر لديك على مشاوير الإناث فقط.',
+                };
+            }
+
+            if (!isRepFemale && isLadiesOnly) {
+                return {
+                    canAccept: false,
+                    statusCode: 403,
+                    code: 'MALE_CANNOT_ACCEPT_LADIES_ORDER',
+                    message: 'عذراً، هذا المشوار مخصص للسيدات فقط ولا يمكن قبوله إلا من قِبل مندوبة (أنثى).',
+                };
+            }
         }
     }
 

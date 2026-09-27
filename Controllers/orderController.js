@@ -192,7 +192,7 @@ async function enrichOrdersWithClientData(req, formattedOrders) {
 
             if (objectIds.length > 0) {
                 const clients = await User.find({ _id: { $in: objectIds } })
-                    .select('firstName lastName phone profileImage governorate')
+                    .select('firstName lastName phone profileImage governorate gender')
                     .lean();
 
                 for (const c of clients) {
@@ -202,6 +202,7 @@ async function enrichOrdersWithClientData(req, formattedOrders) {
                         clientPhotoUrl: sanitizeImageUrl(buildUrl(req, c.profileImage)),
                         governorate: c.governorate || null,
                         clientGovernorate: c.governorate || null,
+                        clientGender: c.gender || null,
                     };
                 }
             }
@@ -216,6 +217,7 @@ async function enrichOrdersWithClientData(req, formattedOrders) {
             const clientPhoneNumber = cData.clientPhoneNumber || o.clientPhoneNumber || o.userInfo?.phone || o.customerPhone || null;
             const clientPhotoUrl = cData.clientPhotoUrl || o.clientPhotoUrl || (o.userInfo?.profileImage ? sanitizeImageUrl(buildUrl(req, o.userInfo.profileImage)) : null) || null;
             const clientGov = cData.clientGovernorate || o.userInfo?.governorate || o.governorate || null;
+            const clientGender = cData.clientGender || o.clientGender || o.userInfo?.gender || null;
 
             return {
                 ...o,
@@ -224,6 +226,7 @@ async function enrichOrdersWithClientData(req, formattedOrders) {
                 clientPhotoUrl,
                 clientGovernorate: clientGov,
                 governorate: clientGov,
+                clientGender,
             };
         });
     } catch (err) {
@@ -1841,6 +1844,12 @@ function normalizeGovernorate(gov) {
         .trim();
 }
 
+function isFemaleGender(g) {
+    if (!g) return false;
+    const norm = String(g).toLowerCase().trim();
+    return norm === 'female' || norm === 'أنثى' || norm === 'انثى' || norm === 'woman';
+}
+
 /**
  * @description List all waiting orders (for representative dashboard)
  * @route GET /api/orders/waiting
@@ -1855,9 +1864,13 @@ const listWaitingOrders = asyncHandler(async (req, res) => {
         const token = req.user?.id ? null : (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.substring(7) : req.headers.token);
         const userId = req.user?.id || (token ? jwt.verify(token, process.env.JWT_SECRET)?.id : null);
         if (userId) {
-            repUser = await User.findById(userId).select('vehicleTypeId vehicleTypeName preferredOrderTypes governorate').lean();
+            repUser = await User.findById(userId).select('vehicleTypeId vehicleTypeName preferredOrderTypes governorate gender').lean();
         }
     } catch (_) { }
+
+    if (!repUser && req.fullUser) {
+        repUser = req.fullUser;
+    }
 
     // 1. Filter orders strictly based on representative role/specialization:
     // - Passenger delegate (مندوب توصيل أفراد): sees ONLY passenger orders
@@ -1877,7 +1890,48 @@ const listWaitingOrders = asyncHandler(async (req, res) => {
         orderCategory: orderCategoryFilter
     }).sort({ orderId: -1 }).lean();
 
-    // 2. Filter orders strictly by representative governorate (المحافظة):
+    // 2. Filter orders strictly based on gender for passenger trips:
+    // - Female representative: sees ONLY passenger orders belonging to females (is_ladies_only OR female client)
+    // - Male representative: ladies-only passenger orders are strictly hidden
+    const repGender = repUser?.gender || req.user?.gender || req.fullUser?.gender;
+    const isRepFemale = isFemaleGender(repGender);
+
+    const passengerClientIds = [...new Set(
+        orders
+            .filter(o => (o.orderCategory === 'passenger' || o.orderType === 'passenger') && o.clientId)
+            .map(o => o.clientId)
+    )];
+
+    const passengerClients = passengerClientIds.length > 0
+        ? await User.find({ _id: { $in: passengerClientIds } }).select('_id gender').lean()
+        : [];
+    const passengerClientGenderMap = {};
+    for (const pc of passengerClients) {
+        if (pc && pc._id) {
+            passengerClientGenderMap[pc._id.toString()] = pc.gender || '';
+        }
+    }
+
+    orders = orders.filter(o => {
+        const isPassenger = (o.orderCategory === 'passenger' || o.orderType === 'passenger');
+        // Non-passenger orders (delivery / purchase) are not restricted by gender
+        if (!isPassenger) return true;
+
+        const orderIsLadiesOnly = Boolean(o.is_ladies_only);
+        const cGender = passengerClientGenderMap[o.clientId?.toString()] || '';
+        const clientIsFemale = isFemaleGender(cGender);
+        const isLadiesTrip = orderIsLadiesOnly || clientIsFemale;
+
+        if (isRepFemale) {
+            // المندوبة يظهر لها فقط أوردرات توصيل الأفراد الخاصة بالإناث
+            return isLadiesTrip;
+        } else {
+            // المندوب الذكر تُحجب عنه رحلات السيدات
+            return !orderIsLadiesOnly;
+        }
+    });
+
+    // 3. Filter orders strictly by representative governorate (المحافظة):
     // إذا كان المندوب محدد له محافظة، تظهر له فقط طلبات محافظته
     const queryGov = req.query.governorate ? String(req.query.governorate).trim() : null;
     const repGov = queryGov || repUser?.governorate || null;
