@@ -44,20 +44,21 @@ const createTransporter = () => {
  * Send email via Resend / Nodemailer (Gmail / SMTP) / Brevo API / SendGrid
  */
 const sendEmail = async ({ to, subject, html }) => {
-    const fromEmail = process.env.BREVO_SENDER_EMAIL || process.env.SMTP_FROM || process.env.USER_EMAIL || 'amirashraf653@gmail.com';
-    const fromName = process.env.CLINIC_NAME || 'Mashawerr';
+    const cleanBrevoApiKey = (process.env.BREVO_API_KEY || '').trim().replace(/^["']|["']$/g, '');
+    const fromEmail = (process.env.BREVO_SENDER_EMAIL || process.env.SMTP_FROM || process.env.USER_EMAIL || 'mashawer95@gmail.com').trim().replace(/^["']|["']$/g, '');
+    const fromName = (process.env.CLINIC_NAME || 'Mashawerr').trim().replace(/^["']|["']$/g, '');
     const from = `"${fromName}" <${fromEmail}>`;
     const errors = [];
 
     // 1. Try Brevo HTTP API first if BREVO_API_KEY is configured
-    const brevoApiKey = process.env.BREVO_API_KEY;
-    if (brevoApiKey) {
+    if (cleanBrevoApiKey) {
         try {
             console.log(`[EmailService] Attempting Brevo API send to ${to} (Sender: ${fromEmail})...`);
             const response = await fetch('https://api.brevo.com/v3/smtp/email', {
                 method: 'POST',
                 headers: {
-                    'api-key': brevoApiKey,
+                    'api-key': cleanBrevoApiKey,
+                    'accept': 'application/json',
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
@@ -74,7 +75,12 @@ const sendEmail = async ({ to, subject, html }) => {
                 return { success: true, provider: 'brevo', messageId: resData.messageId };
             } else {
                 const errorBody = await response.text();
-                const errMsg = `Brevo API error ${response.status} (sender: ${fromEmail}): ${errorBody}`;
+                let parsedMsg = errorBody;
+                try {
+                    const parsedJson = JSON.parse(errorBody);
+                    if (parsedJson.message) parsedMsg = `${parsedJson.code || 'ERROR'}: ${parsedJson.message}`;
+                } catch (_) {}
+                const errMsg = `Brevo API error ${response.status} (sender: ${fromEmail}): ${parsedMsg}`;
                 console.error(`[EmailService] ❌ ${errMsg}`);
                 errors.push(errMsg);
             }

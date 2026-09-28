@@ -44,7 +44,7 @@ router.post('/logout', authenticate, logout);
 
 // Diagnostic test endpoint for email sending
 router.all('/test-email', async (req, res) => {
-    const to = req.query.to || req.body?.to || 'amirashraf653@gmail.com';
+    const to = req.query.to || req.body?.to || process.env.BREVO_SENDER_EMAIL || process.env.USER_EMAIL || 'mashawer95@gmail.com';
     const { sendEmail } = require('../services/emailService');
     try {
         const result = await sendEmail({
@@ -58,9 +58,11 @@ router.all('/test-email', async (req, res) => {
             result,
             envConfig: {
                 hasBrevoApiKey: !!process.env.BREVO_API_KEY,
-                brevoSenderEmail: process.env.BREVO_SENDER_EMAIL || process.env.USER_EMAIL || 'amirashraf653@gmail.com',
+                brevoSenderEmail: process.env.BREVO_SENDER_EMAIL || process.env.USER_EMAIL || 'not_set',
                 hasUserEmail: !!process.env.USER_EMAIL,
                 hasUserPass: !!process.env.USER_PASS,
+                hasSmtpHost: !!process.env.SMTP_HOST,
+                hasResendApiKey: !!process.env.RESEND_API_KEY,
             },
         });
     } catch (err) {
@@ -69,9 +71,11 @@ router.all('/test-email', async (req, res) => {
             error: err.message,
             envConfig: {
                 hasBrevoApiKey: !!process.env.BREVO_API_KEY,
-                brevoSenderEmail: process.env.BREVO_SENDER_EMAIL || process.env.USER_EMAIL || 'amirashraf653@gmail.com',
+                brevoSenderEmail: process.env.BREVO_SENDER_EMAIL || process.env.USER_EMAIL || 'not_set',
                 hasUserEmail: !!process.env.USER_EMAIL,
                 hasUserPass: !!process.env.USER_PASS,
+                hasSmtpHost: !!process.env.SMTP_HOST,
+                hasResendApiKey: !!process.env.RESEND_API_KEY,
             },
         });
     }
