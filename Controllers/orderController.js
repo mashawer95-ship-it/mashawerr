@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const asyncHandler = require('express-async-handler');
 const joi = require('joi');
 const { ORDER_STATUSES } = require('../constants/orderTypes');
@@ -1513,7 +1514,20 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
         order = await Order.findById(rawId);
     }
     if (!order && !isNaN(Number(rawId))) {
-        order = await Order.findOne({ orderId: Number(rawId) });
+        order = await Order.findOne({
+            $or: [
+                { orderId: Number(rawId) },
+                { storeOrderId: Number(rawId) },
+            ],
+        });
+    }
+    if (!order) {
+        order = await Order.findOne({
+            $or: [
+                { orderId: rawId },
+                { _id: rawId },
+            ],
+        });
     }
     if (!order) {
         return sanitizeErrorResponse(res, false, true);
@@ -1529,6 +1543,8 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
                     'any.required': 'status is required',
                     'any.only': `status must be one of: ${ORDER_STATUSES.join(', ')}`,
                 }),
+            cancellationReason: joi.string().allow('', null).optional(),
+            reason: joi.string().allow('', null).optional(),
         })
         .validate(req.body);
 
@@ -1536,17 +1552,39 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: error.details[0].message });
     }
 
-    const isAdmin = req.user?.isAdmin === true || req.fullUser?.isAdmin === true;
-    if (!isAdmin) {
+    const userRole = (req.fullUser?.userType || req.user?.userType || '').toString().trim().toLowerCase();
+    const isAuthorized = req.user?.isAdmin === true ||
+                         req.fullUser?.isAdmin === true ||
+                         ['admin', 'administration', 'agent'].includes(userRole);
+    if (!isAuthorized) {
         return sanitizeErrorResponse(res, true, true);
     }
 
     const id = order.orderId || (isNaN(Number(rawId)) ? rawId : Number(rawId));
     const previousStatus = normalizeOrderStatus(order.status);
     order.status = value.status;
-    await order.save();
+    if (value.cancellationReason || value.reason) {
+        order.cancellationReason = value.cancellationReason || value.reason;
+    }
 
     const st = normalizeOrderStatus(order.status);
+
+    // ─── Sync internal task statuses when general order status completes or resets ───
+    if (st === 'completed' || st === 'delivered') {
+        if (Array.isArray(order.tasks) && order.tasks.length > 0) {
+            order.tasks.forEach((t) => {
+                t.taskStatus = 'completed';
+            });
+        }
+    } else if (st === 'waiting' || st === 'pending') {
+        if (Array.isArray(order.tasks) && order.tasks.length > 0) {
+            order.tasks.forEach((t) => {
+                t.taskStatus = 'pending';
+            });
+        }
+    }
+
+    await order.save();
 
     // ─── Fire-and-forget: check target reward & send email when order completes ────────────
     if ((st === 'completed' || st === 'delivered') && order.representativeId) {
@@ -1596,26 +1634,34 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
         const io = req.app.get('io');
         if (io) {
             const room = `order:${id}`;
+            const { ORDER_STATUS_LABELS_AR } = require('../constants/orderTypes');
             const payload = {
                 orderId: id,
                 status: st,
                 previousStatus,
+                statusLabel: ORDER_STATUS_LABELS_AR[st] || st,
                 message: `Order status changed to ${st}`,
             };
             io.to(room).emit('order:status_changed', payload);
             if (order.clientId) {
                 io.to(`user:${order.clientId}`).emit('order:status_changed', payload);
             }
-            console.log(`[Socket.IO] Emitted order:status_changed (${st}) to room ${room} and user:${order.clientId}`);
+            if (order.representativeId) {
+                io.to(`user:${order.representativeId}`).emit('order:status_changed', payload);
+            }
+            io.to('admin:orders').emit('order:status_changed', payload);
+            console.log(`[Socket.IO] Emitted order:status_changed (${st}) to room ${room}, user:${order.clientId}, user:${order.representativeId}, and admin:orders`);
         }
     } catch (socketErr) {
         console.error('[Socket.IO] Failed to emit order:status_changed:', socketErr.message);
     }
 
+    const { ORDER_STATUS_LABELS_AR } = require('../constants/orderTypes');
     return res.status(200).json({
+        success: true,
         orderId: order.orderId,
         status: st,
-        statusLabel: st,
+        statusLabel: ORDER_STATUS_LABELS_AR[st] || st,
         orderType: order.orderType || null,
         updatedAt: order.updatedAt,
     });

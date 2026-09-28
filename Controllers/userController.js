@@ -807,13 +807,27 @@ const getOnlineRepresentatives = asyncHandler(async (req, res) => {
  * @access Admin
  */
 const suspendUser = asyncHandler(async (req, res) => {
-    const user = await User.findById(req.params.id).select('_id firstName lastName phone email isSuspended status isAdmin userType deviceId profileImage');
+    const user = await User.findById(req.params.id).select('_id firstName lastName phone email isSuspended status isAdmin userType deviceId profileImage governorate');
     if (!user) {
         return res.status(404).json({ message: 'User not found' });
     }
 
     if (user.isAdmin || (user.userType && user.userType.toString().toLowerCase() === 'admin')) {
         return res.status(400).json({ message: 'عذراً، لا يمكن إيقاف حساب مسؤول (Admin)' });
+    }
+
+    const requesterType = (req.fullUser?.userType || req.user?.userType || '').toString().toLowerCase();
+    const isRequesterAdmin = req.user?.isAdmin || req.fullUser?.isAdmin || requesterType === 'admin' || requesterType === 'administration';
+    if (!isRequesterAdmin && requesterType === 'agent') {
+        const targetType = (user.userType || '').toString().toLowerCase();
+        if (targetType === 'agent' || targetType === 'admin' || targetType === 'administration') {
+            return res.status(403).json({ message: 'عذراً، لا يمكن للوكيل إيقاف حساب وكيل آخر أو مسؤول' });
+        }
+        const agentGov = (req.fullUser?.governorate || req.user?.governorate || '').toString().trim();
+        const targetGov = (user.governorate || '').toString().trim();
+        if (agentGov && targetGov && !targetGov.includes(agentGov) && !agentGov.includes(targetGov)) {
+            return res.status(403).json({ message: 'عذراً، لا يمكنك إيقاف حساب خارج نطاق محافظتك' });
+        }
     }
 
     const targetDeviceId = user.deviceId || req.body?.deviceId || null;
@@ -931,6 +945,20 @@ const unsuspendUser = asyncHandler(async (req, res) => {
         return res.status(404).json({ message: 'User not found' });
     }
 
+    const requesterType = (req.fullUser?.userType || req.user?.userType || '').toString().toLowerCase();
+    const isRequesterAdmin = req.user?.isAdmin || req.fullUser?.isAdmin || requesterType === 'admin' || requesterType === 'administration';
+    if (!isRequesterAdmin && requesterType === 'agent') {
+        const targetType = (user.userType || '').toString().toLowerCase();
+        if (targetType === 'agent' || targetType === 'admin' || targetType === 'administration') {
+            return res.status(403).json({ message: 'عذراً، لا يمكن للوكيل تفعيل حساب وكيل آخر أو مسؤول' });
+        }
+        const agentGov = (req.fullUser?.governorate || req.user?.governorate || '').toString().trim();
+        const targetGov = (user.governorate || '').toString().trim();
+        if (agentGov && targetGov && !targetGov.includes(agentGov) && !agentGov.includes(targetGov)) {
+            return res.status(403).json({ message: 'عذراً، لا يمكنك تفعيل حساب خارج نطاق محافظتك' });
+        }
+    }
+
     const targetDeviceId = user.deviceId || req.body?.deviceId || null;
 
     const userFilter = [{ _id: user._id }];
@@ -991,13 +1019,27 @@ const getSuspendedUsers = asyncHandler(async (req, res) => {
  * @access Admin
  */
 const blockUser = asyncHandler(async (req, res) => {
-    const user = await User.findById(req.params.id).select('_id firstName lastName phone email status isSuspended isAdmin userType deviceId profileImage');
+    const user = await User.findById(req.params.id).select('_id firstName lastName phone email status isSuspended isAdmin userType deviceId profileImage governorate');
     if (!user) {
         return res.status(404).json({ message: 'User not found' });
     }
 
     if (user.isAdmin || (user.userType && user.userType.toString().toLowerCase() === 'admin')) {
         return res.status(400).json({ message: 'عذراً، لا يمكن حظر حساب مسؤول (Admin)' });
+    }
+
+    const requesterType = (req.fullUser?.userType || req.user?.userType || '').toString().toLowerCase();
+    const isRequesterAdmin = req.user?.isAdmin || req.fullUser?.isAdmin || requesterType === 'admin' || requesterType === 'administration';
+    if (!isRequesterAdmin && requesterType === 'agent') {
+        const targetType = (user.userType || '').toString().toLowerCase();
+        if (targetType === 'agent' || targetType === 'admin' || targetType === 'administration') {
+            return res.status(403).json({ message: 'عذراً، لا يمكن للوكيل حظر حساب وكيل آخر أو مسؤول' });
+        }
+        const agentGov = (req.fullUser?.governorate || req.user?.governorate || '').toString().trim();
+        const targetGov = (user.governorate || '').toString().trim();
+        if (agentGov && targetGov && !targetGov.includes(agentGov) && !agentGov.includes(targetGov)) {
+            return res.status(403).json({ message: 'عذراً، لا يمكنك حظر حساب خارج نطاق محافظتك' });
+        }
     }
 
     const targetDeviceId = user.deviceId || req.body?.deviceId || null;
@@ -1115,6 +1157,20 @@ const unblockUser = asyncHandler(async (req, res) => {
         return res.status(404).json({ message: 'User not found' });
     }
 
+    const requesterType = (req.fullUser?.userType || req.user?.userType || '').toString().toLowerCase();
+    const isRequesterAdmin = req.user?.isAdmin || req.fullUser?.isAdmin || requesterType === 'admin' || requesterType === 'administration';
+    if (!isRequesterAdmin && requesterType === 'agent') {
+        const targetType = (user.userType || '').toString().toLowerCase();
+        if (targetType === 'agent' || targetType === 'admin' || targetType === 'administration') {
+            return res.status(403).json({ message: 'عذراً، لا يمكن للوكيل إلغاء حظر حساب وكيل آخر أو مسؤول' });
+        }
+        const agentGov = (req.fullUser?.governorate || req.user?.governorate || '').toString().trim();
+        const targetGov = (user.governorate || '').toString().trim();
+        if (agentGov && targetGov && !targetGov.includes(agentGov) && !agentGov.includes(targetGov)) {
+            return res.status(403).json({ message: 'عذراً، لا يمكنك إلغاء حظر حساب خارج نطاق محافظتك' });
+        }
+    }
+
     const targetDeviceId = user.deviceId || req.body?.deviceId || null;
 
     const userFilter = [{ _id: user._id }];
@@ -1176,8 +1232,18 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
     const repId = req.params.id;
 
     // Verify user exists and is a representative
-    const user = await User.findById(repId).select('firstName lastName phone userType profileImage');
+    const user = await User.findById(repId).select('firstName lastName phone userType profileImage governorate');
     if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const requesterType = (req.fullUser?.userType || req.user?.userType || '').toString().toLowerCase();
+    const isRequesterAdmin = req.user?.isAdmin || req.fullUser?.isAdmin || requesterType === 'admin' || requesterType === 'administration';
+    if (!isRequesterAdmin && requesterType === 'agent') {
+        const agentGov = (req.fullUser?.governorate || req.user?.governorate || '').toString().trim();
+        const targetGov = (user.governorate || '').toString().trim();
+        if (agentGov && targetGov && !targetGov.includes(agentGov) && !agentGov.includes(targetGov)) {
+            return res.status(403).json({ message: 'عذراً، هذا المندوب خارج نطاق محافظتك' });
+        }
+    }
 
     const page  = Math.max(1, parseInt(req.query.page  || '1',  10));
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '20', 10)));
@@ -1580,8 +1646,18 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
 const getRepresentativeRatingsAdmin = asyncHandler(async (req, res) => {
     const repId = req.params.id;
 
-    const user = await User.findById(repId).select('firstName lastName userType profileImage');
+    const user = await User.findById(repId).select('firstName lastName userType profileImage governorate');
     if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const requesterType = (req.fullUser?.userType || req.user?.userType || '').toString().toLowerCase();
+    const isRequesterAdmin = req.user?.isAdmin || req.fullUser?.isAdmin || requesterType === 'admin' || requesterType === 'administration';
+    if (!isRequesterAdmin && requesterType === 'agent') {
+        const agentGov = (req.fullUser?.governorate || req.user?.governorate || '').toString().trim();
+        const targetGov = (user.governorate || '').toString().trim();
+        if (agentGov && targetGov && !targetGov.includes(agentGov) && !agentGov.includes(targetGov)) {
+            return res.status(403).json({ message: 'عذراً، هذا المندوب خارج نطاق محافظتك' });
+        }
+    }
 
     const page  = Math.max(1, parseInt(req.query.page  || '1',  10));
     const limit = Math.min(50, Math.max(1, parseInt(req.query.limit || '20', 10)));
@@ -1683,9 +1759,19 @@ const getRepresentativeRatingsAdmin = asyncHandler(async (req, res) => {
  *   Access: Admin
  */
 const toggleVehicleEditPermission = asyncHandler(async (req, res) => {
-    const user = await User.findById(req.params.id).select('_id firstName lastName userType canEditVehicleInfo vehicleNumber vehicleModel preferredOrderTypes');
+    const user = await User.findById(req.params.id).select('_id firstName lastName userType canEditVehicleInfo vehicleNumber vehicleModel preferredOrderTypes governorate');
     if (!user) {
         return res.status(404).json({ message: 'User not found' });
+    }
+
+    const requesterType = (req.fullUser?.userType || req.user?.userType || '').toString().toLowerCase();
+    const isRequesterAdmin = req.user?.isAdmin || req.fullUser?.isAdmin || requesterType === 'admin' || requesterType === 'administration';
+    if (!isRequesterAdmin && requesterType === 'agent') {
+        const agentGov = (req.fullUser?.governorate || req.user?.governorate || '').toString().trim();
+        const targetGov = (user.governorate || '').toString().trim();
+        if (agentGov && targetGov && !targetGov.includes(agentGov) && !agentGov.includes(targetGov)) {
+            return res.status(403).json({ message: 'عذراً، هذا المندوب خارج نطاق محافظتك' });
+        }
     }
 
     const { canEditVehicleInfo, preferredOrderTypes } = req.body;

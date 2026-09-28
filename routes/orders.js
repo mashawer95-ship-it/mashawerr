@@ -39,7 +39,7 @@ router.get('/delivery-session/confirmations', verifyToken, podController.getCust
 
 router.get('/:id', verifyToken, getOrderById);
 router.get('/:id/status', verifyToken, getOrderStatus);
-router.patch('/:id/status', verifyTokenAndAdmin, updateOrderStatus);
+router.patch('/:id/status', verifyToken, authorize('admin', 'administration', 'agent'), updateOrderStatus);
 router.patch('/:id/accept', verifyToken, acceptOrder);           // PATCH /api/orders/:id/accept  — قبول الطلب
 router.patch('/:id/release', verifyToken, releaseOrder);         // PATCH /api/orders/:id/release — تحرير الطلب → waiting
 router.patch('/:id/confirm-arrival', verifyToken, confirmArrival); // PATCH /api/orders/:id/confirm-arrival — تأكيد الوصول وبدء التايمر
