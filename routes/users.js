@@ -6,16 +6,16 @@ const { verifyToken, verifyTokenAndAdmin } = require('../middlewares/verifytoken
 const { authorize } = require('../middlewares/authorize');
 const { createRoleRequest, getAllRoleRequests, updateRoleRequestStatus } = require('../Controllers/roleRequestController');
 
-router.get('/', verifyToken, authorize('admin', 'administration'), getAllUser);
+router.get('/', verifyToken, authorize('admin', 'administration', 'agent'), getAllUser);
 router.get('/profile/:id', verifyToken, getProfile);
 
 // 📝 Change User Type / Role (Admin only)
 router.patch('/:id/change-user-type', verifyTokenAndAdmin, changeUserType);
 
-// 📝 Role Requests (Representative)
+// 📝 Role Requests (Representative & Agent)
 router.post('/request-role', verifyToken, createRoleRequest);
-router.get('/role-requests', verifyTokenAndAdmin, getAllRoleRequests);
-router.patch('/role-requests/:id/status', verifyTokenAndAdmin, updateRoleRequestStatus);
+router.get('/role-requests', verifyToken, authorize('admin', 'administration', 'agent'), getAllRoleRequests);
+router.patch('/role-requests/:id/status', verifyToken, authorize('admin', 'administration', 'agent'), updateRoleRequestStatus);
 
 // 🚫 Account Suspension & Blocking (Admin only)
 router.get('/suspended', verifyTokenAndAdmin, getSuspendedUsers);

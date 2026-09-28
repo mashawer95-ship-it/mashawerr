@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const { verifyToken } = require('../middlewares/verifytoken');
-const { administrationOrAdmin } = require('../middlewares/authorize');
+const { administrationOrAdmin, authorize } = require('../middlewares/authorize');
+const trackingAuthorized = [verifyToken, authorize('admin', 'administration', 'agent')];
 const {
     // Shift CRUD
     createShift,
@@ -54,10 +55,10 @@ router.post('/attendance/app-open', verifyToken, appOpen);
 router.post('/attendance/app-close', verifyToken, appClose);
 router.post('/attendance/heartbeat', verifyToken, heartbeat);
 
-// ─── LIVE TRACKING (Admin & Administration) ───────────────────────────────────
-router.get('/tracking/live', administrationOrAdmin, getLiveTracking);
-router.get('/tracking/:repId', administrationOrAdmin, getRepLiveDetails);
-router.get('/tracking/:repId/timeline', administrationOrAdmin, getRepTimeline);
+// ─── LIVE TRACKING (Admin, Administration & Agent) ───────────────────────────
+router.get('/tracking/live', trackingAuthorized, getLiveTracking);
+router.get('/tracking/:repId', trackingAuthorized, getRepLiveDetails);
+router.get('/tracking/:repId/timeline', trackingAuthorized, getRepTimeline);
 
 // ─── REPORTS & CALENDAR FILTERING (Admin & Administration) ────────────────────
 router.get('/reports/rep/:repId', verifyToken, getRepReport);

@@ -486,7 +486,11 @@ const heartbeat = expressAsyncHandler(async (req, res) => {
  * GET /api/hr/tracking/live
  */
 const getLiveTracking = expressAsyncHandler(async (req, res) => {
-    if (req.query.refresh !== 'true') {
+    const isAgent = (req.user?.userType || req.fullUser?.userType || '').toString().trim().toLowerCase() === 'agent';
+    const agentGov = (req.fullUser?.governorate || req.user?.governorate || '').trim();
+
+    // Do NOT return global cached dashboard for Agents or when governorate query is supplied
+    if (!isAgent && !req.query.governorate && req.query.refresh !== 'true') {
         const cached = await getCachedLiveDashboard();
         if (cached) return res.json(cached);
     }
@@ -497,7 +501,16 @@ const getLiveTracking = expressAsyncHandler(async (req, res) => {
             { vehicleNumber: { $ne: null } }
         ]
     };
-    if (req.query.governorate && req.query.governorate.trim()) {
+    if (isAgent) {
+        if (!agentGov) {
+            return res.json({
+                summary: { online: 0, onOrder: 0, offlineInShift: 0, total: 0 },
+                representatives: [],
+                timestamp: Date.now()
+            });
+        }
+        filter.governorate = { $regex: new RegExp(agentGov.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&'), 'i') };
+    } else if (req.query.governorate && req.query.governorate.trim()) {
         filter.governorate = { $regex: new RegExp(req.query.governorate.trim(), 'i') };
     }
 
@@ -657,6 +670,15 @@ const getRepLiveDetails = expressAsyncHandler(async (req, res) => {
         return res.status(404).json({ message: 'Representative not found' });
     }
 
+    const isAgentDetails = (req.user?.userType || req.fullUser?.userType || '').toString().trim().toLowerCase() === 'agent';
+    const agentGovDetails = (req.fullUser?.governorate || req.user?.governorate || '').trim().toLowerCase();
+    if (isAgentDetails) {
+        const repGov = (rep.governorate || '').toString().trim().toLowerCase();
+        if (!agentGovDetails || !repGov.includes(agentGovDetails)) {
+            return res.status(403).json({ message: 'عذراً، هذا المندوب تابع لمحافظة أخرى ولا تملك صلاحية الوصول إليه.' });
+        }
+    }
+
     const appStateObj = await getRepAppState(repId);
     const sessionObj = await getRepSession(repId);
     const currentOrder = await getRepCurrentOrder(repId);
@@ -678,6 +700,17 @@ const getRepLiveDetails = expressAsyncHandler(async (req, res) => {
  */
 const getRepTimeline = expressAsyncHandler(async (req, res) => {
     const { repId } = req.params;
+
+    const isAgentTimeline = (req.user?.userType || req.fullUser?.userType || '').toString().trim().toLowerCase() === 'agent';
+    const agentGovTimeline = (req.fullUser?.governorate || req.user?.governorate || '').trim().toLowerCase();
+    if (isAgentTimeline) {
+        const targetRep = await User.findById(repId).select('governorate').lean();
+        const repGov = (targetRep?.governorate || '').toString().trim().toLowerCase();
+        if (!agentGovTimeline || !repGov.includes(agentGovTimeline)) {
+            return res.status(403).json({ message: 'عذراً، هذا المندوب تابع لمحافظة أخرى ولا تملك صلاحية الوصول إليه.' });
+        }
+    }
+
     const page = parseInt(req.query.page, 10) || 1;
     const limit = parseInt(req.query.limit, 10) || 50;
 

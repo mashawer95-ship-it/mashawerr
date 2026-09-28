@@ -182,8 +182,25 @@ const getAllUser = asyncHandler(async (req, res) => {
     if (req.query.isAvailable !== undefined) {
         filter.isAvailable = req.query.isAvailable === 'true';
     }
-    // Support governorate filter
-    if (req.query.governorate && req.query.governorate.trim()) {
+    const isAgent = (req.user?.userType || req.fullUser?.userType || '').toString().trim().toLowerCase() === 'agent';
+    const agentGov = (req.fullUser?.governorate || req.user?.governorate || '').trim();
+
+    if (isAgent) {
+        if (!agentGov) {
+            return res.status(200).json({
+                users: [],
+                total: 0,
+                page: 1,
+                limit: Math.min(100, Math.max(1, parseInt(req.query.limit || 20))),
+                totalPages: 0,
+            });
+        }
+        // Force the governorate filter to agentGov
+        filter.governorate = { $regex: new RegExp(agentGov.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&'), 'i') };
+        // Never allow Agent to see Admins
+        filter.isAdmin = { $ne: true };
+        filter.userType = { $nin: ['Admin', 'admin', 'Administration', 'administration'] };
+    } else if (req.query.governorate && req.query.governorate.trim()) {
         filter.governorate = { $regex: new RegExp(req.query.governorate.trim(), 'i') };
     }
 
@@ -767,7 +784,15 @@ const getOnlineRepresentatives = asyncHandler(async (req, res) => {
         isAvailable: true,
         'lastLocation.lat': { $exists: true, $ne: null },
     };
-    if (req.query.governorate && req.query.governorate.trim()) {
+    const isAgentOnline = (req.user?.userType || req.fullUser?.userType || '').toString().trim().toLowerCase() === 'agent';
+    const agentGovOnline = (req.fullUser?.governorate || req.user?.governorate || '').trim();
+
+    if (isAgentOnline) {
+        if (!agentGovOnline) {
+            return res.status(200).json([]);
+        }
+        filter.governorate = { $regex: new RegExp(agentGovOnline.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&'), 'i') };
+    } else if (req.query.governorate && req.query.governorate.trim()) {
         filter.governorate = { $regex: new RegExp(req.query.governorate.trim(), 'i') };
     }
 

@@ -24,9 +24,9 @@ const {
     getActiveOrders,
 } = require('../Controllers/orderController');
 
-router.get('/admin/financial-stats', verifyToken, authorize('admin', 'administration'), getAdminOrderFinancialStats);
-router.get('/search-by-number', verifyToken, searchOrderByNumber);
-router.get('/', verifyToken, authorize('admin', 'administration'), listOrders);
+router.get('/admin/financial-stats', verifyToken, authorize('admin', 'administration', 'agent'), getAdminOrderFinancialStats);
+router.get('/search-by-number', verifyToken, authorize('admin', 'administration', 'agent'), searchOrderByNumber);
+router.get('/', verifyToken, authorize('admin', 'administration', 'agent'), listOrders);
 
 router.post('/', verifyToken, createOrder);
 router.get('/active', verifyToken, getActiveOrders);                                 // GET  /api/orders/active   — للعميل: الطلبات النشطة (الحد 2)

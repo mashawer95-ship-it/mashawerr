@@ -51,17 +51,30 @@ const createRoleRequest = asyncHandler(async (req, res) => {
  * @access Private/Admin
  */
 const getAllRoleRequests = asyncHandler(async (req, res) => {
+    const isAgent = (req.user?.userType || req.fullUser?.userType || '').toString().trim().toLowerCase() === 'agent';
+    const agentGov = (req.fullUser?.governorate || req.user?.governorate || '').trim().toLowerCase();
+
     const status = req.query.status;
     let filter = {};
     if (status) {
         filter.status = status;
     }
 
+    if (isAgent) {
+        // Strict Agent restriction: can ONLY see Representative requests, never Agent requests
+        filter.requestedRole = 'Representative';
+    }
+
     let requests = await RoleRequest.find(filter)
         .populate('user', 'firstName lastName email profileImage userType governorate phone')
         .sort({ createdAt: -1 });
 
-    if (req.query.governorate && req.query.governorate.trim()) {
+    if (isAgent) {
+        if (!agentGov) {
+            return res.status(200).json([]);
+        }
+        requests = requests.filter(r => r.user && r.user.governorate && r.user.governorate.toLowerCase().includes(agentGov));
+    } else if (req.query.governorate && req.query.governorate.trim()) {
         const govLower = req.query.governorate.trim().toLowerCase();
         requests = requests.filter(r => r.user && r.user.governorate && r.user.governorate.toLowerCase().includes(govLower));
     }
@@ -84,6 +97,28 @@ const updateRoleRequestStatus = asyncHandler(async (req, res) => {
     const roleRequest = await RoleRequest.findById(req.params.id);
     if (!roleRequest) {
         return res.status(404).json({ message: 'Role request not found' });
+    }
+
+    const isAgent = (req.user?.userType || req.fullUser?.userType || '').toString().trim().toLowerCase() === 'agent';
+    const agentGov = (req.fullUser?.governorate || req.user?.governorate || '').trim().toLowerCase();
+
+    if (isAgent) {
+        // Strict Security: Agent can ONLY accept/reject Representative requests
+        if (roleRequest.requestedRole !== 'Representative') {
+            return res.status(403).json({
+                message: 'عذراً، صلاحياتك كوكيل تتيح لك قبول ورفض طلبات المناديب فقط ولا يمكنك التحكم بطلبات الوكلاء.'
+            });
+        }
+
+        // Strict Governorate check: applicant must belong to the Agent's governorate
+        const applicantUser = await User.findById(roleRequest.user).select('governorate').lean();
+        const applicantGov = (applicantUser?.governorate || '').toString().trim().toLowerCase();
+
+        if (!agentGov || !applicantGov.includes(agentGov)) {
+            return res.status(403).json({
+                message: 'عذراً، هذا الطلب تابع لمحافظة أخرى ولا تملك صلاحية مراجعته.'
+            });
+        }
     }
 
     if (roleRequest.status !== 'pending') {

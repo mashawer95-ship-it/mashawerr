@@ -503,6 +503,23 @@ const listOrders = asyncHandler(async (req, res) => {
         ];
     }
 
+    // ── Security & Governorate isolation for Agent (الوكيل) ──
+    const isAgentUser = (req.user?.userType || req.fullUser?.userType || '').toString().trim().toLowerCase() === 'agent';
+    const agentGov = (req.fullUser?.governorate || req.user?.governorate || '').trim();
+
+    if (isAgentUser) {
+        if (!agentGov) {
+            return res.status(200).json({
+                orders: [],
+                total: 0,
+                page: 1,
+                limit: Math.min(100, Math.max(1, parseInt(value.limit || 20))),
+                totalPages: 0,
+            });
+        }
+        value.governorate = agentGov; // Strictly lock to the Agent's governorate
+    }
+
     if (value.governorate && value.governorate.trim()) {
         const govTerm = value.governorate.trim();
         if (govTerm !== 'الكل' && govTerm !== 'كل المحافظات' && govTerm !== 'جميع المحافظات') {
@@ -1414,7 +1431,26 @@ const getOrderById = asyncHandler(async (req, res) => {
     const isRepOwner = order.representativeId && order.representativeId.toString() === req.user?.id?.toString();
     const isWaiting = normalizeOrderStatus(order.status) === 'waiting';
 
-    if (!isClientOwner && !isRepOwner && !isWaiting && !isAdmin) {
+    const isAgent = (req.user?.userType || req.fullUser?.userType || '').toString().trim().toLowerCase() === 'agent';
+    let isAgentAuthorized = false;
+
+    if (isAgent) {
+        const agentGov = (req.fullUser?.governorate || req.user?.governorate || '').trim().toLowerCase();
+        if (agentGov) {
+            const orderGov = (order.governorate || '').toString().trim().toLowerCase();
+            const clientUser = order.clientId ? await User.findById(order.clientId).select('governorate').lean().catch(() => null) : null;
+            const clientGov = (clientUser?.governorate || '').toString().trim().toLowerCase();
+            const taskGovMatch = Array.isArray(order.tasks) && order.tasks.some(t => 
+                (t.pickupLocation?.governorate || '').toLowerCase().includes(agentGov) ||
+                (t.deliveryLocation?.governorate || '').toLowerCase().includes(agentGov)
+            );
+            if (orderGov.includes(agentGov) || clientGov.includes(agentGov) || taskGovMatch) {
+                isAgentAuthorized = true;
+            }
+        }
+    }
+
+    if (!isClientOwner && !isRepOwner && !isWaiting && !isAdmin && !isAgentAuthorized) {
         return sanitizeErrorResponse(res, true, true);
     }
 
@@ -2710,8 +2746,31 @@ const searchOrderByNumber = asyncHandler(async (req, res) => {
         orderCategory: { $ne: 'business' },
     }).lean();
     if (deliveryOrder) {
+        const isAgent = (req.user?.userType || req.fullUser?.userType || '').toString().trim().toLowerCase() === 'agent';
+        const agentGov = (req.fullUser?.governorate || req.user?.governorate || '').trim().toLowerCase();
+
         const clientObj = await getClientObject(deliveryOrder.clientId, null);
         const repObj = await getRepObject(deliveryOrder.representativeId);
+
+        // Security check: If requester is an Agent, ensure order belongs to Agent's governorate
+        if (isAgent) {
+            if (!agentGov) {
+                return sanitizeErrorResponse(res, false, true);
+            }
+            const orderGov = (deliveryOrder.governorate || '').toString().trim().toLowerCase();
+            const clientGov = (clientObj?.governorate || '').toString().trim().toLowerCase();
+            const repGov = (repObj?.governorate || '').toString().trim().toLowerCase();
+            const taskGovMatch = Array.isArray(deliveryOrder.tasks) && deliveryOrder.tasks.some(t => 
+                (t.pickupLocation?.governorate || '').toLowerCase().includes(agentGov) ||
+                (t.deliveryLocation?.governorate || '').toLowerCase().includes(agentGov)
+            );
+
+            const isGovMatch = orderGov.includes(agentGov) || clientGov.includes(agentGov) || repGov.includes(agentGov) || taskGovMatch;
+            if (!isGovMatch) {
+                return sanitizeErrorResponse(res, false, true);
+            }
+        }
+
         const formatted = formatOrder(req, deliveryOrder);
 
         return res.json({
@@ -2816,7 +2875,19 @@ const getAdminOrderFinancialStats = asyncHandler(async (req, res) => {
         ...dateFilter,
     };
 
-    const governorate = req.query.governorate ? String(req.query.governorate).trim() : null;
+    const isAgent = (req.user?.userType || req.fullUser?.userType || '').toString().trim().toLowerCase() === 'agent';
+    const agentGov = (req.fullUser?.governorate || req.user?.governorate || '').trim();
+
+    let governorate = req.query.governorate ? String(req.query.governorate).trim() : null;
+    if (isAgent) {
+        if (!agentGov) {
+            matchStage._id = null; // Agent with no governorate gets empty stats
+            governorate = null;
+        } else {
+            governorate = agentGov;
+        }
+    }
+
     if (governorate && governorate !== 'الكل' && governorate !== 'كل المحافظات' && governorate !== 'جميع المحافظات') {
         const matchingUsers = await User.find({
             governorate: { $regex: new RegExp(governorate, 'i') }
