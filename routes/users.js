@@ -17,29 +17,29 @@ router.post('/request-role', verifyToken, createRoleRequest);
 router.get('/role-requests', verifyToken, authorize('admin', 'administration', 'agent'), getAllRoleRequests);
 router.patch('/role-requests/:id/status', verifyToken, authorize('admin', 'administration', 'agent'), updateRoleRequestStatus);
 
-// 🚫 Account Suspension & Blocking (Admin only)
-router.get('/suspended', verifyTokenAndAdmin, getSuspendedUsers);
-router.patch('/suspend/:id', verifyTokenAndAdmin, suspendUser);
-router.patch('/:id/suspend', verifyTokenAndAdmin, suspendUser);
-router.put('/:id/suspend', verifyTokenAndAdmin, suspendUser);
+// 🚫 Account Suspension & Blocking (Admin & Agent)
+router.get('/suspended', verifyToken, authorize('admin', 'administration', 'agent'), getSuspendedUsers);
+router.patch('/suspend/:id', verifyToken, authorize('admin', 'administration', 'agent'), suspendUser);
+router.patch('/:id/suspend', verifyToken, authorize('admin', 'administration', 'agent'), suspendUser);
+router.put('/:id/suspend', verifyToken, authorize('admin', 'administration', 'agent'), suspendUser);
 
-router.patch('/unsuspend/:id', verifyTokenAndAdmin, unsuspendUser);
-router.patch('/:id/unsuspend', verifyTokenAndAdmin, unsuspendUser);
-router.put('/:id/unsuspend', verifyTokenAndAdmin, unsuspendUser);
+router.patch('/unsuspend/:id', verifyToken, authorize('admin', 'administration', 'agent'), unsuspendUser);
+router.patch('/:id/unsuspend', verifyToken, authorize('admin', 'administration', 'agent'), unsuspendUser);
+router.put('/:id/unsuspend', verifyToken, authorize('admin', 'administration', 'agent'), unsuspendUser);
 
-router.put('/:id/block', verifyTokenAndAdmin, blockUser);
-router.patch('/:id/block', verifyTokenAndAdmin, blockUser);
+router.put('/:id/block', verifyToken, authorize('admin', 'administration', 'agent'), blockUser);
+router.patch('/:id/block', verifyToken, authorize('admin', 'administration', 'agent'), blockUser);
 
-router.put('/:id/unblock', verifyTokenAndAdmin, unblockUser);
-router.patch('/:id/unblock', verifyTokenAndAdmin, unblockUser);
+router.put('/:id/unblock', verifyToken, authorize('admin', 'administration', 'agent'), unblockUser);
+router.patch('/:id/unblock', verifyToken, authorize('admin', 'administration', 'agent'), unblockUser);
 
 // 🚫 Banned Devices & Identifiers (Admin only)
 router.get('/banned-devices', verifyTokenAndAdmin, getBannedDevices);
 router.delete('/banned-devices/:id', verifyTokenAndAdmin, unbanBannedDevice);
 
-// 🚗 Admin: Toggle or set representative vehicle edit permissions (Lock/Unlock)
-router.patch('/:id/vehicle-edit-permissions', verifyTokenAndAdmin, toggleVehicleEditPermission);
-router.patch('/:id/toggle-vehicle-edit', verifyTokenAndAdmin, toggleVehicleEditPermission);
+// 🚗 Admin & Agent: Toggle or set representative vehicle edit permissions (Lock/Unlock)
+router.patch('/:id/vehicle-edit-permissions', verifyToken, authorize('admin', 'administration', 'agent'), toggleVehicleEditPermission);
+router.patch('/:id/toggle-vehicle-edit', verifyToken, authorize('admin', 'administration', 'agent'), toggleVehicleEditPermission);
 
 // 🚗 Live map tracking: Get all online available representatives (MUST be before /:id)
 router.get('/online-representatives/locations', verifyToken, getOnlineRepresentatives);
@@ -73,11 +73,11 @@ router.post('/clear-stale-images', verifyTokenAndAdmin, clearStaleImages);
 // 🚗 Live map tracking: Update representative's location
 router.patch('/:id/online-location', verifyToken, updateOnlineLocation);
 
-// 📦 Admin & Administration: Get orders delivered by a representative (filterable by month/year)
-router.get('/:id/representative-orders', verifyToken, authorize('admin', 'administration'), getRepresentativeOrders);
+// 📦 Admin, Administration & Agent: Get orders delivered by a representative (filterable by month/year)
+router.get('/:id/representative-orders', verifyToken, authorize('admin', 'administration', 'agent'), getRepresentativeOrders);
 
-// ⭐ Admin & Administration: Get ratings received by / given by a representative
-router.get('/:id/representative-ratings', verifyToken, authorize('admin', 'administration'), getRepresentativeRatingsAdmin);
+// ⭐ Admin, Administration & Agent: Get ratings received by / given by a representative
+router.get('/:id/representative-ratings', verifyToken, authorize('admin', 'administration', 'agent'), getRepresentativeRatingsAdmin);
 
 // Routes moved to top to prevent /:id override
 
