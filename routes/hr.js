@@ -37,8 +37,8 @@ const {
 
 // ─── SHIFT MANAGEMENT (Admin & Administration) ───────────────────────────────
 router.post('/shifts', administrationOrAdmin, createShift);
-router.get('/shifts', administrationOrAdmin, getShifts);
-router.get('/shifts/coverage', administrationOrAdmin, getShiftCoverage);
+router.get('/shifts', trackingAuthorized, getShifts);
+router.get('/shifts/coverage', trackingAuthorized, getShiftCoverage);
 router.patch('/shifts/:id', administrationOrAdmin, updateShift);
 router.put('/shifts/:id', administrationOrAdmin, updateShift);
 router.delete('/shifts/:id', administrationOrAdmin, deleteShift);

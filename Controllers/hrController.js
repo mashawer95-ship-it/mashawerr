@@ -129,10 +129,23 @@ const createShift = expressAsyncHandler(async (req, res) => {
  * GET /api/hr/shifts
  */
 const getShifts = expressAsyncHandler(async (req, res) => {
-    const shifts = await Shift.find()
-        .populate('representativeIds', 'firstName lastName phone profileImage isAvailable')
+    const isAgent = (req.user?.role === 'agent' || req.fullUser?.role === 'agent' || req.user?.userType === 'agent');
+    const agentGov = (req.fullUser?.governorate || req.user?.governorate || '').trim().toLowerCase();
+
+    let shifts = await Shift.find()
+        .populate('representativeIds', 'firstName lastName phone profileImage isAvailable governorate')
         .sort({ startTime: 1 })
         .lean();
+
+    if (isAgent && agentGov) {
+        shifts = shifts.map(s => ({
+            ...s,
+            representativeIds: (s.representativeIds || []).filter(rep => {
+                const repGov = (rep.governorate || '').trim().toLowerCase();
+                return repGov.includes(agentGov) || agentGov.includes(repGov);
+            })
+        }));
+    }
 
     const activeShifts = shifts.filter(s => s.isActive);
     const coverage = calculate24hCoverage(activeShifts);
