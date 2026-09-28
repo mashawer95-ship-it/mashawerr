@@ -125,16 +125,36 @@ const updateRoleRequestStatus = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: `This request is already ${roleRequest.status}` });
     }
 
-    roleRequest.status = status;
-    await roleRequest.save();
-
     if (status === 'approved') {
         const user = await User.findById(roleRequest.user);
         if (user) {
+            if (roleRequest.requestedRole === 'Agent') {
+                const targetGov = (user.governorate || '').trim();
+                if (!targetGov) {
+                    return res.status(400).json({
+                        message: 'لا يمكن ترقية المستخدم إلى وكيل لعدم وجود محافظة مسجلة في حسابه.'
+                    });
+                }
+                const escapedGov = targetGov.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const existingAgent = await User.findOne({
+                    _id: { $ne: user._id },
+                    userType: { $regex: /^agent$/i },
+                    governorate: { $regex: new RegExp(`^${escapedGov}$`, 'i') }
+                });
+                if (existingAgent) {
+                    const agentName = `${existingAgent.firstName || ''} ${existingAgent.lastName || ''}`.trim() || 'آخر';
+                    return res.status(400).json({
+                        message: `عذراً، يوجد وكيل مسجل بالفعل لمحافظة (${targetGov}) وهو (${agentName}). لا يمكن تعيين أكثر من وكيل لنفس المحافظة.`
+                    });
+                }
+            }
             user.userType = roleRequest.requestedRole;
             await user.save();
         }
     }
+
+    roleRequest.status = status;
+    await roleRequest.save();
 
     res.status(200).json({
         message: `Role request ${status} successfully`,

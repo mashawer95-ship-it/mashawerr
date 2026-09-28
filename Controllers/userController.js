@@ -1843,7 +1843,7 @@ const toggleVehicleEditPermission = asyncHandler(async (req, res) => {
  *   Access: Admin only
  */
 const changeUserType = asyncHandler(async (req, res) => {
-    const { userType } = req.body;
+    const { userType, governorate } = req.body;
     if (!userType || typeof userType !== 'string' || userType.trim() === '') {
         return res.status(400).json({ message: '`userType` is required' });
     }
@@ -1856,9 +1856,9 @@ const changeUserType = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: 'لا يمكن الترقية إلى رتبة أدمن الأساسية من هذه الخاصية' });
     }
 
-    const validRoles = ['normaluser', 'client', 'representative', 'administration'];
+    const validRoles = ['normaluser', 'client', 'representative', 'administration', 'agent'];
     if (!validRoles.includes(typeLower)) {
-        return res.status(400).json({ message: 'نوع المستخدم غير صالح. الأنواع المتاحة: NormalUser, Representative, administration' });
+        return res.status(400).json({ message: 'نوع المستخدم غير صالح. الأنواع المتاحة: NormalUser, Representative, administration, Agent' });
     }
 
     const user = await User.findById(req.params.id);
@@ -1874,10 +1874,40 @@ const changeUserType = asyncHandler(async (req, res) => {
     let formattedUserType = 'NormalUser';
     if (typeLower === 'representative') formattedUserType = 'Representative';
     else if (typeLower === 'administration') formattedUserType = 'administration';
+    else if (typeLower === 'agent') formattedUserType = 'Agent';
 
     const updateFields = {
         userType: formattedUserType
     };
+
+    // شرط فريد: لا يجوز وجود أكثر من وكيل واحد لنفس المحافظة
+    if (formattedUserType === 'Agent') {
+        const targetGov = (governorate || req.body.governorate || user.governorate || '').trim();
+        if (!targetGov) {
+            return res.status(400).json({
+                message: 'يجب تحديد المحافظة لتعيين المستخدم كوكيل (Agent)'
+            });
+        }
+
+        // فحص وجود أي وكيل مسجل مسبقاً لنفس المحافظة
+        const escapedGov = targetGov.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const existingAgent = await User.findOne({
+            _id: { $ne: user._id },
+            userType: { $regex: /^agent$/i },
+            governorate: { $regex: new RegExp(`^${escapedGov}$`, 'i') }
+        });
+
+        if (existingAgent) {
+            const agentName = `${existingAgent.firstName || ''} ${existingAgent.lastName || ''}`.trim() || 'آخر';
+            return res.status(400).json({
+                message: `عذراً، يوجد وكيل مسجل بالفعل لمحافظة (${targetGov}) وهو (${agentName}). لا يمكن تعيين أكثر من وكيل لنفس المحافظة.`
+            });
+        }
+
+        updateFields.governorate = targetGov;
+    } else if (governorate && typeof governorate === 'string' && governorate.trim()) {
+        updateFields.governorate = governorate.trim();
+    }
 
     const updatedUser = await User.findByIdAndUpdate(
         req.params.id,
@@ -1905,9 +1935,10 @@ const changeUserType = asyncHandler(async (req, res) => {
     }
 
     return res.status(200).json({
-        message: `تم تغيير نوع المستخدم بنجاح إلى: ${formattedUserType}`,
+        message: `تم تغيير نوع المستخدم بنجاح إلى: ${formattedUserType}${formattedUserType === 'Agent' ? ` (وكيل محافظة ${updatedUser.governorate})` : ''}`,
         userId: updatedUser._id,
         userType: updatedUser.userType,
+        governorate: updatedUser.governorate,
     });
 });
 
@@ -2113,6 +2144,24 @@ const updateUserGovernorate = asyncHandler(async (req, res) => {
     }
 
     const cleanGov = governorate.trim();
+
+    // إذا كان المستخدم وكيلاً، نمنع تغيير المحافظة إلى محافظة وكيل آخر
+    const isAgent = (user.userType || '').toLowerCase() === 'agent';
+    if (isAgent) {
+        const escapedGov = cleanGov.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const existingAgent = await User.findOne({
+            _id: { $ne: user._id },
+            userType: { $regex: /^agent$/i },
+            governorate: { $regex: new RegExp(`^${escapedGov}$`, 'i') }
+        });
+        if (existingAgent) {
+            const agentName = `${existingAgent.firstName || ''} ${existingAgent.lastName || ''}`.trim() || 'آخر';
+            return res.status(400).json({
+                message: `عذراً، يوجد وكيل مسجل بالفعل لمحافظة (${cleanGov}) وهو (${agentName}). لا يمكن تعيين أكثر من وكيل لنفس المحافظة.`
+            });
+        }
+    }
+
     user.governorate = cleanGov;
     await user.save();
 
