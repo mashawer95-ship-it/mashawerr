@@ -234,6 +234,7 @@ const OrderSchema = new mongoose.Schema(
 
 OrderSchema.index({ status: 1, isBusinessOrder: 1, createdAt: -1 });
 OrderSchema.index({ status: 1, orderCategory: 1, createdAt: -1 });
+OrderSchema.index({ status: 1, governorate: 1, createdAt: -1 });
 OrderSchema.index({ createdAt: -1 });
 
 OrderSchema.pre('validate', function () {

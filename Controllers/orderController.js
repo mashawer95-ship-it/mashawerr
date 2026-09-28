@@ -414,6 +414,7 @@ const listOrders = asyncHandler(async (req, res) => {
             address: joi.string().trim().optional().allow(''),
             orderStatus: joi.number().optional().allow(null), // 0=pending/waiting, 1=accepted/review, 2=cancelled, 3=completed
             orderType: joi.string().trim().optional().allow(''), // فلتر نوع الأوردر (delivery, store, etc.)
+            orderCategory: joi.string().trim().optional().allow(''), // فلتر فئة الطلب (delivery | passenger | all)
             governorate: joi.string().trim().optional().allow(''), // فلتر المحافظة
             page: joi.number().integer().min(1).default(1),
             limit: joi.number().integer().min(1).max(100).default(20),
@@ -469,6 +470,16 @@ const listOrders = asyncHandler(async (req, res) => {
     // ── Delivery orders ONLY (exclude business/store orders) ──
     filter.isBusinessOrder = { $ne: true };
 
+    // ── Category filtering (delivery vs passenger) ──
+    if (value.orderCategory && value.orderCategory.trim() && value.orderCategory.toLowerCase() !== 'all') {
+        const cat = value.orderCategory.trim().toLowerCase();
+        if (cat === 'passenger') {
+            filter.orderCategory = 'passenger';
+        } else if (cat === 'delivery') {
+            filter.orderCategory = { $ne: 'passenger' };
+        }
+    }
+
     if (value.clientId) filter.clientId = value.clientId;
     if (value.orderType) filter.orderType = value.orderType;
 
@@ -494,27 +505,30 @@ const listOrders = asyncHandler(async (req, res) => {
 
     if (value.governorate && value.governorate.trim()) {
         const govTerm = value.governorate.trim();
-        const matchingUsers = await User.find({
-            governorate: { $regex: new RegExp(govTerm, 'i') }
-        }).select('_id phone').lean();
-        const userIds = matchingUsers.map((u) => u._id.toString());
-        const userPhones = matchingUsers.map((u) => u.phone).filter(Boolean);
-        const govConditions = [
-            { clientId: { $in: userIds } },
-            { userId: { $in: userIds } },
-        ];
-        if (userPhones.length > 0) {
-            govConditions.push({ clientId: { $in: userPhones } });
-            govConditions.push({ userId: { $in: userPhones } });
-        }
-        if (filter.$or) {
-            filter.$and = [
-                { $or: filter.$or },
-                { $or: govConditions }
+        if (govTerm !== 'الكل' && govTerm !== 'كل المحافظات' && govTerm !== 'جميع المحافظات') {
+            const matchingUsers = await User.find({
+                governorate: { $regex: new RegExp(govTerm, 'i') }
+            }).select('_id phone').lean();
+            const userIds = matchingUsers.map((u) => u._id.toString());
+            const userPhones = matchingUsers.map((u) => u.phone).filter(Boolean);
+            const govConditions = [
+                { governorate: { $regex: new RegExp(govTerm, 'i') } },
+                { clientId: { $in: userIds } },
+                { userId: { $in: userIds } },
             ];
-            delete filter.$or;
-        } else {
-            filter.$or = govConditions;
+            if (userPhones.length > 0) {
+                govConditions.push({ clientId: { $in: userPhones } });
+                govConditions.push({ userId: { $in: userPhones } });
+            }
+            if (filter.$or) {
+                filter.$and = [
+                    { $or: filter.$or },
+                    { $or: govConditions }
+                ];
+                delete filter.$or;
+            } else {
+                filter.$or = govConditions;
+            }
         }
     }
 
@@ -2798,8 +2812,29 @@ const getAdminOrderFinancialStats = asyncHandler(async (req, res) => {
     const completedStatuses = ['completed', 'delivered', 'Completed', 'Delivered'];
     const matchStage = {
         status: { $in: completedStatuses },
+        isBusinessOrder: { $ne: true },
         ...dateFilter,
     };
+
+    const governorate = req.query.governorate ? String(req.query.governorate).trim() : null;
+    if (governorate && governorate !== 'الكل' && governorate !== 'كل المحافظات' && governorate !== 'جميع المحافظات') {
+        const matchingUsers = await User.find({
+            governorate: { $regex: new RegExp(governorate, 'i') }
+        }).select('_id phone').lean();
+        const userIds = matchingUsers.map((u) => u._id.toString());
+        const userPhones = matchingUsers.map((u) => u.phone).filter(Boolean);
+
+        const govConditions = [
+            { governorate: { $regex: new RegExp(governorate, 'i') } },
+            { clientId: { $in: userIds } },
+            { userId: { $in: userIds } },
+        ];
+        if (userPhones.length > 0) {
+            govConditions.push({ clientId: { $in: userPhones } });
+            govConditions.push({ userId: { $in: userPhones } });
+        }
+        matchStage.$or = govConditions;
+    }
 
     const commissionCfg = await getCachedRepCommission().catch(() => ({
         deliveryRepCommissionPct: 100,
@@ -2870,7 +2905,7 @@ const getAdminOrderFinancialStats = asyncHandler(async (req, res) => {
         {
             $facet: {
                 delivery: [
-                    { $match: { orderCategory: { $in: ['delivery', 'purchase', null] } } },
+                    { $match: { orderCategory: { $ne: 'passenger' } } },
                     {
                         $group: {
                             _id: null,
@@ -2947,10 +2982,13 @@ const getAdminOrderFinancialStats = asyncHandler(async (req, res) => {
     const totalCompanyNetProfitFils = delCompanyNetProfitFils + passCompanyNetProfitFils;
 
     const totalFormatted = {
+        completedOrdersCount: totalOrdersCount,
         totalCompletedOrdersCount: totalOrdersCount,
         totalOrdersAmount: formatFinancialAmount(totalOrdersAmountFils),
         totalDeliveryFees: formatFinancialAmount(totalDeliveryFeesFils),
+        driversShare: formatFinancialAmount(totalDriversShareFils),
         totalDriversShare: formatFinancialAmount(totalDriversShareFils),
+        companyNetProfit: formatFinancialAmount(totalCompanyNetProfitFils),
         totalCompanyNetProfit: formatFinancialAmount(totalCompanyNetProfitFils),
     };
 
@@ -2962,6 +3000,7 @@ const getAdminOrderFinancialStats = asyncHandler(async (req, res) => {
             endDate: endDate || null,
             month: isNaN(month) ? null : month,
             year: isNaN(year) ? null : year,
+            governorate: (governorate && governorate !== 'الكل' && governorate !== 'كل المحافظات' && governorate !== 'جميع المحافظات') ? governorate : null,
             deliveryRepCommissionPct,
             passengerRepCommissionPct,
         },
