@@ -75,8 +75,14 @@ const webhookRateLimiter = rateLimit({
     legacyHeaders:   false,
 });
 
+// Webhook endpoints (supports both /paymob/webhook and /webhook)
 paymentsRouter.post('/paymob/webhook',  webhookRateLimiter, paymobWebhook);
+paymentsRouter.post('/webhook',         webhookRateLimiter, paymobWebhook);
+
+// Redirect endpoints (supports /paymob/redirect, /redirect, and /callback)
 paymentsRouter.get('/paymob/redirect',  paymobRedirect);
+paymentsRouter.get('/redirect',         paymobRedirect);
+paymentsRouter.get('/callback',         paymobRedirect);
 
 /**
  * POST /api/payments/:paymentId/refund
