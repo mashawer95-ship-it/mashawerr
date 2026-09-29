@@ -37,7 +37,10 @@ function loadPaymobConfig() {
         console.warn(`⚠️  ${msg}`);
     }
 
-    const integrationId = parseInt(integrationIdRaw, 10);
+    const cleanedIntegrationId = integrationIdRaw
+        ? String(integrationIdRaw).replace(/[^0-9]/g, '')
+        : '';
+    const integrationId = parseInt(cleanedIntegrationId, 10);
     if (integrationIdRaw && isNaN(integrationId)) {
         const msg = `[PaymobConfig] PAYMOB_INTEGRATION_ID must be a valid integer, got: "${integrationIdRaw}"`;
         console.warn(`⚠️  ${msg}`);
