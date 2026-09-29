@@ -25,6 +25,9 @@ const ApiError = require('../../../utils/ApiError');
  * Returns a new instance each call to avoid shared state issues.
  */
 function buildPaymobAxios() {
+    if (!paymobConfig.secretKey) {
+        throw new ApiError(503, 'خدمة الدفع عبر Paymob غير مهيأة بعد، يرجى ضبط المتغيرات في لوحة التحكم', 'PAYMENT_CONFIG_MISSING');
+    }
     return axios.create({
         baseURL: paymobConfig.baseUrl,
         timeout: PAYMOB_HTTP_TIMEOUT_MS,

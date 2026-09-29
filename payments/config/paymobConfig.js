@@ -33,28 +33,22 @@ function loadPaymobConfig() {
     if (!publicKey)        missing.push('PAYMOB_PUBLIC_KEY');
 
     if (missing.length > 0) {
-        const msg = `[PaymobConfig] Missing required environment variables: ${missing.join(', ')}`;
-        if (isProd) {
-            // Hard fail in production — do not start with a broken payment config.
-            throw new Error(msg);
-        } else {
-            // Warn in dev/test — allow the server to start for non-payment routes.
-            console.warn(`⚠️  ${msg}`);
-        }
+        const msg = `[PaymobConfig] Paymob environment variables missing: ${missing.join(', ')}. Online payment features will return 503 until configured.`;
+        console.warn(`⚠️  ${msg}`);
     }
 
     const integrationId = parseInt(integrationIdRaw, 10);
     if (integrationIdRaw && isNaN(integrationId)) {
         const msg = `[PaymobConfig] PAYMOB_INTEGRATION_ID must be a valid integer, got: "${integrationIdRaw}"`;
-        if (isProd) throw new Error(msg);
-        else console.warn(`⚠️  ${msg}`);
+        console.warn(`⚠️  ${msg}`);
     }
 
     return Object.freeze({
+        isConfigured:  missing.length === 0 && !isNaN(integrationId),
         secretKey:     secretKey       || null,
         publicKey:     publicKey       || null,
         hmacSecret:    hmacSecret      || null,
-        integrationId: integrationId   || null,
+        integrationId: isNaN(integrationId) ? null : integrationId,
         baseUrl:       baseUrl.replace(/\/$/, ''), // strip trailing slash
     });
 }
