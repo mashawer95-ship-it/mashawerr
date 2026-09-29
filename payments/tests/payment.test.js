@@ -417,7 +417,7 @@ describe('paymob.mapper.js — Data mapping', () => {
         assert.strictEqual(payload.special_reference, 'pay_abc123');
     });
 
-    test('buildIntentionPayload: expiration is in the future', async () => {
+    test('buildIntentionPayload: expiration is a valid duration in seconds (<= 3110400)', async () => {
         const payload = buildIntentionPayload({
             amountPiastres:   5000,
             specialReference: 'pay_abc123',
@@ -425,7 +425,7 @@ describe('paymob.mapper.js — Data mapping', () => {
             notificationUrl:  'https://example.com/webhook',
             redirectionUrl:   'https://example.com/redirect',
         });
-        assert.ok(payload.expiration > Math.floor(Date.now() / 1000));
+        assert.ok(payload.expiration > 0 && payload.expiration <= 3110400);
     });
 
     test('buildIntentionPayload: items array is non-empty and matches amount', async () => {

@@ -36,8 +36,6 @@ function buildIntentionPayload({
     extras = {},
     items,
 }) {
-    const expirationUnixSeconds = Math.floor(Date.now() / 1000) + PAYMENT_EXPIRY_MINUTES * 60;
-
     const paymentMethods = [];
     if (paymobConfig.integrationId && !isNaN(paymobConfig.integrationId)) {
         paymentMethods.push(Number(paymobConfig.integrationId));
@@ -59,6 +57,9 @@ function buildIntentionPayload({
             },
         ];
 
+    // Paymob Intention API expects expiration as relative lifetime in seconds (max 3110400 seconds = 36 days)
+    const expirationSeconds = PAYMENT_EXPIRY_MINUTES * 60;
+
     return {
         amount:           safeAmount,
         currency:         'EGP',
@@ -68,7 +69,7 @@ function buildIntentionPayload({
         special_reference: specialReference,
         notification_url:  notificationUrl,
         redirection_url:   redirectionUrl,
-        expiration:        expirationUnixSeconds,
+        expiration:        expirationSeconds,
         extras:            extras,
     };
 }
