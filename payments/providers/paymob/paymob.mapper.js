@@ -37,7 +37,9 @@ function buildIntentionPayload({
     items,
 }) {
     const paymentMethods = [];
-    if (paymobConfig.integrationId && !isNaN(paymobConfig.integrationId)) {
+    if (Array.isArray(paymobConfig.integrationIds) && paymobConfig.integrationIds.length > 0) {
+        paymentMethods.push(...paymobConfig.integrationIds);
+    } else if (paymobConfig.integrationId && !isNaN(paymobConfig.integrationId)) {
         paymentMethods.push(Number(paymobConfig.integrationId));
     }
 

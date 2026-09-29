@@ -421,6 +421,8 @@ async function payCheckoutSessionOnline({ sessionId, userId, paymentMethod = 'CA
                 paymentId:    payment._id,
                 status:       payment.status,
                 clientSecret: intention.clientSecret,
+                checkoutUrl:  intention.checkoutUrl,
+                publicKey:    intention.publicKey || paymobConfig.publicKey,
                 expiresAt:    intention.expiresAt,
             };
         }
@@ -465,6 +467,8 @@ async function payCheckoutSessionOnline({ sessionId, userId, paymentMethod = 'CA
         paymentId:    payment._id,
         status:       'PENDING',
         clientSecret: intention.clientSecret,
+        checkoutUrl:  intention.checkoutUrl,
+        publicKey:    intention.publicKey || paymobConfig.publicKey,
         expiresAt:    intention.expiresAt,
     };
 }

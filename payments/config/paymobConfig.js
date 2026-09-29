@@ -37,22 +37,28 @@ function loadPaymobConfig() {
         console.warn(`⚠️  ${msg}`);
     }
 
-    const cleanedIntegrationId = integrationIdRaw
-        ? String(integrationIdRaw).replace(/[^0-9]/g, '')
-        : '';
-    const integrationId = parseInt(cleanedIntegrationId, 10);
-    if (integrationIdRaw && isNaN(integrationId)) {
-        const msg = `[PaymobConfig] PAYMOB_INTEGRATION_ID must be a valid integer, got: "${integrationIdRaw}"`;
+    const rawIds = (process.env.PAYMOB_INTEGRATION_IDS || process.env.PAYMOB_INTEGRATION_ID || '')
+        .split(/[,;\s]+/)
+        .map(s => s.replace(/[^0-9]/g, ''))
+        .filter(Boolean)
+        .map(s => parseInt(s, 10))
+        .filter(n => !isNaN(n) && n > 0);
+
+    const integrationId = rawIds.length > 0 ? rawIds[0] : null;
+    const integrationIds = rawIds;
+    if (integrationIdRaw && (!integrationId || isNaN(integrationId))) {
+        const msg = `[PaymobConfig] PAYMOB_INTEGRATION_ID must contain at least one valid integer, got: "${integrationIdRaw}"`;
         console.warn(`⚠️  ${msg}`);
     }
 
     return Object.freeze({
-        isConfigured:  missing.length === 0 && !isNaN(integrationId),
-        secretKey:     secretKey       || null,
-        publicKey:     publicKey       || null,
-        hmacSecret:    hmacSecret      || null,
-        integrationId: isNaN(integrationId) ? null : integrationId,
-        baseUrl:       baseUrl.replace(/\/$/, ''), // strip trailing slash
+        isConfigured:   missing.length === 0 && integrationId !== null,
+        secretKey:      secretKey       || null,
+        publicKey:      publicKey       || null,
+        hmacSecret:     hmacSecret      || null,
+        integrationId:  integrationId,
+        integrationIds: Object.freeze(integrationIds),
+        baseUrl:        baseUrl.replace(/\/$/, ''), // strip trailing slash
     });
 }
 

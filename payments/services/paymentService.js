@@ -217,6 +217,8 @@ async function createPayment({ orderId, userId, requestId }) {
         paymentId:    payment._id,
         status:       'PENDING',
         clientSecret: intention.clientSecret,
+        checkoutUrl:  intention.checkoutUrl,
+        publicKey:    intention.publicKey || paymobConfig.publicKey,
         expiresAt:    intention.expiresAt,
     };
 }
@@ -511,6 +513,8 @@ async function _refreshPendingIntention(existingPayment, order, userId, requestI
         paymentId:    existingPayment._id,
         status:       'PENDING',
         clientSecret: intention.clientSecret,
+        checkoutUrl:  intention.checkoutUrl,
+        publicKey:    intention.publicKey || paymobConfig.publicKey,
         expiresAt:    intention.expiresAt,
     };
 }

@@ -62,6 +62,8 @@ const initiateTopup = asyncHandler(async (req, res) => {
             paymentId:    result.paymentId,
             status:       result.status,
             clientSecret: result.clientSecret,
+            checkoutUrl:  result.checkoutUrl,
+            publicKey:    result.publicKey,
             expiresAt:    result.expiresAt,
             amountFils:   result.amountFils,
             amountEgp:    result.amountEgp,

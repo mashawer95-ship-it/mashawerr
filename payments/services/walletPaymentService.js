@@ -802,6 +802,8 @@ async function createWalletTopupPayment({ userId, amountFils, requestId }) {
         paymentId:    payment._id,
         status:       'PENDING',
         clientSecret: intention.clientSecret,
+        checkoutUrl:  intention.checkoutUrl,
+        publicKey:    intention.publicKey || paymobConfig.publicKey,
         expiresAt:    intention.expiresAt,
         amountFils,
         amountEgp:    filsToEgp(amountFils),

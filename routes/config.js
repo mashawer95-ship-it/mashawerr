@@ -21,10 +21,14 @@ router.get('/client-keys', (req, res) => {
             process.env.GOOGLE_MAP_API_KEY ||
             '';
 
+        const paymobConfig = require('../payments/config/paymobConfig');
+        const paymobPublicKey = paymobConfig.publicKey || '';
+
         res.status(200).json({
             success: true,
             config: {
                 googleMapsKey,
+                paymobPublicKey,
             },
         });
     } catch (err) {

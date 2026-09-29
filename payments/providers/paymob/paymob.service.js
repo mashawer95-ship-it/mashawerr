@@ -86,11 +86,17 @@ async function createPaymobIntention({ amountPiastres, specialReference, user, r
     const { PAYMENT_EXPIRY_MINUTES } = require('../../constants/paymentConstants');
     const expiresAt = new Date(Date.now() + PAYMENT_EXPIRY_MINUTES * 60 * 1000);
 
+    const checkoutUrl = paymobConfig.publicKey
+        ? `https://accept.paymob.com/unifiedcheckout/?publicKey=${encodeURIComponent(paymobConfig.publicKey)}&clientSecret=${encodeURIComponent(mapped.clientSecret)}`
+        : `https://accept.paymob.com/unifiedcheckout/?clientSecret=${encodeURIComponent(mapped.clientSecret)}`;
+
     return {
         clientSecret:        mapped.clientSecret,
         providerIntentionId: mapped.providerIntentionId,
         providerOrderId:     mapped.providerOrderId,
         expiresAt,
+        checkoutUrl,
+        publicKey:           paymobConfig.publicKey,
     };
 }
 
