@@ -160,6 +160,17 @@ app.use('/api/feedback', require('./routes/feedback'));
 
 // ─── Wallet & Target System ───────────────────────────────────────────────────
 app.use('/api/wallet', require('./routes/wallet'));
+
+// ─── Payment Module (Paymob) ─────────────────────────────────────────────────
+// POST /api/orders/:orderId/payment          → create payment intention
+// GET  /api/orders/:orderId/payment/status   → get payment status
+// POST /api/payments/paymob/webhook          → Paymob HMAC-verified callback
+// GET  /api/payments/paymob/redirect         → post-checkout redirect page
+// POST /api/payments/:paymentId/refund       → admin refund
+const { orderPaymentRouter, paymentsRouter } = require('./routes/payments');
+app.use('/api/orders/:orderId/payment', orderPaymentRouter);
+app.use('/api/payments', paymentsRouter);
+app.use('/api/checkout', require('./routes/checkout'));
 app.use('/api/rep-targets', require('./routes/repTargets'));
 
 // ─── HR & Live Representative Tracking System ─────────────────────────────────

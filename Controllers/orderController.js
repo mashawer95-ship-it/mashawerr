@@ -929,6 +929,17 @@ const createOrder = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: 'clientId is required' });
     }
 
+    // ─── منع إنشاء طلبات إلكترونية غير مدفوعة عبر POST /api/orders ──────────
+    // الدفع الإلكتروني أو عبر المحفظة يجب أن يمر عبر جلسة الدفع /api/checkout/session لضمان الدفع المسبق
+    const ONLINE_PAYMENT_METHODS = ['online', 'card', 'wallet', 'app_wallet', 'paymob', 'mobile_wallet'];
+    if (!isAdmin && value.paymentMethod && ONLINE_PAYMENT_METHODS.includes(value.paymentMethod.toLowerCase())) {
+        return res.status(400).json({
+            code: 'CHECKOUT_SESSION_REQUIRED',
+            message: 'يتطلب الدفع الإلكتروني أو عبر المحفظة إنشاء جلسة دفع أولاً عبر /api/checkout/session',
+            hint: 'Online and wallet payments must be initiated via POST /api/checkout/session before order creation.',
+        });
+    }
+
     // ─── فحص محفظة العميل: يمنع الإنشاء إذا كان الرصيد أقل من الحد الأدنى المسموح به ───────────
     try {
         const { checkWalletCanOrder } = require('../middlewares/Wallet');
@@ -1804,9 +1815,83 @@ const cancelOrder = asyncHandler(async (req, res) => {
     }
 
     const oldRepId = order.representativeId;
+
+    // Atomically transition status from non-cancelled to cancelled to prevent concurrent double-cancels/refunds
+    const atomicCancelledOrder = await Order.findOneAndUpdate(
+        {
+            _id: order._id,
+            status: { $nin: ['cancelled', 'deleted'] },
+        },
+        {
+            $set: {
+                status: 'cancelled',
+                cancellationReason: value.reason,
+            },
+        },
+        { new: true }
+    );
+
+    if (!atomicCancelledOrder) {
+        return res.status(400).json({ message: 'Order is already cancelled or deleted' });
+    }
+
     order.status = 'cancelled';
     order.cancellationReason = value.reason;
-    await order.save();
+
+    // ─── Payment-Aware Refund Handling (Phase 5) ───────────────────────────
+    if (order.paymentStatus === 'paid') {
+        try {
+            const { Payment } = require('../middlewares/Payment');
+            const payment = await Payment.findOne({
+                orderId: order._id,
+                status:  { $in: ['PAID', 'PARTIALLY_REFUNDED'] },
+            });
+
+            if (payment) {
+                const remainingPiastres = payment.amountPiastres - (payment.refundedAmountPiastres || 0);
+                if (remainingPiastres > 0) {
+                    const isAppWallet = payment.provider === 'app_wallet' || payment.paymentMethod === 'APP_WALLET';
+                    if (isAppWallet) {
+                        const { piastresToFils } = require('../payments/utils/money');
+                        const { refundToWallet } = require('../payments/services/walletPaymentService');
+                        const amountFils = piastresToFils(remainingPiastres);
+
+                        await refundToWallet({
+                            orderId:    order._id,
+                            amountFils,
+                            userId:     order.clientId,
+                            paymentId:  payment._id,
+                            requestId:  req.id,
+                        });
+
+                        payment.refundedAmountPiastres = payment.amountPiastres;
+                        payment.status = 'REFUNDED';
+                        payment.refundedAt = new Date();
+                        await payment.save();
+
+                        order.paymentStatus = 'refunded';
+                        await order.save();
+                    } else if (payment.provider === 'paymob') {
+                        const paymentService = require('../payments/services/paymentService');
+                        await paymentService.refundPayment({
+                            paymentId:      payment._id,
+                            amountPiastres: remainingPiastres,
+                            requestedBy:    req.user?.id || 'system',
+                            requestId:      req.id,
+                        });
+
+                        order.paymentStatus = 'refunded';
+                        await order.save();
+                    }
+                }
+            }
+        } catch (refundErr) {
+            logger.error(`[cancelOrder] Refund failed for order ${order.orderId}: ${refundErr.message}`, {
+                orderId: order.orderId,
+                err:     refundErr.message,
+            });
+        }
+    }
 
     if (oldRepId) {
         try {

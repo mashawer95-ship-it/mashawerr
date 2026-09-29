@@ -171,6 +171,13 @@ const OrderSchema = new mongoose.Schema(
         },
         governorate: { type: String, trim: true, default: null, index: true },
         paymentMethod: { type: String, trim: true, default: 'cash' },
+        // ─── Online Payment Status (Paymob integration) ───────────────────────
+        // Separate from order fulfillment status — updated ONLY by verified webhook
+        paymentStatus: {
+            type: String,
+            enum: ['unpaid', 'pending', 'paid', 'failed', 'refunded'],
+            default: 'unpaid',
+        },
         representativeWillPay: { type: Boolean, default: false },
         representativePaymentAmount: { type: Number, default: 0 },
         purchaseDetails: { type: String, trim: true, default: '' },

@@ -34,6 +34,7 @@
   "scripts": {
     "start": "node app.js",
     "dev": "nodemon app.js",
+    "test": "node payments/tests/payment.test.js",
     "push": "powershell -ExecutionPolicy Bypass -File ./push.ps1",
     "watch:push": "node scripts/auto_push_watcher.js"
   },
