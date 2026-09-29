@@ -26,8 +26,10 @@ async function connectToDB() {
             await migrateUnifiedOrderIds();
             const { autoFixVehicleCategories } = require('../middlewares/VehicleType');
             if (autoFixVehicleCategories) await autoFixVehicleCategories();
+            const { fixPaymentIndexes } = require('../middlewares/Payment');
+            if (fixPaymentIndexes) await fixPaymentIndexes();
         } catch (migrationErr) {
-            console.warn('⚠️  Order/Vehicle migration skipped:', migrationErr.message);
+            console.warn('⚠️  Migration/Index fix skipped:', migrationErr.message);
         }
 
     } catch (err) {

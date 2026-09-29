@@ -236,7 +236,13 @@ const CheckoutSessionSchema = new mongoose.Schema(
 // One session → at most one final Order
 CheckoutSessionSchema.index(
     { finalOrderId: 1 },
-    { unique: true, sparse: true, name: 'uniq_session_order' }
+    {
+        unique: true,
+        partialFilterExpression: {
+            finalOrderId: { $type: 'objectId' },
+        },
+        name: 'uniq_session_order_v2',
+    }
 );
 
 // One PENDING/PAYMENT_PENDING session per user (prevents duplicate checkouts)

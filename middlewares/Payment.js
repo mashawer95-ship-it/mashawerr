@@ -303,9 +303,16 @@ const PaymentSchema = new mongoose.Schema(
 // ─── Indexes ──────────────────────────────────────────────────────────────────
 
 // Primary idempotency: same Paymob transaction cannot be processed twice
+// Uses partialFilterExpression so documents with null/missing providerTransactionId are NOT indexed
 PaymentSchema.index(
     { provider: 1, providerTransactionId: 1 },
-    { unique: true, sparse: true, name: 'uniq_provider_txn' }
+    {
+        unique: true,
+        partialFilterExpression: {
+            providerTransactionId: { $type: 'string' },
+        },
+        name: 'uniq_provider_txn_v2',
+    }
 );
 
 // Look up by order
@@ -397,6 +404,80 @@ PaymentEventSchema.index({ paymentId: 1, createdAt: -1 });
 const Payment = mongoose.model('Payment', PaymentSchema, 'payments');
 const PaymentEvent = mongoose.model('PaymentEvent', PaymentEventSchema, 'payment_events');
 
+// ─── Index Migration Helper ──────────────────────────────────────────────────
+/**
+ * Auto-fix MongoDB payment-related indexes.
+ * Removes outdated compound/sparse indexes that cause E11000 duplicate key errors
+ * on null fields (like { provider: "paymob", providerTransactionId: null }).
+ */
+async function fixPaymentIndexes() {
+    if (mongoose.connection.readyState !== 1) return;
+
+    try {
+        const paymentsCol = mongoose.connection.collection('payments');
+        if (paymentsCol) {
+            const indexes = await paymentsCol.indexes();
+            for (const idx of indexes) {
+                const isOldTxnIndex =
+                    (idx.name === 'uniq_provider_txn' || idx.name === 'provider_1_providerTransactionId_1') ||
+                    (idx.key && idx.key.provider === 1 && idx.key.providerTransactionId === 1 && !idx.partialFilterExpression);
+                if (isOldTxnIndex) {
+                    try {
+                        await paymentsCol.dropIndex(idx.name);
+                        console.log(`[PaymentIndexFix] Dropped outdated unique index on payments: ${idx.name}`);
+                    } catch (e) {
+                        console.warn(`[PaymentIndexFix] Could not drop index ${idx.name} on payments:`, e.message);
+                    }
+                }
+            }
+        }
+    } catch (err) {
+        console.warn('[PaymentIndexFix] Error inspecting payments indexes:', err.message);
+    }
+
+    try {
+        const sessionsCol = mongoose.connection.collection('checkout_sessions');
+        if (sessionsCol) {
+            const indexes = await sessionsCol.indexes();
+            for (const idx of indexes) {
+                const isOldOrderIndex =
+                    (idx.name === 'uniq_session_order' || idx.name === 'finalOrderId_1') && !idx.partialFilterExpression;
+                if (isOldOrderIndex) {
+                    try {
+                        await sessionsCol.dropIndex(idx.name);
+                        console.log(`[PaymentIndexFix] Dropped outdated unique index on checkout_sessions: ${idx.name}`);
+                    } catch (e) {
+                        console.warn(`[PaymentIndexFix] Could not drop index ${idx.name} on checkout_sessions:`, e.message);
+                    }
+                }
+            }
+        }
+    } catch (err) {
+        console.warn('[PaymentIndexFix] Error inspecting checkout_sessions indexes:', err.message);
+    }
+
+    try {
+        const ledgerCol = mongoose.connection.collection('wallet_ledger');
+        if (ledgerCol) {
+            const indexes = await ledgerCol.indexes();
+            for (const idx of indexes) {
+                const isOldLedgerTxn =
+                    (idx.name === 'uniq_wallet_provider_txn' || idx.name === 'providerTransactionId_1') && !idx.partialFilterExpression;
+                if (isOldLedgerTxn) {
+                    try {
+                        await ledgerCol.dropIndex(idx.name);
+                        console.log(`[PaymentIndexFix] Dropped outdated unique index on wallet_ledger: ${idx.name}`);
+                    } catch (e) {
+                        console.warn(`[PaymentIndexFix] Could not drop index ${idx.name} on wallet_ledger:`, e.message);
+                    }
+                }
+            }
+        }
+    } catch (err) {
+        console.warn('[PaymentIndexFix] Error inspecting wallet_ledger indexes:', err.message);
+    }
+}
+
 module.exports = {
     Payment,
     PaymentEvent,
@@ -406,4 +487,5 @@ module.exports = {
     PAYMENT_PURPOSES,
     PAYMENT_METHODS,
     isLegalTransition,
+    fixPaymentIndexes,
 };

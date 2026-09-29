@@ -198,7 +198,13 @@ const WalletLedgerSchema = new mongoose.Schema(
 // Unique constraint: same Paymob transaction cannot credit wallet twice
 WalletLedgerSchema.index(
     { providerTransactionId: 1 },
-    { unique: true, sparse: true, name: 'uniq_wallet_provider_txn' }
+    {
+        unique: true,
+        partialFilterExpression: {
+            providerTransactionId: { $type: 'string' },
+        },
+        name: 'uniq_wallet_provider_txn_v2',
+    }
 );
 
 // Unique constraint on reference for general idempotency
