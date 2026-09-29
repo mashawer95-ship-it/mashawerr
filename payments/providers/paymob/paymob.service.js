@@ -39,6 +39,29 @@ async function createPaymobIntention({ amountPiastres, specialReference, user, r
     const notificationUrl = buildWebhookUrl();
     const redirectionUrl  = buildRedirectionUrl();
 
+    // Sanitize critical fields for Paymob API
+    // Paymob rejects 'NA' for phone_number and requires a valid phone format.
+    if (!billingData.phone_number || billingData.phone_number === 'NA') {
+        billingData.phone_number = '+201000000000';
+    } else {
+        let phone = String(billingData.phone_number).replace(/[\s\-()]/g, '');
+        if (phone.startsWith('01')) {
+            phone = '+2' + phone;
+        } else if (!phone.startsWith('+')) {
+            phone = '+' + phone;
+        }
+        billingData.phone_number = phone;
+    }
+    if (!billingData.first_name || billingData.first_name === 'NA') {
+        billingData.first_name = (user?.name && user.name.split(' ')[0]) || 'عميل';
+    }
+    if (!billingData.last_name || billingData.last_name === 'NA') {
+        billingData.last_name = (user?.name && user.name.split(' ').slice(1).join(' ')) || 'مشاوير';
+    }
+    if (!billingData.email || billingData.email === 'NA' || !billingData.email.includes('@')) {
+        billingData.email = `${user?._id || 'customer'}@mashawerr.com`;
+    }
+
     const payload = paymobMapper.buildIntentionPayload({
         amountPiastres,
         specialReference,

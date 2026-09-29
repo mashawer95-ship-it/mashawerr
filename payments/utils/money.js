@@ -110,11 +110,26 @@ function isValidFils(fils) {
     return Number.isInteger(fils) && fils > 0;
 }
 
+/**
+ * Convert a plain EGP decimal amount to integer fils.
+ * egpToFils(50.00) → 50000
+ *
+ * @param {number} egp
+ * @returns {number} Integer fils
+ */
+function egpToFils(egp) {
+    if (typeof egp !== 'number' || !isFinite(egp) || egp < 0) {
+        throw new Error(`[money] Invalid EGP amount: ${egp}`);
+    }
+    return Math.round(egp * FILS_PER_EGP);
+}
+
 module.exports = {
     filsToEgpPiastres,
     filsToPiastres,    // alias
     piastresToFils,
     egpToPiastres,
+    egpToFils,
     piastresToEgp,
     filsToEgp,
     isValidPiastres,

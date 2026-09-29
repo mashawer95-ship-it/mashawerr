@@ -52,8 +52,12 @@ process.env.NODE_ENV              = 'test';
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('money.js — Currency conversion', () => {
-    const { filsToEgpPiastres, egpToPiastres, piastresToEgp, isValidPiastres } =
+    const { filsToEgpPiastres, egpToPiastres, egpToFils, piastresToEgp, isValidPiastres } =
         require('./../../payments/utils/money');
+
+    test('egpToFils: 50.00 EGP → 50000 fils', async () => {
+        assert.strictEqual(egpToFils(50.00), 50000);
+    });
 
     test('filsToEgpPiastres: 50000 fils → 5000 piastres (50 EGP)', async () => {
         assert.strictEqual(filsToEgpPiastres(50000), 5000);
@@ -424,6 +428,19 @@ describe('paymob.mapper.js — Data mapping', () => {
         assert.ok(payload.expiration > Math.floor(Date.now() / 1000));
     });
 
+    test('buildIntentionPayload: items array is non-empty and matches amount', async () => {
+        const payload = buildIntentionPayload({
+            amountPiastres:   5000,
+            specialReference: 'topup_xyz789',
+            billingData:      buildBillingData(mockUser),
+            notificationUrl:  'https://example.com/webhook',
+            redirectionUrl:   'https://example.com/redirect',
+        });
+        assert.ok(Array.isArray(payload.items) && payload.items.length > 0);
+        assert.strictEqual(payload.items[0].amount, 5000);
+        assert.strictEqual(payload.items[0].quantity, 1);
+    });
+
     test('buildBillingData: maps user fields correctly', async () => {
         const billing = buildBillingData(mockUser);
         assert.strictEqual(billing.email, 'test@example.com');
@@ -574,6 +591,15 @@ describe('Phase 1 & 2: Wallet Top-Up Tests (Scenarios 1 - 5)', () => {
 
         const { error: floatError } = validateWalletTopupRequest({ amountFils: 50.5 });
         assert.ok(floatError, 'Non-integer fils amount must be rejected');
+
+        const { error: emptyError } = validateWalletTopupRequest({});
+        assert.ok(emptyError, 'Empty topup request must be rejected');
+
+        const { error: egpPass } = validateWalletTopupRequest({ amountEgp: 50 });
+        assert.strictEqual(egpPass, undefined, 'amountEgp should pass validation');
+
+        const { error: amountPass } = validateWalletTopupRequest({ amount: 50 });
+        assert.strictEqual(amountPass, undefined, 'amount should pass validation');
     });
 
     test('4. Wallet top-up wrong currency: rejected by callback validator', async () => {

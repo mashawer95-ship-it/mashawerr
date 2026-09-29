@@ -34,14 +34,36 @@ function buildIntentionPayload({
     notificationUrl,
     redirectionUrl,
     extras = {},
+    items,
 }) {
     const expirationUnixSeconds = Math.floor(Date.now() / 1000) + PAYMENT_EXPIRY_MINUTES * 60;
 
+    const paymentMethods = [];
+    if (paymobConfig.integrationId && !isNaN(paymobConfig.integrationId)) {
+        paymentMethods.push(Number(paymobConfig.integrationId));
+    }
+
+    const safeAmount = Number(amountPiastres);
+
+    // Paymob Intention API rejects empty items list `[]`.
+    // It requires a non-empty array with name, amount (or amount_cents), description, and quantity.
+    const safeItems = (Array.isArray(items) && items.length > 0)
+        ? items
+        : [
+            {
+                name: 'شحن رصيد / خدمة مشاوير',
+                amount: safeAmount,
+                amount_cents: safeAmount,
+                description: specialReference || 'خدمة مشاوير',
+                quantity: 1,
+            },
+        ];
+
     return {
-        amount:           amountPiastres,
+        amount:           safeAmount,
         currency:         'EGP',
-        payment_methods:  [paymobConfig.integrationId],
-        items:            [],              // No itemized list required for delivery
+        payment_methods:  paymentMethods,
+        items:            safeItems,
         billing_data:     billingData,
         special_reference: specialReference,
         notification_url:  notificationUrl,

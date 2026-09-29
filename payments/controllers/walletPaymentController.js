@@ -38,7 +38,11 @@ const initiateTopup = asyncHandler(async (req, res) => {
         );
     }
 
-    const { amountFils } = value;
+    let amountFils = value.amountFils;
+    if (!amountFils && (value.amountEgp || value.amount)) {
+        const { egpToFils } = require('../utils/money');
+        amountFils = egpToFils(value.amountEgp || value.amount);
+    }
 
     logger.info('[WalletPaymentController] initiateTopup requested', {
         requestId,

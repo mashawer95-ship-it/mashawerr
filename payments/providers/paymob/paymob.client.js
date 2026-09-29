@@ -24,9 +24,45 @@ const ApiError = require('../../../utils/ApiError');
  * Build an Axios instance pre-configured for Paymob.
  * Returns a new instance each call to avoid shared state issues.
  */
+/**
+ * Extract human-readable error messages from Paymob API responses.
+ * Paymob returns various shapes: string, { detail }, { message }, or field validation maps.
+ */
+function extractPaymobErrorMessage(data) {
+    if (!data) return null;
+    if (typeof data === 'string') return data;
+    if (Array.isArray(data)) return data.filter(Boolean).join(', ');
+    if (typeof data === 'object') {
+        if (typeof data.detail === 'string') return data.detail;
+        if (typeof data.message === 'string') return data.message;
+        const messages = [];
+        for (const [key, value] of Object.entries(data)) {
+            if (Array.isArray(value)) {
+                messages.push(`${key}: ${value.join(', ')}`);
+            } else if (typeof value === 'string') {
+                messages.push(`${key}: ${value}`);
+            } else if (typeof value === 'object' && value !== null) {
+                for (const [subKey, subValue] of Object.entries(value)) {
+                    const subText = Array.isArray(subValue) ? subValue.join(', ') : String(subValue);
+                    messages.push(`${key}.${subKey}: ${subText}`);
+                }
+            }
+        }
+        if (messages.length > 0) return messages.join(' | ');
+    }
+    return null;
+}
+
+/**
+ * Build an Axios instance pre-configured for Paymob.
+ * Returns a new instance each call to avoid shared state issues.
+ */
 function buildPaymobAxios() {
     if (!paymobConfig.secretKey) {
-        throw new ApiError(503, 'خدمة الدفع عبر Paymob غير مهيأة بعد، يرجى ضبط المتغيرات في لوحة التحكم', 'PAYMENT_CONFIG_MISSING');
+        throw new ApiError(503, 'خدمة الدفع عبر Paymob غير مهيأة بعد (PAYMOB_SECRET_KEY مفقود في إعدادات Render)', 'PAYMENT_CONFIG_MISSING', null, true);
+    }
+    if (!paymobConfig.integrationId) {
+        throw new ApiError(503, 'معرف الربط عبر Paymob غير مهيأ (PAYMOB_INTEGRATION_ID مفقود في إعدادات Render)', 'PAYMENT_CONFIG_MISSING', null, true);
     }
     return axios.create({
         baseURL: paymobConfig.baseUrl,
@@ -74,11 +110,28 @@ function mapPaymobError(err, operation, requestId) {
         );
     }
 
+    if (status === 401 || status === 403) {
+        return new ApiError(
+            503,
+            'فشل التوثيق مع بوابة الدفع Paymob (تحقق من صحة PAYMOB_SECRET_KEY في لوحة تحكم Render)',
+            'PAYMENT_PROVIDER_AUTH_ERROR',
+            data,
+            true
+        );
+    }
+
     // 4xx from Paymob = bad request on our side (config/integration issue)
     if (status >= 400 && status < 500) {
-        return ApiError.internal(
-            'حدث خطأ في إعداد عملية الدفع',
-            'PAYMENT_PROVIDER_ERROR'
+        const providerDetail = extractPaymobErrorMessage(data);
+        const userMsg = providerDetail
+            ? `خطأ من بوابة Paymob: ${providerDetail}`
+            : 'حدث خطأ في إعداد عملية الدفع لدى المزود';
+        return new ApiError(
+            400,
+            userMsg,
+            'PAYMENT_PROVIDER_ERROR',
+            data,
+            true
         );
     }
 

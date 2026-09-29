@@ -86,12 +86,21 @@ function validateRefundRequest(body) {
  */
 function validateWalletTopupRequest(body) {
     const schema = joi.object({
-        amountFils: joi.number().integer().min(1).required().messages({
-            'any.required':   'amountFils is required',
+        amountFils: joi.number().integer().min(1).optional().messages({
             'number.base':    'amountFils must be a number',
             'number.integer': 'amountFils must be an integer (fils)',
             'number.min':     'amountFils must be at least 1 fil',
         }),
+        amount: joi.number().min(0.01).optional().messages({
+            'number.base': 'amount must be a number',
+            'number.min':  'amount must be greater than 0',
+        }),
+        amountEgp: joi.number().min(0.01).optional().messages({
+            'number.base': 'amountEgp must be a number',
+            'number.min':  'amountEgp must be greater than 0',
+        }),
+    }).or('amountFils', 'amount', 'amountEgp').messages({
+        'object.missing': 'المبلغ المطلوب شحنه إجباري (amountFils or amount)',
     });
     return schema.validate(body, { abortEarly: false });
 }
