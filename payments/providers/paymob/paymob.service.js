@@ -118,12 +118,16 @@ async function createPaymobIntention({ amountPiastres, specialReference, user, r
  * @throws {ApiError} if any critical validation fails
  */
 function validateTransactionCallback({ transaction, storedPayment, requestId }) {
-    // 1. Integration ID check — ensure transaction was processed through OUR integration
+    // 1. Integration ID check — ensure transaction was processed through OUR integrations (cards or wallets)
     const callbackIntegrationId = Number(transaction.integration_id);
-    if (callbackIntegrationId !== paymobConfig.integrationId) {
+    const validIntegrationIds = Array.isArray(paymobConfig.integrationIds) && paymobConfig.integrationIds.length > 0
+        ? paymobConfig.integrationIds
+        : (paymobConfig.integrationId ? [paymobConfig.integrationId] : []);
+
+    if (validIntegrationIds.length > 0 && !validIntegrationIds.includes(callbackIntegrationId)) {
         logger.warn('[PaymobService] Integration ID mismatch', {
             requestId,
-            expected: paymobConfig.integrationId,
+            expected: validIntegrationIds,
             received: callbackIntegrationId,
             transactionId: transaction.id,
         });
