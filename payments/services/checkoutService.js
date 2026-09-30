@@ -231,13 +231,16 @@ async function createCheckoutSession({ userId, orderPayload, requestId }) {
         pricingDoc = await getOrCreatePricing();
     }
 
-    const baseFareFils      = kdToFils(pricingDoc.baseFare || 0);
-    const pricePerMeterFils = kdToFils(pricingDoc.pricePerMeter || 0.001);
-    const minFareFils       = kdToFils(pricingDoc.minFare || 0);
+    const baseFareFils      = kdToFils(pricingDoc.baseFare ?? 0);
+    const pricePerMeterFils = kdToFils(pricingDoc.pricePerMeter ?? 0);
+    const minFareFils       = kdToFils(pricingDoc.minFare ?? 0);
     const surgeMultiplier   = pricingDoc.surgeMultiplier || 1;
 
     let computedDistancePriceFils = distanceMeters * pricePerMeterFils;
     let computedOriginalPriceFils = Math.round((baseFareFils + computedDistancePriceFils) * surgeMultiplier);
+    // Align to nearest integer piastre (10 fils = 1 piastre = 0.01 EGP)
+    computedOriginalPriceFils = Math.round(computedOriginalPriceFils / 10) * 10;
+
     if (computedOriginalPriceFils < minFareFils) {
         computedOriginalPriceFils = minFareFils;
     }
@@ -247,7 +250,7 @@ async function createCheckoutSession({ userId, orderPayload, requestId }) {
 
     // Fallback if distance was 0 and client submitted estimated price
     if (computedOriginalPriceFils <= 0 && value.totalDeliveryPrice > 0) {
-        computedOriginalPriceFils = Math.round(Number(value.totalDeliveryPrice));
+        computedOriginalPriceFils = Math.round(Number(value.totalDeliveryPrice) / 10) * 10;
     }
     if (computedOriginalPriceFils < ORDER_MIN_PAYMENT_FILS) {
         computedOriginalPriceFils = ORDER_MIN_PAYMENT_FILS; // 5 EGP minimum floor
@@ -261,9 +264,12 @@ async function createCheckoutSession({ userId, orderPayload, requestId }) {
         } else {
             discountAmountFils = Math.min(requestedDiscountAmt, computedOriginalPriceFils);
         }
+        discountAmountFils = Math.round(discountAmountFils / 10) * 10;
     }
 
-    const totalDeliveryPriceFils = Math.max(ORDER_MIN_PAYMENT_FILS, computedOriginalPriceFils - discountAmountFils);
+    let totalDeliveryPriceFils = Math.max(ORDER_MIN_PAYMENT_FILS, computedOriginalPriceFils - discountAmountFils);
+    // Ensure final amount is always clean integer piastres (multiple of 10 fils)
+    totalDeliveryPriceFils = Math.round(totalDeliveryPriceFils / 10) * 10;
 
     if (!isValidFils(totalDeliveryPriceFils)) {
         throw new ApiError(422, 'مبلغ التوصيل المحسوب غير صالح', PAYMENT_ERROR_CODES.ORDER_NOT_PAYABLE);
