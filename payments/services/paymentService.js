@@ -558,6 +558,7 @@ async function _processSuccessfulTransaction({ payment, transaction, transaction
         const { processWalletTopup } = require('./walletPaymentService');
         await processWalletTopup({
             payment,
+            transaction,
             providerTransactionId: transactionId,
             requestId,
         });

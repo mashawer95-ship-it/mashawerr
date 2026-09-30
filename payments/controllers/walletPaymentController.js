@@ -44,29 +44,36 @@ const initiateTopup = asyncHandler(async (req, res) => {
         amountFils = egpToFils(value.amountEgp || value.amount);
     }
 
+    const paymentMethod = value.paymentMethod;
+    const walletPhoneNumber = value.walletPhoneNumber || value.mobileNumber || value.phone;
+
     logger.info('[WalletPaymentController] initiateTopup requested', {
         requestId,
         userId,
         amountFils,
+        paymentMethod,
     });
 
     const result = await walletPaymentService.createWalletTopupPayment({
         userId,
         amountFils,
+        paymentMethod,
+        walletPhoneNumber,
         requestId,
     });
 
     return res.status(200).json({
         success: true,
         data: {
-            paymentId:    result.paymentId,
-            status:       result.status,
-            clientSecret: result.clientSecret,
-            checkoutUrl:  result.checkoutUrl,
-            publicKey:    result.publicKey,
-            expiresAt:    result.expiresAt,
-            amountFils:   result.amountFils,
-            amountEgp:    result.amountEgp,
+            paymentId:     result.paymentId,
+            status:        result.status,
+            clientSecret:  result.clientSecret,
+            checkoutUrl:   result.checkoutUrl,
+            publicKey:     result.publicKey,
+            expiresAt:     result.expiresAt,
+            amountFils:    result.amountFils,
+            amountEgp:     result.amountEgp,
+            paymentMethod: result.paymentMethod,
         },
     });
 });

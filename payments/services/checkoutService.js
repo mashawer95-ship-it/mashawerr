@@ -429,6 +429,9 @@ async function payCheckoutSessionOnline({ sessionId, userId, paymentMethod = 'CA
     }
 
     const selectedPm = paymentMethod === 'MOBILE_WALLET' ? 'MOBILE_WALLET' : 'CARD';
+    const selectedIntegrationId = selectedPm === 'MOBILE_WALLET' && paymobConfig.walletIntegrationId
+        ? paymobConfig.walletIntegrationId
+        : (paymobConfig.cardIntegrationId || paymobConfig.integrationId);
 
     payment = new Payment({
         userId:            String(userId),
@@ -438,7 +441,7 @@ async function payCheckoutSessionOnline({ sessionId, userId, paymentMethod = 'CA
         checkoutSessionId: session._id,
         amountPiastres,
         currency:          CURRENCY.EGP,
-        integrationId:     paymobConfig.integrationId,
+        integrationId:     selectedIntegrationId,
         status:            'PENDING',
     });
     payment.specialReference = `pay_${session._id}`;
@@ -448,6 +451,7 @@ async function payCheckoutSessionOnline({ sessionId, userId, paymentMethod = 'CA
         amountPiastres,
         specialReference: payment.specialReference,
         user,
+        paymentMethod: selectedPm,
         requestId,
     });
 

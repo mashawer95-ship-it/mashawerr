@@ -34,17 +34,25 @@ const { buildUrl } = require('../../../config/urlBuilder');
  * @param {string}  params.requestId
  * @returns {Promise<{ clientSecret, providerIntentionId, providerOrderId, expiresAt }>}
  */
-async function createPaymobIntention({ amountPiastres, specialReference, user, requestId }) {
+async function createPaymobIntention({
+    amountPiastres,
+    specialReference,
+    user,
+    paymentMethod = 'ALL',
+    walletPhoneNumber,
+    requestId,
+}) {
     const billingData     = paymobMapper.buildBillingData(user);
     const notificationUrl = buildWebhookUrl();
     const redirectionUrl  = buildRedirectionUrl();
 
     // Sanitize critical fields for Paymob API
     // Paymob rejects 'NA' for phone_number and requires a valid phone format.
-    if (!billingData.phone_number || billingData.phone_number === 'NA') {
+    const rawPhone = walletPhoneNumber || billingData.phone_number;
+    if (!rawPhone || rawPhone === 'NA') {
         billingData.phone_number = '+201000000000';
     } else {
-        let phone = String(billingData.phone_number).replace(/[\s\-()]/g, '');
+        let phone = String(rawPhone).replace(/[\s\-()]/g, '');
         if (phone.startsWith('01')) {
             phone = '+2' + phone;
         } else if (!phone.startsWith('+')) {
@@ -68,6 +76,7 @@ async function createPaymobIntention({ amountPiastres, specialReference, user, r
         billingData,
         notificationUrl,
         redirectionUrl,
+        paymentMethod,
         extras: {
             payment_reference: specialReference,
         },
@@ -77,6 +86,7 @@ async function createPaymobIntention({ amountPiastres, specialReference, user, r
         requestId,
         specialReference,
         amountPiastres,
+        paymentMethod,
         // Never log the full payload as it contains integration ID
     });
 

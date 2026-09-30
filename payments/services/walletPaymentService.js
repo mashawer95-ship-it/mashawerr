@@ -68,10 +68,22 @@ const ApiError = require('../../utils/ApiError');
  * @param {string} params.providerTransactionId - Paymob transaction ID
  * @param {string} params.requestId
  */
-async function processWalletTopup({ payment, providerTransactionId, requestId }) {
+async function processWalletTopup({ payment, transaction, providerTransactionId, requestId }) {
     const userId    = payment.userId;
     const amountFils = piastresToFils(payment.amountPiastres);
     const reference  = `TOPUP_${payment._id}`;
+
+    const paymobConfig = require('../config/paymobConfig');
+    const sourceType = (transaction?.source_data?.type || '').toLowerCase();
+    const sourceSubType = (transaction?.source_data?.sub_type || '').toLowerCase();
+    const callbackIntegrationId = Number(transaction?.integration_id);
+
+    const isWallet = sourceType === 'wallet'
+        || sourceType === 'mobile_wallet'
+        || (paymobConfig.walletIntegrationId && callbackIntegrationId === Number(paymobConfig.walletIntegrationId));
+
+    const actualPaymentMethod = isWallet ? 'MOBILE_WALLET' : 'CARD';
+    const methodArabic = isWallet ? 'محفظة إلكترونية (أرقام كاش)' : 'بطاقة بنكية (فيزا / ماستركارد)';
 
     logger.info('[WalletPaymentService] Processing wallet top-up credit', {
         requestId,
@@ -79,6 +91,7 @@ async function processWalletTopup({ payment, providerTransactionId, requestId })
         userId,
         amountFils,
         providerTransactionId,
+        actualPaymentMethod,
     });
 
     // ── Pre-check: Idempotency by reference or providerTransactionId ────────
@@ -118,7 +131,14 @@ async function processWalletTopup({ payment, providerTransactionId, requestId })
                 $set: {
                     status:                'PAID',
                     providerTransactionId: String(providerTransactionId),
+                    paymentMethod:         actualPaymentMethod,
+                    integrationId:         callbackIntegrationId || payment.integrationId,
                     paidAt:                new Date(),
+                    metadata: {
+                        sourceType:        transaction?.source_data?.type,
+                        sourceSubType:     transaction?.source_data?.sub_type,
+                        pan:               transaction?.source_data?.pan,
+                    },
                 },
             },
             { new: true, session: mongoSession || undefined }
@@ -170,7 +190,7 @@ async function processWalletTopup({ payment, providerTransactionId, requestId })
                     paymentId:             payment._id,
                     providerTransactionId: String(providerTransactionId),
                     reference,
-                    description:           `Paymob top-up — ${(amountFils / 1000).toFixed(2)} EGP`,
+                    description:           `Paymob top-up (${isWallet ? 'أرقام كاش' : 'فيزا'}) — ${(amountFils / 1000).toFixed(2)} EGP`,
                     performedBy:           'system',
                 },
             ],
@@ -183,7 +203,7 @@ async function processWalletTopup({ payment, providerTransactionId, requestId })
             type:             'credit',
             amountFils,
             balanceAfterFils: balanceAfter,
-            description:      `شحن المحفظة عبر Paymob (${(amountFils / 1000).toFixed(2)} ج.م)`,
+            description:      `شحن المحفظة عبر Paymob (${methodArabic} - ${(amountFils / 1000).toFixed(2)} ج.م)`,
             refId:            String(payment._id),
             performedBy:      'system',
         });
@@ -733,7 +753,13 @@ async function validateTopupAmount({ amountFils, userId }) {
  * @param {string} params.requestId
  * @returns {Promise<{ paymentId, status, clientSecret, expiresAt, amountFils, amountEgp }>}
  */
-async function createWalletTopupPayment({ userId, amountFils, requestId }) {
+async function createWalletTopupPayment({
+    userId,
+    amountFils,
+    paymentMethod = 'ALL',
+    walletPhoneNumber,
+    requestId,
+}) {
     await validateTopupAmount({ amountFils, userId });
 
     const { User } = require('../../middlewares/User');
@@ -746,15 +772,27 @@ async function createWalletTopupPayment({ userId, amountFils, requestId }) {
     const amountPiastres = filsToEgpPiastres(amountFils);
 
     const paymobConfig = require('../config/paymobConfig');
+
+    // Normalize payment method for the Payment document
+    const normPm = String(paymentMethod || '').toUpperCase().trim();
+    let initialPaymentMethod = 'CARD';
+    if (normPm === 'MOBILE_WALLET' || normPm === 'WALLET' || normPm === 'CASH') {
+        initialPaymentMethod = 'MOBILE_WALLET';
+    }
+
+    const initialIntegrationId = (initialPaymentMethod === 'MOBILE_WALLET' && paymobConfig.walletIntegrationId)
+        ? paymobConfig.walletIntegrationId
+        : paymobConfig.integrationId;
+
     const payment = new Payment({
         userId:         String(userId),
         purpose:        'WALLET_TOPUP',
-        paymentMethod:  'CARD',
+        paymentMethod:  initialPaymentMethod,
         provider:       'paymob',
         walletId:       wallet._id,
         amountPiastres,
         currency:       CURRENCY.EGP,
-        integrationId:  paymobConfig.integrationId,
+        integrationId:  initialIntegrationId,
         status:         'PENDING',
     });
     payment.specialReference = `topup_${payment._id}`;
@@ -764,8 +802,8 @@ async function createWalletTopupPayment({ userId, amountFils, requestId }) {
         paymentId:  payment._id,
         eventType:  'WALLET_TOPUP_CREATED',
         requestId,
-        message:    `Wallet top-up initiated: ${amountFils} fils (${amountPiastres} piastres)`,
-        payloadSummary: { amountFils, amountPiastres },
+        message:    `Wallet top-up initiated: ${amountFils} fils (${amountPiastres} piastres), method: ${initialPaymentMethod}`,
+        payloadSummary: { amountFils, amountPiastres, paymentMethod: initialPaymentMethod },
     });
 
     const paymobService = require('../providers/paymob/paymob.service');
@@ -775,6 +813,8 @@ async function createWalletTopupPayment({ userId, amountFils, requestId }) {
             amountPiastres,
             specialReference: payment.specialReference,
             user,
+            paymentMethod: normPm,
+            walletPhoneNumber,
             requestId,
         });
     } catch (err) {
@@ -799,14 +839,15 @@ async function createWalletTopupPayment({ userId, amountFils, requestId }) {
     });
 
     return {
-        paymentId:    payment._id,
-        status:       'PENDING',
-        clientSecret: intention.clientSecret,
-        checkoutUrl:  intention.checkoutUrl,
-        publicKey:    intention.publicKey || paymobConfig.publicKey,
-        expiresAt:    intention.expiresAt,
+        paymentId:     payment._id,
+        status:        'PENDING',
+        clientSecret:  intention.clientSecret,
+        checkoutUrl:   intention.checkoutUrl,
+        publicKey:     intention.publicKey || paymobConfig.publicKey,
+        expiresAt:     intention.expiresAt,
         amountFils,
-        amountEgp:    filsToEgp(amountFils),
+        amountEgp:     filsToEgp(amountFils),
+        paymentMethod: initialPaymentMethod,
     };
 }
 

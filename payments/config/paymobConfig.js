@@ -25,40 +25,64 @@ function loadPaymobConfig() {
     const integrationIdRaw = process.env.PAYMOB_INTEGRATION_ID;
     const baseUrl         = process.env.PAYMOB_BASE_URL || PAYMOB_BASE_URL.PRODUCTION;
 
+    // Card integration ID (Visa / Mastercard)
+    const cardIdRaw = process.env.PAYMOB_CARD_INTEGRATION_ID || process.env.PAYMOB_INTEGRATION_ID;
+    const cardIntegrationId = cardIdRaw ? parseInt(String(cardIdRaw).replace(/[^0-9]/g, ''), 10) : null;
+
+    // Wallet integration ID (Vodafone Cash, Orange Cash, Etisalat Cash, WE Pay - أرقام كاش)
+    const walletIdRaw = process.env.PAYMOB_WALLET_INTEGRATION_ID
+        || process.env.PAYMOB_MOBILE_WALLET_INTEGRATION_ID
+        || process.env.PAYMOB_CASH_INTEGRATION_ID;
+    const walletIntegrationId = walletIdRaw ? parseInt(String(walletIdRaw).replace(/[^0-9]/g, ''), 10) : null;
+
     const missing = [];
 
-    if (!secretKey)        missing.push('PAYMOB_SECRET_KEY');
-    if (!hmacSecret)       missing.push('PAYMOB_HMAC_SECRET');
-    if (!integrationIdRaw) missing.push('PAYMOB_INTEGRATION_ID');
-    if (!publicKey)        missing.push('PAYMOB_PUBLIC_KEY');
+    if (!secretKey)   missing.push('PAYMOB_SECRET_KEY');
+    if (!hmacSecret)  missing.push('PAYMOB_HMAC_SECRET');
+    if (!cardIdRaw && !walletIdRaw && !process.env.PAYMOB_INTEGRATION_IDS) {
+        missing.push('PAYMOB_INTEGRATION_ID');
+    }
+    if (!publicKey)   missing.push('PAYMOB_PUBLIC_KEY');
 
     if (missing.length > 0) {
         const msg = `[PaymobConfig] Paymob environment variables missing: ${missing.join(', ')}. Online payment features will return 503 until configured.`;
         console.warn(`⚠️  ${msg}`);
     }
 
-    const rawIds = (process.env.PAYMOB_INTEGRATION_IDS || process.env.PAYMOB_INTEGRATION_ID || '')
+    // Collect all unique, valid integration IDs into a list
+    const allIdsSet = new Set();
+
+    if (cardIntegrationId && !isNaN(cardIntegrationId) && cardIntegrationId > 0) {
+        allIdsSet.add(cardIntegrationId);
+    }
+    if (walletIntegrationId && !isNaN(walletIntegrationId) && walletIntegrationId > 0) {
+        allIdsSet.add(walletIntegrationId);
+    }
+
+    const rawAdditionalIds = (process.env.PAYMOB_INTEGRATION_IDS || process.env.PAYMOB_INTEGRATION_ID || '')
         .split(/[,;\s]+/)
         .map(s => s.replace(/[^0-9]/g, ''))
         .filter(Boolean)
         .map(s => parseInt(s, 10))
         .filter(n => !isNaN(n) && n > 0);
 
-    const integrationId = rawIds.length > 0 ? rawIds[0] : null;
-    const integrationIds = rawIds;
-    if (integrationIdRaw && (!integrationId || isNaN(integrationId))) {
-        const msg = `[PaymobConfig] PAYMOB_INTEGRATION_ID must contain at least one valid integer, got: "${integrationIdRaw}"`;
-        console.warn(`⚠️  ${msg}`);
+    for (const id of rawAdditionalIds) {
+        allIdsSet.add(id);
     }
 
+    const integrationIds = Array.from(allIdsSet);
+    const primaryIntegrationId = cardIntegrationId || (integrationIds.length > 0 ? integrationIds[0] : null);
+
     return Object.freeze({
-        isConfigured:   missing.length === 0 && integrationId !== null,
-        secretKey:      secretKey       || null,
-        publicKey:      publicKey       || null,
-        hmacSecret:     hmacSecret      || null,
-        integrationId:  integrationId,
-        integrationIds: Object.freeze(integrationIds),
-        baseUrl:        baseUrl.replace(/\/$/, ''), // strip trailing slash
+        isConfigured:        missing.length === 0 && integrationIds.length > 0,
+        secretKey:           secretKey       || null,
+        publicKey:           publicKey       || null,
+        hmacSecret:          hmacSecret      || null,
+        integrationId:       primaryIntegrationId,
+        cardIntegrationId:   cardIntegrationId || primaryIntegrationId,
+        walletIntegrationId: walletIntegrationId || null,
+        integrationIds:      Object.freeze(integrationIds),
+        baseUrl:             baseUrl.replace(/\/$/, ''), // strip trailing slash
     });
 }
 

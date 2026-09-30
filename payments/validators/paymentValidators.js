@@ -99,6 +99,18 @@ function validateWalletTopupRequest(body) {
             'number.base': 'amountEgp must be a number',
             'number.min':  'amountEgp must be greater than 0',
         }),
+        paymentMethod: joi.string().trim().valid(
+            'CARD', 'MOBILE_WALLET', 'WALLET', 'CASH', 'ALL',
+            'card', 'mobile_wallet', 'wallet', 'cash', 'all',
+            'VISA', 'visa'
+        ).default('ALL').optional(),
+        walletPhoneNumber: joi.string().trim().pattern(/^(\+?2)?01[0125][0-9]{8}$/).allow('', null).optional().messages({
+            'string.pattern.base': 'رقم محفظة الكاش غير صالح، يجب أن يكون رقم هاتف مصري (01xxxxxxxxx)',
+        }),
+        mobileNumber: joi.string().trim().pattern(/^(\+?2)?01[0125][0-9]{8}$/).allow('', null).optional().messages({
+            'string.pattern.base': 'رقم الهاتف غير صالح، يجب أن يكون رقم هاتف مصري (01xxxxxxxxx)',
+        }),
+        phone: joi.string().trim().pattern(/^(\+?2)?01[0125][0-9]{8}$/).allow('', null).optional(),
     }).or('amountFils', 'amount', 'amountEgp').messages({
         'object.missing': 'المبلغ المطلوب شحنه إجباري (amountFils or amount)',
     });

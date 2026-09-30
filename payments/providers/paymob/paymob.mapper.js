@@ -35,12 +35,30 @@ function buildIntentionPayload({
     redirectionUrl,
     extras = {},
     items,
+    paymentMethod = 'ALL',
 }) {
     const paymentMethods = [];
-    if (Array.isArray(paymobConfig.integrationIds) && paymobConfig.integrationIds.length > 0) {
-        paymentMethods.push(...paymobConfig.integrationIds);
-    } else if (paymobConfig.integrationId && !isNaN(paymobConfig.integrationId)) {
-        paymentMethods.push(Number(paymobConfig.integrationId));
+    const normPm = String(paymentMethod || '').toUpperCase().trim();
+
+    if (normPm === 'MOBILE_WALLET' || normPm === 'WALLET' || normPm === 'CASH') {
+        if (paymobConfig.walletIntegrationId) {
+            paymentMethods.push(Number(paymobConfig.walletIntegrationId));
+        } else if (Array.isArray(paymobConfig.integrationIds) && paymobConfig.integrationIds.length > 0) {
+            paymentMethods.push(...paymobConfig.integrationIds);
+        }
+    } else if (normPm === 'CARD' || normPm === 'VISA') {
+        if (paymobConfig.cardIntegrationId) {
+            paymentMethods.push(Number(paymobConfig.cardIntegrationId));
+        } else if (paymobConfig.integrationId) {
+            paymentMethods.push(Number(paymobConfig.integrationId));
+        }
+    } else {
+        // 'ALL' or default: allow all configured integrations (both cards and mobile wallets)
+        if (Array.isArray(paymobConfig.integrationIds) && paymobConfig.integrationIds.length > 0) {
+            paymentMethods.push(...paymobConfig.integrationIds);
+        } else if (paymobConfig.integrationId && !isNaN(paymobConfig.integrationId)) {
+            paymentMethods.push(Number(paymobConfig.integrationId));
+        }
     }
 
     const safeAmount = Number(amountPiastres);

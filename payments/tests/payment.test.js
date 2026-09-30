@@ -600,6 +600,41 @@ describe('Phase 1 & 2: Wallet Top-Up Tests (Scenarios 1 - 5)', () => {
 
         const { error: amountPass } = validateWalletTopupRequest({ amount: 50 });
         assert.strictEqual(amountPass, undefined, 'amount should pass validation');
+
+        const { error: walletMethodPass, value: walletVal } = validateWalletTopupRequest({
+            amountEgp: 50,
+            paymentMethod: 'MOBILE_WALLET',
+            walletPhoneNumber: '01012345678',
+        });
+        assert.strictEqual(walletMethodPass, undefined, 'MOBILE_WALLET with valid phone should pass');
+        assert.strictEqual(walletVal.paymentMethod, 'MOBILE_WALLET');
+        assert.strictEqual(walletVal.walletPhoneNumber, '01012345678');
+
+        const { error: invalidPhoneError } = validateWalletTopupRequest({
+            amountEgp: 50,
+            paymentMethod: 'MOBILE_WALLET',
+            walletPhoneNumber: '12345',
+        });
+        assert.ok(invalidPhoneError, 'Invalid Egyptian phone number should fail validation');
+    });
+
+    test('Wallet top-up with MOBILE_WALLET and CARD paymentMethods in payload', async () => {
+        const { buildIntentionPayload } = require('../providers/paymob/paymob.mapper');
+        const cardPayload = buildIntentionPayload({
+            amountPiastres: 5000,
+            specialReference: 'topup_test_card',
+            billingData: { phone_number: '+201012345678' },
+            paymentMethod: 'CARD',
+        });
+        assert.ok(cardPayload.payment_methods.length > 0);
+
+        const allPayload = buildIntentionPayload({
+            amountPiastres: 5000,
+            specialReference: 'topup_test_all',
+            billingData: { phone_number: '+201012345678' },
+            paymentMethod: 'ALL',
+        });
+        assert.ok(allPayload.payment_methods.length > 0);
     });
 
     test('4. Wallet top-up wrong currency: rejected by callback validator', async () => {
