@@ -399,9 +399,10 @@ const calculateVehiclePrices = asyncHandler(async (req, res) => {
         // Base fare + distance * price per meter (in Egyptian Pounds)
         let totalPriceEGP = (vt.baseFare * numberOfTasks) + (distance_meters * vt.pricePerMeter);
         
-        // Ensure minimum fare
-        if (totalPriceEGP < vt.minFare) {
-            totalPriceEGP = vt.minFare;
+        // Ensure minimum fare (at least 5 EGP)
+        const minFareFloor = Math.max(5, vt.minFare || 0);
+        if (totalPriceEGP < minFareFloor) {
+            totalPriceEGP = minFareFloor;
         }
 
         // Apply surge multiplier

@@ -34,6 +34,7 @@ const {
     CHECKOUT_EXPIRY_MINUTES,
     CURRENCY,
     PAYMENT_PROVIDERS,
+    ORDER_MIN_PAYMENT_FILS,
 } = require('../constants/paymentConstants');
 const { filsToEgpPiastres, filsToEgp, isValidFils } = require('../utils/money');
 const ApiError = require('../../utils/ApiError');
@@ -240,13 +241,16 @@ async function createCheckoutSession({ userId, orderPayload, requestId }) {
     if (computedOriginalPriceFils < minFareFils) {
         computedOriginalPriceFils = minFareFils;
     }
+    if (computedOriginalPriceFils < ORDER_MIN_PAYMENT_FILS) {
+        computedOriginalPriceFils = ORDER_MIN_PAYMENT_FILS;
+    }
 
     // Fallback if distance was 0 and client submitted estimated price
     if (computedOriginalPriceFils <= 0 && value.totalDeliveryPrice > 0) {
         computedOriginalPriceFils = Math.round(Number(value.totalDeliveryPrice));
     }
-    if (computedOriginalPriceFils <= 0) {
-        computedOriginalPriceFils = 10000; // 10 EGP minimum fallback
+    if (computedOriginalPriceFils < ORDER_MIN_PAYMENT_FILS) {
+        computedOriginalPriceFils = ORDER_MIN_PAYMENT_FILS; // 5 EGP minimum floor
     }
 
     // Apply discount
@@ -259,7 +263,7 @@ async function createCheckoutSession({ userId, orderPayload, requestId }) {
         }
     }
 
-    const totalDeliveryPriceFils = Math.max(0, computedOriginalPriceFils - discountAmountFils);
+    const totalDeliveryPriceFils = Math.max(ORDER_MIN_PAYMENT_FILS, computedOriginalPriceFils - discountAmountFils);
 
     if (!isValidFils(totalDeliveryPriceFils)) {
         throw new ApiError(422, 'مبلغ التوصيل المحسوب غير صالح', PAYMENT_ERROR_CODES.ORDER_NOT_PAYABLE);
@@ -399,6 +403,14 @@ async function payCheckoutSessionOnline({ sessionId, userId, paymentMethod = 'CA
     const user = await UserModel.findById(userId).lean();
     if (!user) {
         throw new ApiError(404, 'المستخدم غير موجود', PAYMENT_ERROR_CODES.PAYMENT_UNAUTHORIZED);
+    }
+
+    if (session.totalDeliveryPriceFils < ORDER_MIN_PAYMENT_FILS) {
+        throw new ApiError(
+            422,
+            `الحد الأدنى لدفع الطلب هو ${filsToEgp(ORDER_MIN_PAYMENT_FILS)} ج.م`,
+            PAYMENT_ERROR_CODES.ORDER_NOT_PAYABLE
+        );
     }
 
     const amountPiastres = filsToEgpPiastres(session.totalDeliveryPriceFils);

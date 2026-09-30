@@ -1201,8 +1201,9 @@ const createOrder = asyncHandler(async (req, res) => {
         let calculatedKd = (pricing.baseFare * numTasks) + (pricingDistanceMeters * pricing.pricePerMeter);
         calculatedKd = calculatedKd * pricing.surgeMultiplier;
 
-        if (calculatedKd < pricing.minFare) {
-            calculatedKd = pricing.minFare;
+        const effectiveMinFare = Math.max(5, pricing.minFare || 0);
+        if (calculatedKd < effectiveMinFare) {
+            calculatedKd = effectiveMinFare;
         }
 
         const originalFils = kdToFils(calculatedKd);
@@ -1212,9 +1213,9 @@ const createOrder = asyncHandler(async (req, res) => {
             if ((dtype === 'percentage' || dtype === 'global_discount') && (value.discountPercentage || 0) > 0) {
                 const perc = value.discountPercentage || 0;
                 const discountVal = (backendDeliveryPriceFils * perc) / 100;
-                backendDeliveryPriceFils = Math.max(0, backendDeliveryPriceFils - discountVal);
+                backendDeliveryPriceFils = Math.max(5000, backendDeliveryPriceFils - discountVal);
             } else {
-                backendDeliveryPriceFils = Math.max(0, backendDeliveryPriceFils - amt);
+                backendDeliveryPriceFils = Math.max(5000, backendDeliveryPriceFils - amt);
             }
         }
 

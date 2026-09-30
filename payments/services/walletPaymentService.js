@@ -41,6 +41,7 @@ const {
     WALLET_MAX_TOPUP_FILS,
     WALLET_MAX_BALANCE_FILS,
     WALLET_DAILY_TOPUP_LIMIT_FILS,
+    ORDER_MIN_PAYMENT_FILS,
     CURRENCY,
 } = require('../constants/paymentConstants');
 const { piastresToFils, filsToEgpPiastres, isValidFils, filsToEgp } = require('../utils/money');
@@ -332,6 +333,14 @@ async function payOrderFromWallet({ checkoutSessionId, userId, requestId }) {
 
     if (!isValidFils(amountFils)) {
         throw new ApiError(422, 'المبلغ غير صالح', PAYMENT_ERROR_CODES.ORDER_NOT_PAYABLE);
+    }
+
+    if (amountFils < ORDER_MIN_PAYMENT_FILS) {
+        throw new ApiError(
+            422,
+            `الحد الأدنى لدفع الطلب من المحفظة هو ${filsToEgp(ORDER_MIN_PAYMENT_FILS)} ج.م`,
+            PAYMENT_ERROR_CODES.ORDER_NOT_PAYABLE
+        );
     }
 
     const debitReference = `ORDER_PAY_${checkoutSessionId}`;

@@ -77,14 +77,21 @@ const PAYMENT_EXPIRY_MINUTES = 30;
  */
 const CHECKOUT_EXPIRY_MINUTES = 45;
 
-// ─── Wallet Limits ────────────────────────────────────────────────────────────
+// ─── Wallet & Order Payment Limits ──────────────────────────────────────────
 // All limits configured in EGP (جنيه مصري) with internal storage in FILS (1 EGP = 1000 fils).
 // Defaults can be overridden via environment variables.
 
-/** Minimum wallet top-up amount. Default: 1 EGP (جنيه واحد مصري) */
-const WALLET_MIN_TOPUP_EGP = parseFloat(process.env.WALLET_MIN_TOPUP_EGP || '1');
+/** Minimum wallet top-up amount. Default: 5 EGP (خمسة جنيه مصري) */
+const WALLET_MIN_TOPUP_EGP = parseFloat(process.env.WALLET_MIN_TOPUP_EGP || '5');
 const WALLET_MIN_TOPUP_FILS = parseInt(
     process.env.WALLET_MIN_TOPUP_FILS || String(Math.round(WALLET_MIN_TOPUP_EGP * 1000)),
+    10
+);
+
+/** Minimum order payment amount. Default: 5 EGP (خمسة جنيه مصري) */
+const ORDER_MIN_PAYMENT_EGP = parseFloat(process.env.ORDER_MIN_PAYMENT_EGP || '5');
+const ORDER_MIN_PAYMENT_FILS = parseInt(
+    process.env.ORDER_MIN_PAYMENT_FILS || String(Math.round(ORDER_MIN_PAYMENT_EGP * 1000)),
     10
 );
 
@@ -165,6 +172,8 @@ module.exports = {
     CHECKOUT_EXPIRY_MINUTES,
     WALLET_MIN_TOPUP_EGP,
     WALLET_MIN_TOPUP_FILS,
+    ORDER_MIN_PAYMENT_EGP,
+    ORDER_MIN_PAYMENT_FILS,
     WALLET_MAX_TOPUP_EGP,
     WALLET_MAX_TOPUP_FILS,
     WALLET_MAX_BALANCE_EGP,
