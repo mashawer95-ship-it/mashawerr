@@ -27,6 +27,15 @@ const jwt          = require('jsonwebtoken');
 const checkUserStatus = require('./checkUserStatus');
 
 const DEFAULT_ACCESS_SECRET = '4ae0e005a85d9690e9d91b0f7415d966c3a463ed1e33b5c2d6412d9d09ef401a67f41f2bd980ce8d7b040141d8701b74e19cda45c6573c36f1f132bfd3bfa06f';
+
+// ─── SECURITY: Production startup guard ──────────────────────────────────────
+const isProduction = process.env.NODE_ENV === 'production';
+const hasAccessSecret = !!(process.env.JWT_ACCESS_SECRET || process.env.JWT_SECRET);
+if (isProduction && !hasAccessSecret) {
+    console.error('[SECURITY FATAL] JWT secrets (JWT_ACCESS_SECRET or JWT_SECRET) must be set in production in verifytoken. Refusing to start with insecure fallback defaults.');
+    process.exit(1);
+}
+
 const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET || process.env.JWT_SECRET || DEFAULT_ACCESS_SECRET;
 
 // ─── Token Extractor ─────────────────────────────────────────────────────────

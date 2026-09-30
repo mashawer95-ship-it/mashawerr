@@ -132,9 +132,41 @@ const payWallet = asyncHandler(async (req, res) => {
     });
 });
 
+/**
+ * POST /api/checkout/:sessionId/confirm-cash
+ * Confirm Cash payment for a checkout session and create the final order.
+ */
+const confirmCash = asyncHandler(async (req, res) => {
+    const requestId = req.id;
+    const userId = req.user?.id || req.user?._id;
+    const { sessionId } = req.params;
+
+    if (!userId) {
+        throw ApiError.unauthorized('المستخدم غير مسجل الدخول');
+    }
+
+    logger.info('[CheckoutController] confirmCash requested', {
+        requestId,
+        sessionId,
+        userId,
+    });
+
+    const result = await checkoutService.confirmCashCheckoutSession({
+        sessionId,
+        userId,
+        requestId,
+    });
+
+    return res.status(200).json({
+        success: true,
+        data: result,
+    });
+});
+
 module.exports = {
     createSession,
     getSession,
     payOnline,
     payWallet,
+    confirmCash,
 };

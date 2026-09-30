@@ -28,6 +28,20 @@ function sanitizeExpires(val, fallback) {
     return /^\d+[smhdwy]?$/i.test(clean) ? clean : fallback;
 }
 
+// ─── SECURITY: Production startup guard ──────────────────────────────────────
+// In production, JWT secrets MUST be set as environment variables.
+// Falling back to a hardcoded, known default secret in production is a
+// critical vulnerability — any attacker knowing the defaults can forge tokens.
+const isProduction = process.env.NODE_ENV === 'production';
+const hasAccessSecret  = !!(process.env.JWT_ACCESS_SECRET  || process.env.JWT_SECRET);
+const hasRefreshSecret = !!(process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET);
+
+if (isProduction && (!hasAccessSecret || !hasRefreshSecret)) {
+    // Log a critical error and crash — do NOT silently fall back to the hardcoded secret
+    console.error('[SECURITY FATAL] JWT secrets (JWT_ACCESS_SECRET, JWT_REFRESH_SECRET or JWT_SECRET) must be set in production. Refusing to start with insecure fallback defaults.');
+    process.exit(1);
+}
+
 const ACCESS_SECRET  = process.env.JWT_ACCESS_SECRET  || process.env.JWT_SECRET || DEFAULT_ACCESS_SECRET;
 const REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET || DEFAULT_REFRESH_SECRET;
 const ACCESS_EXPIRES  = sanitizeExpires(process.env.JWT_ACCESS_EXPIRES, '10m');

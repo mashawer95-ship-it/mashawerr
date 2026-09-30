@@ -442,17 +442,32 @@ async function refundPayment({ paymentId, amountPiastres, requestedBy, requestId
                     });
                     gatewayRefundSucceeded = true;
                 } catch (gatewayErr) {
-                    logger.warn(`[refundPayment] Paymob gateway refund failed (${gatewayErr.message}). Falling back to instant in-app wallet refund.`, {
-                        paymentId: payment._id,
-                        orderId:   payment.orderId,
-                        err:       gatewayErr.message,
-                    });
+                    if (isDefinitiveRefundRejection(gatewayErr)) {
+                        logger.warn(`[refundPayment] Paymob gateway definitively rejected refund (${gatewayErr.message}). Safe fallback to instant in-app wallet refund.`, {
+                            paymentId: payment._id,
+                            orderId:   payment.orderId,
+                            err:       gatewayErr.message,
+                        });
+                    } else {
+                        // Gateway outcome is indeterminate (timeout, network error, 5xx, or already refunded).
+                        // Invariant: MUST NOT execute wallet fallback on indeterminate gateway status to prevent double payout!
+                        logger.error(`[refundPayment] Paymob gateway refund outcome indeterminate (${gatewayErr.message}). Blocking wallet fallback to prevent double payout.`, {
+                            paymentId: payment._id,
+                            orderId:   payment.orderId,
+                            err:       gatewayErr.message,
+                        });
+                        throw new ApiError(
+                            504,
+                            'حالة استرداد المبلغ عبر البطاقة البنكية قيد المراجعة مع البنك، يرجى الانتظار لتجنب تكرار الاسترداد',
+                            'REFUND_STATUS_UNCERTAIN'
+                        );
+                    }
                 }
             }
 
             if (!gatewayRefundSucceeded) {
-                // If Paymob gateway refund cannot be processed (e.g. 400 insufficient merchant settlement float, or card limitations),
-                // fall back immediately to in-app wallet refund so customer money is NEVER lost or locked!
+                // If Paymob gateway refund was definitively rejected (e.g. 400 insufficient merchant settlement float, or card limitations),
+                // fall back safely to in-app wallet refund so customer money is not locked.
                 const { piastresToFils } = require('../utils/money');
                 const { refundToWallet } = require('./walletPaymentService');
                 const amountFils = piastresToFils(refundAmount);
@@ -927,8 +942,143 @@ async function _recordEvent({ paymentId, orderId, eventType, provider, providerE
     }
 }
 
+/**
+ * Determine whether a Paymob refund error is a definitive rejection where
+ * we are 100% CERTAIN that NO money was refunded to the card.
+ *
+ * ONLY on definitive rejection can we safely fall back to wallet credit.
+ * On timeouts (ECONNABORTED, ETIMEDOUT), network errors, 5xx server errors,
+ * or "already refunded" errors, the state is uncertain and wallet fallback
+ * MUST NOT be executed (to prevent double compensation).
+ */
+function isDefinitiveRefundRejection(err) {
+    if (!err) return false;
+    const msg = (err.message || '').toLowerCase();
+    const code = err.code;
+    const status = err.statusCode || err.status || err.response?.status;
+
+    // Timeouts and network disconnects are INDETERMINATE — MUST NOT fall back to wallet
+    if (code === 'ECONNABORTED' || code === 'ETIMEDOUT' || code === 'ENOTFOUND' || code === 'ECONNRESET') {
+        return false;
+    }
+    // If no HTTP response from provider, status is indeterminate
+    if (!status) return false;
+    // Server errors (5xx) from gateway are indeterminate
+    if (status >= 500) return false;
+
+    // "Already refunded" means funds already returned to card — MUST NOT refund to wallet
+    if (msg.includes('already refunded') || msg.includes('exceeds')) {
+        return false;
+    }
+
+    // HTTP 400 / 422 with definitive gateway rejection confirms no card refund took place
+    if (status === 400 || status === 422) {
+        return true;
+    }
+
+    return false;
+}
+
+/**
+ * Authoritatively reconcile an uncertain refund via Paymob transaction status inquiry.
+ * Safe for background jobs, admin dashboard, or customer retry.
+ *
+ * @param {object} params
+ * @param {string} params.paymentId
+ * @param {string} params.requestId
+ * @returns {Promise<object>} Final reconciliation result
+ */
+async function reconcileUncertainRefund({ paymentId, requestId }) {
+    const payment = await Payment.findById(paymentId);
+    if (!payment) {
+        throw new ApiError(404, 'Payment document not found', 'PAYMENT_NOT_FOUND');
+    }
+    if (!payment.providerTransactionId) {
+        throw new ApiError(400, 'Payment has no providerTransactionId for inquiry', 'PAYMENT_PROVIDER_ERROR');
+    }
+
+    const paymobTx = await paymobService.getTransaction({
+        transactionId: payment.providerTransactionId,
+        requestId,
+    });
+
+    // Check authoritative boolean fields directly from provider data
+    const isRefundedOnCard = Boolean(paymobTx.is_refunded || (Number(paymobTx.refunded_amount_cents) > 0));
+
+    if (isRefundedOnCard) {
+        // Confirmed: Card refund actually succeeded at the bank
+        const refundedPiastres = Number(paymobTx.refunded_amount_cents) || payment.amountPiastres;
+        const isFull = refundedPiastres >= payment.amountPiastres;
+
+        await Payment.findByIdAndUpdate(payment._id, {
+            status: isFull ? 'REFUNDED' : 'PARTIALLY_REFUNDED',
+            refundedAmountPiastres: refundedPiastres,
+            refundedAt: new Date(),
+            'metadata.refundStatus': 'CONFIRMED',
+            'metadata.refundMethod': 'CARD_GATEWAY',
+        });
+
+        if (payment.orderId) {
+            await Order.findByIdAndUpdate(payment.orderId, {
+                $set: { paymentStatus: isFull ? 'refunded' : 'paid' },
+            }).catch(() => {});
+        }
+
+        logger.info('[PaymentService] Uncertain refund reconciled: CARD_GATEWAY CONFIRMED', {
+            paymentId: payment._id,
+            refundedPiastres,
+        });
+
+        return {
+            status: isFull ? 'REFUNDED' : 'PARTIALLY_REFUNDED',
+            refundMethod: 'CARD_GATEWAY',
+            amountPiastres: refundedPiastres,
+        };
+    } else {
+        // Confirmed: No card refund happened at the bank. Safe to execute wallet fallback!
+        const { piastresToFils } = require('../utils/money');
+        const { refundToWallet } = require('./walletPaymentService');
+        const amountFils = piastresToFils(payment.amountPiastres);
+
+        await refundToWallet({
+            orderId: payment.orderId,
+            amountFils,
+            userId: payment.userId,
+            paymentId: payment._id,
+            requestId,
+        });
+
+        await Payment.findByIdAndUpdate(payment._id, {
+            status: 'REFUNDED',
+            refundedAmountPiastres: payment.amountPiastres,
+            refundedAt: new Date(),
+            'metadata.refundStatus': 'CONFIRMED',
+            'metadata.refundMethod': 'WALLET_FALLBACK',
+        });
+
+        if (payment.orderId) {
+            await Order.findByIdAndUpdate(payment.orderId, {
+                $set: { paymentStatus: 'refunded' },
+            }).catch(() => {});
+        }
+
+        logger.info('[PaymentService] Uncertain refund reconciled: WALLET_FALLBACK CONFIRMED', {
+            paymentId: payment._id,
+            amountFils,
+        });
+
+        return {
+            status: 'REFUNDED',
+            refundMethod: 'WALLET_FALLBACK',
+            amountFils,
+        };
+    }
+}
+
 module.exports = {
     createPayment,
     processWebhookTransaction,
     refundPayment,
+    isDefinitiveRefundRejection,
+    reconcileUncertainRefund,
 };

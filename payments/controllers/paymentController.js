@@ -160,46 +160,38 @@ const paymobWebhook = asyncHandler(async (req, res) => {
  */
 const paymobRedirect = asyncHandler(async (req, res) => {
     const requestId = req.id;
-    // Query params from Paymob redirect: success, is_voided, is_refunded, merchant_order_id, etc.
-    // We DO NOT trust these — never update payment status here.
-    logger.info('[PaymentController] Paymob redirect received', {
+    // ── SECURITY: This endpoint is UX-only navigation.
+    // It MUST NOT confirm payment status, trigger financial operations,
+    // mark payments as paid, or call processWebhookTransaction.
+    // The ONLY authoritative confirmation source is the server-to-server
+    // Paymob webhook at POST /api/payments/paymob/webhook (which verifies
+    // the HMAC signature before any business logic).
+    //
+    // This page exists solely to give the user a human-readable result page
+    // in the browser after returning from Paymob's hosted checkout.
+    // The mobile app polls GET /api/orders/:orderId/payment-status for the
+    // authoritative payment state.
+    logger.info('[PaymentController] Paymob redirect received (UX-only, no financial action)', {
         requestId,
-        query: req.query,
+        // Only log non-sensitive query keys for diagnostics (never log hmac/tokens)
+        success: req.query.success,
+        pending: req.query.pending,
     });
 
+    // Derive the display state from the query param — this is DISPLAY ONLY,
+    // never used to alter payment, order, wallet, or ledger state.
     const success = req.query.success === 'true';
+    const isPending = req.query.pending === 'true';
 
-    // Instant confirmation on verified successful redirect
-    if (success && req.query.id) {
-        try {
-            const redirectTxn = {
-                id: req.query.id,
-                amount_cents: Number(req.query.amount_cents),
-                currency: req.query.currency || 'EGP',
-                success: true,
-                pending: false,
-                is_voided: false,
-                integration_id: Number(req.query.integration_id),
-                order: {
-                    id: req.query.order,
-                    merchant_order_id: req.query.merchant_order_id,
-                },
-                merchant_order_id: req.query.merchant_order_id,
-                special_reference: req.query.merchant_order_id,
-                source_data: {
-                    type: req.query['source_data.type'] || 'card',
-                    pan: req.query['source_data.pan'] || '',
-                    sub_type: req.query['source_data.sub_type'] || '',
-                },
-            };
-            await paymentService.processWebhookTransaction({ transaction: redirectTxn, requestId });
-        } catch (err) {
-            logger.warn('[PaymentController] Redirect auto-process warning', {
-                requestId,
-                err: err.message,
-            });
-        }
-    }
+    // Determine display state — purely cosmetic, NEVER financial
+    const displayColor = success ? '#22c55e' : isPending ? '#f59e0b' : '#ef4444';
+    const displayIcon  = success ? '✅' : isPending ? '⏳' : '❌';
+    const displayTitle = success ? 'تم الدفع بنجاح' : isPending ? 'جارٍ المعالجة...' : 'لم يتم الدفع';
+    const displayMsg   = success
+        ? 'تمت عملية الدفع بنجاح، يمكنك العودة للتطبيق الآن لمتابعة طلبك.'
+        : isPending
+        ? 'عملية الدفع قيد المعالجة. سيتم تحديث حالة الطلب تلقائياً في التطبيق.'
+        : 'حدث خطأ في الدفع، يرجى المحاولة مرة أخرى من التطبيق.';
 
     res.status(200).send(`
         <!DOCTYPE html>
@@ -208,10 +200,10 @@ const paymobRedirect = asyncHandler(async (req, res) => {
         <meta name="viewport" content="width=device-width,initial-scale=1">
         <style>body{font-family:sans-serif;text-align:center;padding:40px;background:#f5f5f5}
         .box{background:#fff;border-radius:12px;padding:32px;max-width:400px;margin:auto;box-shadow:0 2px 16px rgba(0,0,0,.1)}
-        h2{color:${success ? '#22c55e' : '#ef4444'}}p{color:#666}</style></head>
+        h2{color:${displayColor}}p{color:#666}</style></head>
         <body><div class="box">
-        <h2>${success ? '✅ تم الدفع بنجاح' : '❌ لم يتم الدفع'}</h2>
-        <p>${success ? 'تمت عملية الدفع بنجاح، يمكنك العودة للتطبيق الآن.' : 'حدث خطأ في الدفع، يرجى المحاولة مرة أخرى.'}</p>
+        <h2>${displayIcon} ${displayTitle}</h2>
+        <p>${displayMsg}</p>
         <p style="font-size:12px;color:#999;margin-top:24px">سيتم تحديث حالة العملية فوراً في التطبيق.</p>
         </div></body></html>
     `);

@@ -219,10 +219,20 @@ async function createCheckoutSession({ userId, orderPayload, requestId }) {
                 routeStatus = 'READY';
             }
         } catch (routeErr) {
-            logger.warn('[CheckoutService] Route calculation fallback to client values', {
+            logger.warn('[CheckoutService] Route calculation failed', {
                 requestId, err: routeErr.message,
             });
         }
+    }
+
+    // Security: Multi-waypoint delivery orders require authoritative route calculation.
+    // Unverified client distance or client-estimated price must NEVER be trusted for financial checkout.
+    if (waypoints.length >= 2 && (routeStatus !== 'READY' || distanceMeters <= 0)) {
+        throw new ApiError(
+            422,
+            'تعذر احتساب مسافة المسار بدقة لإنشاء جلسة الدفع. يرجى التأكد من صحة المواقع وإعادة المحاولة.',
+            PAYMENT_ERROR_CODES.ROUTE_CALCULATION_FAILED || 'ROUTE_CALCULATION_FAILED'
+        );
     }
 
     // ── 6. Authoritative Pricing Calculation (in fils) ───────────────────────
@@ -235,9 +245,13 @@ async function createCheckoutSession({ userId, orderPayload, requestId }) {
     const pricePerMeterFils = kdToFils(pricingDoc.pricePerMeter ?? 0);
     const minFareFils       = kdToFils(pricingDoc.minFare ?? 0);
     const surgeMultiplier   = pricingDoc.surgeMultiplier || 1;
+    const numTasks          = Math.max(1, value.tasks?.length || 1);
 
-    let computedDistancePriceFils = distanceMeters * pricePerMeterFils;
-    let computedOriginalPriceFils = Math.round((baseFareFils + computedDistancePriceFils) * surgeMultiplier);
+    // Authoritative server-verified distance only
+    const pricingDistanceMeters = distanceMeters > 0 ? distanceMeters : 0;
+
+    let computedDistancePriceFils = pricingDistanceMeters * pricePerMeterFils;
+    let computedOriginalPriceFils = Math.round(((baseFareFils * numTasks) + computedDistancePriceFils) * surgeMultiplier);
     // Align to nearest integer piastre (10 fils = 1 piastre = 0.01 EGP)
     computedOriginalPriceFils = Math.round(computedOriginalPriceFils / 10) * 10;
 
@@ -246,14 +260,6 @@ async function createCheckoutSession({ userId, orderPayload, requestId }) {
     }
     if (computedOriginalPriceFils < ORDER_MIN_PAYMENT_FILS) {
         computedOriginalPriceFils = ORDER_MIN_PAYMENT_FILS;
-    }
-
-    // Fallback if distance was 0 and client submitted estimated price
-    if (computedOriginalPriceFils <= 0 && value.totalDeliveryPrice > 0) {
-        computedOriginalPriceFils = Math.round(Number(value.totalDeliveryPrice) / 10) * 10;
-    }
-    if (computedOriginalPriceFils < ORDER_MIN_PAYMENT_FILS) {
-        computedOriginalPriceFils = ORDER_MIN_PAYMENT_FILS; // 5 EGP minimum floor
     }
 
     // Apply discount
@@ -540,8 +546,121 @@ async function payCheckoutSessionOnline({ sessionId, userId, paymentMethod = 'CA
     };
 }
 
+/**
+ * Confirm and finalize an Order from a CASH CheckoutSession.
+ *
+ * Security:
+ *  - Enforces session ownership
+ *  - Enforces paymentMethod === 'CASH' (cannot confirm CARD/WALLET as CASH)
+ *  - Enforces not expired
+ *  - Atomically locks session status: PENDING -> PROCESSING
+ *  - Creates final order from frozen snapshot
+ *  - Idempotent on retries
+ */
+async function confirmCashCheckoutSession({ sessionId, userId, requestId }) {
+    const session = await CheckoutSession.findById(sessionId);
+    if (!session) {
+        throw new ApiError(404, 'جلسة الدفع غير موجودة', PAYMENT_ERROR_CODES.CHECKOUT_NOT_FOUND);
+    }
+
+    if (String(session.userId) !== String(userId)) {
+        throw new ApiError(403, 'غير مصرح لك بتأكيد هذه الجلسة', PAYMENT_ERROR_CODES.CHECKOUT_UNAUTHORIZED);
+    }
+
+    if (session.status === 'COMPLETED' && session.finalOrderId) {
+        logger.info('[CheckoutService] Duplicate cash confirmation (idempotent)', {
+            requestId, sessionId, finalOrderId: session.finalOrderId,
+        });
+        return {
+            orderId:        session.finalOrderId,
+            orderNumericId: session.finalOrderNumericId,
+            status:         'COMPLETED',
+        };
+    }
+
+    if (session.status === 'FAILED' || session.status === 'CANCELLED') {
+        throw new ApiError(422, 'جلسة الدفع ملغية أو فاشلة', PAYMENT_ERROR_CODES.CHECKOUT_NOT_FOUND);
+    }
+
+    if (session.expiresAt < new Date()) {
+        await CheckoutSession.findByIdAndUpdate(sessionId, { $set: { status: 'EXPIRED' } });
+        throw new ApiError(422, 'انتهت صلاحية جلسة الدفع', PAYMENT_ERROR_CODES.CHECKOUT_EXPIRED);
+    }
+
+    if (session.paymentMethod !== 'CASH') {
+        throw new ApiError(422, 'طريقة الدفع في هذه الجلسة ليست نقداً (كاش)', PAYMENT_ERROR_CODES.PAYMENT_METHOD_UNAVAILABLE);
+    }
+
+    // Atomic session claim: only transitions PENDING -> PROCESSING
+    const lockedSession = await CheckoutSession.findOneAndUpdate(
+        { _id: sessionId, status: 'PENDING' },
+        { $set: { status: 'PROCESSING' } },
+        { new: true }
+    );
+
+    if (!lockedSession) {
+        const existing = await CheckoutSession.findById(sessionId).lean();
+        if (existing?.status === 'COMPLETED' && existing.finalOrderId) {
+            return {
+                orderId:        existing.finalOrderId,
+                orderNumericId: existing.finalOrderNumericId,
+                status:         'COMPLETED',
+            };
+        }
+        throw new ApiError(409, 'جلسة الدفع قيد المعالجة حالياً أو تم إكمالها بالفعل', PAYMENT_ERROR_CODES.CHECKOUT_ALREADY_COMPLETED);
+    }
+
+    const { _createOrderFromSnapshot } = require('./walletPaymentService');
+    const { consumeDiscountAfterSuccessfulOrder } = require('../../middlewares/Discount');
+
+    let finalOrder;
+    try {
+        finalOrder = await _createOrderFromSnapshot({
+            session: lockedSession,
+            paymentId: null,
+            paymentMethod: 'cash',
+            requestId,
+        });
+
+        await CheckoutSession.findByIdAndUpdate(sessionId, {
+            status:              'COMPLETED',
+            finalOrderId:        finalOrder._id,
+            finalOrderNumericId: finalOrder.orderId,
+            completedAt:         new Date(),
+        });
+
+        // Consume discount if applicable
+        if (session.discountCode || (session.discountAmountFils && session.discountAmountFils > 0)) {
+            await consumeDiscountAfterSuccessfulOrder({
+                clientId:       session.userId,
+                discountCode:   session.discountCode,
+                discountType:   session.discountType,
+                discountAmount: session.discountAmountFils,
+            }).catch(() => {});
+        }
+
+        logger.info('[CheckoutService] Cash CheckoutSession confirmed and order created', {
+            requestId, sessionId, orderId: finalOrder._id, orderNumericId: finalOrder.orderId,
+        });
+
+        return {
+            orderId:        finalOrder._id,
+            orderNumericId: finalOrder.orderId,
+            status:         'COMPLETED',
+            totalDeliveryPriceFils: session.totalDeliveryPriceFils,
+        };
+    } catch (err) {
+        logger.error('[CheckoutService] Cash order creation failed — restoring session', {
+            requestId, sessionId, err: err.message,
+        });
+        await CheckoutSession.findByIdAndUpdate(sessionId, { $set: { status: 'PENDING' } }).catch(() => {});
+        throw new ApiError(500, 'فشل في إنشاء الطلب النقدي', 'ORDER_CREATION_FAILED');
+    }
+}
+
 module.exports = {
     createCheckoutSession,
     getCheckoutSession,
     payCheckoutSessionOnline,
+    confirmCashCheckoutSession,
 };

@@ -237,6 +237,20 @@ async function requestRefund({ providerTransactionId, amountPiastres, requestId 
     });
 }
 
+/**
+ * Query transaction status via Paymob client.
+ *
+ * @param {object} params
+ * @param {string|number} params.transactionId
+ * @param {string} params.requestId
+ */
+async function getTransaction({ transactionId, requestId }) {
+    return paymobClient.getTransaction({
+        transactionId,
+        requestId,
+    });
+}
+
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 /**
@@ -264,4 +278,5 @@ module.exports = {
     validateTransactionCallback,
     assertValidHmac,
     requestRefund,
+    getTransaction,
 };

@@ -898,10 +898,12 @@ const listOrdersByRepresentativeId = asyncHandler(async (req, res) => {
  * @access Public
  */
 const createOrder = asyncHandler(async (req, res) => {
-    // â”€â”€â”€ Idempotency Check â”€â”€â”€
+    // ─── Idempotency Check (User-Scoped) ───
     const idempotencyKey = req.headers['idempotency-key'];
-    if (idempotencyKey) {
-        const cachedOrder = await redisGet(`idempotency:order:${idempotencyKey}`);
+    const authUserId = req.user?.id?.toString() || req.user?._id?.toString() || 'anonymous';
+    const redisIdempotencyKey = idempotencyKey ? `idempotency:order:${authUserId}:${idempotencyKey}` : null;
+    if (redisIdempotencyKey) {
+        const cachedOrder = await redisGet(redisIdempotencyKey);
         if (cachedOrder) {
             return res.status(201).json(cachedOrder);
         }
@@ -1194,8 +1196,10 @@ const createOrder = asyncHandler(async (req, res) => {
 
         pricingVersion = (pricing.$__ && pricing.$__.version) !== undefined ? pricing.$__.version : 1;
 
-        // Use client-provided distance for pricing to ensure it matches what they saw in the cart EXACTLY
-        const pricingDistanceMeters = (value.totalDistanceKm || 0) * 1000;
+        // Security: Authoritative distance from server route calculation takes precedence over client input
+        const pricingDistanceMeters = distanceMeters > 0
+            ? distanceMeters
+            : (value.totalDistanceKm ? Math.round(Number(value.totalDistanceKm) * 1000) : 0);
 
         const numTasks = Math.max(1, tasks.length);
         let calculatedKd = (pricing.baseFare * numTasks) + (pricingDistanceMeters * pricing.pricePerMeter);
@@ -1295,8 +1299,8 @@ const createOrder = asyncHandler(async (req, res) => {
     const commissionCfg = await getCachedRepCommission().catch(() => null);
     let [formatted] = await enrichOrdersWithVehicleData(req, [formatOrder(req, order, commissionCfg)]);
 
-    if (idempotencyKey) {
-        await redisSet(`idempotency:order:${idempotencyKey}`, formatted, 3600);
+    if (redisIdempotencyKey) {
+        await redisSet(redisIdempotencyKey, formatted, 3600);
     }
 
     return res.status(201).json(formatted);
@@ -1762,6 +1766,26 @@ const cancelOrder = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: 'Order is already cancelled or deleted' });
     }
 
+    // ─── SECURITY: Prevent cancellation of delivered or completed orders ──────
+    // Post-delivery disputes and administrative reversals must go through a
+    // separate authorized admin workflow — ordinary cancel cannot undo completed deliveries.
+    const terminalStatuses = ['delivered', 'completed', 'returned'];
+    if (terminalStatuses.includes(st) && !isAdmin) {
+        return res.status(409).json({
+            message: 'لا يمكن إلغاء طلب تم تسليمه أو اكتماله. يرجى التواصل مع الدعم للمنازعات.',
+            code: 'ORDER_ALREADY_COMPLETED',
+        });
+    }
+    // Admin can force-cancel a completed order only with explicit reason
+    if (terminalStatuses.includes(st) && isAdmin) {
+        if (!value.reason || String(value.reason).trim().length < 5) {
+            return res.status(400).json({
+                message: 'يجب تقديم سبب واضح لإلغاء الطلب المكتمل (الأدمن فقط).',
+                code: 'CANCEL_REASON_REQUIRED',
+            });
+        }
+    }
+
     // ─── خصم رسوم الإلغاء إذا مضى وقت أكثر من التايمر على قبول المندوب ───
     let cancellationFeeApplied = false;
     if (
@@ -1912,7 +1936,22 @@ const cancelOrder = asyncHandler(async (req, res) => {
                                 };
                                 await payment.save();
                             } catch (cardErr) {
-                                logger.warn(`[cancelOrder] Card gateway refund failed (${cardErr.message}). Safe fallback to app wallet.`);
+                                const { isDefinitiveRefundRejection } = require('../payments/services/paymentService');
+                                if (isDefinitiveRefundRejection(cardErr)) {
+                                    logger.warn(`[cancelOrder] Card gateway definitively rejected refund (${cardErr.message}). Safe fallback to app wallet.`);
+                                } else {
+                                    logger.error(`[cancelOrder] Card gateway refund outcome uncertain (${cardErr.message}). Blocking wallet fallback to prevent double payout.`);
+                                    payment.metadata = {
+                                        ...(payment.metadata || {}),
+                                        refundStatus: 'UNCERTAIN',
+                                        refundError: cardErr.message,
+                                    };
+                                    await payment.save().catch(() => {});
+                                    return res.status(504).json({
+                                        message: 'حالة استرداد المبلغ عبر البطاقة البنكية قيد المراجعة مع البنك، يرجى الانتظار أو مراجعة الدعم الفني لتجنب تكرار الاسترداد',
+                                        code: 'REFUND_STATUS_UNCERTAIN',
+                                    });
+                                }
                             }
                         }
 
@@ -1964,6 +2003,19 @@ const cancelOrder = asyncHandler(async (req, res) => {
             await clearRepCurrentOrder(oldRepId);
             await invalidateLiveDashboard();
         } catch (_) { }
+    }
+
+    // ─── Refund company commission on cancellation ─────────────────────────────
+    // If the captain had already accepted and the commission was deducted from their
+    // wallet, refund it back now that the order is being cancelled/released.
+    if (order.companyCommissionDeducted && order.companyCommissionFils > 0) {
+        try {
+            const { refundCompanyCommissionOnCancelOrRelease } = require('../middlewares/Wallet');
+            await refundCompanyCommissionOnCancelOrRelease({ order });
+            await Order.findByIdAndUpdate(order._id, { companyCommissionDeducted: false }).catch(() => {});
+        } catch (commErr) {
+            logger.error(`[cancelOrder] Failed to refund company commission: ${commErr.message}`);
+        }
     }
 
     // ─── إشعار العميل بالإلغاء ──────────────────────────────────────────────
@@ -2347,19 +2399,108 @@ const acceptOrder = asyncHandler(async (req, res) => {
         }
     }
 
-    order.status = 'accepted';
-    if (value.representativeId) {
-        order.representativeId = value.representativeId;
-    } else if (req.user && req.user.id) {
-        order.representativeId = req.user.id;
+    // ─── Company commission pre-flight check (NON-MUTATING) ────────────────────
+    // Verifies wallet balance is sufficient for company commission without debiting.
+    // The actual deduction happens strictly AFTER atomic acceptance to prevent
+    // commission theft from losing captains in a race condition.
+    if (repId) {
+        try {
+            const { checkCompanyCommissionSufficient } = require('../middlewares/Wallet');
+            const commissionCheck = await checkCompanyCommissionSufficient({ order, repId });
+            if (!commissionCheck.allowed) {
+                return res.status(402).json({
+                    message: commissionCheck.message || 'رصيد المحفظة غير كافٍ لقبول الطلب',
+                    code: commissionCheck.code || 'INSUFFICIENT_WALLET_BALANCE',
+                });
+            }
+        } catch (commErr) {
+            logger.error('[acceptOrder] Commission pre-check failed:', commErr.message);
+        }
     }
-    order.acceptedAt = new Date(); // تسجيل وقت القبول — يُستخدم لحساب رسوم الإلغاء
-    await order.save();
 
-    // HR tracking for accepted order
+    // ─── ATOMIC acceptance: only succeeds if order is still 'waiting' ─────────
+    // This prevents a race condition where two captains both read status='waiting'
+    // and both save successfully — the findOneAndUpdate with status condition
+    // ensures only ONE captain can win the atomic transition.
+    const repIdToAssign = value.representativeId || req.user?.id;
+    const acceptedOrder = await Order.findOneAndUpdate(
+        {
+            _id: order._id,
+            status: 'waiting',   // Only accept if STILL waiting (atomic guard)
+        },
+        {
+            $set: {
+                status:             'accepted',
+                representativeId:   repIdToAssign,
+                acceptedAt:         new Date(),
+            },
+        },
+        { new: true }
+    );
+
+    if (!acceptedOrder) {
+        // Either already accepted by another captain, or status changed concurrently.
+        // NOTE: No commission was deducted from this losing captain because deduction is deferred!
+        const current = await Order.findById(order._id).select('status representativeId').lean();
+        return res.status(409).json({
+            message: 'Order is already accepted or no longer available',
+            status: current?.status || 'unknown',
+        });
+    }
+
+    // ─── Deduct company commission from winning captain (strictly after winning atomic lock) ─
+    if (repIdToAssign) {
+        let deductionSuccessful = false;
+        try {
+            const { deductCompanyCommissionOnAccept } = require('../middlewares/Wallet');
+            const deductResult = await deductCompanyCommissionOnAccept({ order: acceptedOrder, repId: repIdToAssign });
+            if (deductResult && deductResult.allowed) {
+                deductionSuccessful = true;
+                if (deductResult.companyFeeFils > 0) {
+                    await Order.findByIdAndUpdate(acceptedOrder._id, {
+                        companyCommissionDeducted: true,
+                        companyCommissionFils: deductResult.companyFeeFils,
+                    }).catch(() => {});
+                }
+            } else {
+                logger.warn('[acceptOrder] Commission deduction rejected — insufficient balance', {
+                    orderId: acceptedOrder._id,
+                    repId: repIdToAssign,
+                    reason: deductResult?.message,
+                });
+            }
+        } catch (deductErr) {
+            logger.error('[acceptOrder] Commission deduction after accept failed:', deductErr.message);
+        }
+
+        if (!deductionSuccessful) {
+            // Roll back order status so no captain holds an order without commission deducted
+            await Order.findByIdAndUpdate(acceptedOrder._id, {
+                $set: {
+                    status: 'waiting',
+                    representativeId: null,
+                },
+                $unset: {
+                    acceptedAt: 1,
+                    companyCommissionDeducted: 1,
+                    companyCommissionFils: 1,
+                },
+            }).catch(() => {});
+
+            return res.status(402).json({
+                message: 'تعذر خصم عمولة الشركة لقبول الطلب، رصيد المحفظة غير كافٍ',
+                code: 'INSUFFICIENT_WALLET_BALANCE',
+            });
+        }
+    }
+
+    // Use the atomically updated order document for all downstream operations
+    // (acceptedOrder is guaranteed to be the winning document)
+
+    // HR tracking — fire-and-forget (non-blocking)
     (async () => {
         try {
-            const acceptedRepId = order.representativeId;
+            const acceptedRepId = acceptedOrder.representativeId;
             if (acceptedRepId) {
                 const { setRepCurrentOrder } = require('../redis/hrRedis');
                 const RepActivityLog = require('../models/RepActivityLog');
@@ -2367,7 +2508,7 @@ const acceptOrder = asyncHandler(async (req, res) => {
                 const { meta, shift } = await detectCurrentShift(acceptedRepId);
 
                 await setRepCurrentOrder(acceptedRepId, {
-                    orderId: String(order.orderId || order._id),
+                    orderId: String(acceptedOrder.orderId || acceptedOrder._id),
                     status: 'accepted',
                     orderStatus: 'accepted',
                     acceptedAt: new Date().toISOString(),
@@ -2381,7 +2522,7 @@ const acceptOrder = asyncHandler(async (req, res) => {
                     month: meta.month,
                     year: meta.year,
                     eventType: 'order_accepted',
-                    orderId: order.orderId,
+                    orderId: acceptedOrder.orderId,
                     orderStatus: 'accepted',
                     timestamp: new Date(),
                 });
@@ -2392,7 +2533,7 @@ const acceptOrder = asyncHandler(async (req, res) => {
     })();
 
     const commissionCfg = await getCachedRepCommission().catch(() => null);
-    let [formatted] = await enrichOrdersWithRepData(req, [formatOrder(req, order, commissionCfg)]);
+    let [formatted] = await enrichOrdersWithRepData(req, [formatOrder(req, acceptedOrder, commissionCfg)]);
     [formatted] = await enrichOrdersWithClientData(req, [formatted]);
 
     // ─── Publish to Redis → tracking-service ─────────────────────────────────
@@ -2400,13 +2541,13 @@ const acceptOrder = asyncHandler(async (req, res) => {
         const { getRedisClient } = require('../config/redis');
         const redisPub = getRedisClient();
         if (redisPub) {
-            const tasks = order.tasks || [];
+            const tasks = acceptedOrder.tasks || [];
             const firstTask = tasks[0] || {};
             const lastTask = tasks[tasks.length - 1] || {};
 
             let driverLat = undefined;
             let driverLng = undefined;
-            const repId = order.representativeId || req.user?.id || '';
+            const repId = acceptedOrder.representativeId || req.user?.id || '';
             if (repId) {
                 const driver = await User.findById(repId).select('lastLocation').lean();
                 if (driver && driver.lastLocation && driver.lastLocation.lat && driver.lastLocation.lng) {
@@ -2446,11 +2587,11 @@ const acceptOrder = asyncHandler(async (req, res) => {
             };
             io.to(room).emit('order:accepted', payload);
             io.to(room).emit('order:status_changed', payload);
-            if (order.clientId) {
-                io.to(`user:${order.clientId}`).emit('order:accepted', payload);
-                io.to(`user:${order.clientId}`).emit('order:status_changed', payload);
+            if (acceptedOrder.clientId) {
+                io.to(`user:${acceptedOrder.clientId}`).emit('order:accepted', payload);
+                io.to(`user:${acceptedOrder.clientId}`).emit('order:status_changed', payload);
             }
-            console.log(`[Socket.IO] ✅ Emitted order:accepted to room ${room} and user:${order.clientId}`);
+            console.log(`[Socket.IO] ✅ Emitted order:accepted to room ${room} and user:${acceptedOrder.clientId}`);
         } else {
             console.warn('[acceptOrder] ⚠️ Socket.IO instance not found on app');
         }
@@ -2461,10 +2602,10 @@ const acceptOrder = asyncHandler(async (req, res) => {
     // ─── إشعار FCM للعميل ────────────────────────────────────────────────
     const repName = formatted.representativeName || 'المندوب';
     notifyClient(
-        order.clientId,
+        acceptedOrder.clientId,
         '✅ تم قبول طلبك',
         `${repName} في الطريق إليك`,
-        { type: 'order_accepted', orderId: String(order.orderId) },
+        { type: 'order_accepted', orderId: String(acceptedOrder.orderId) },
     ).catch(() => { });
 
     return res.status(200).json({
@@ -2803,6 +2944,17 @@ const releaseOrder = asyncHandler(async (req, res) => {
             await clearRepCurrentOrder(oldRepId);
             await invalidateLiveDashboard();
         } catch (_) { }
+    }
+
+    // ─── Refund company commission on release ──────────────────────────────────
+    if (order.companyCommissionDeducted && order.companyCommissionFils > 0) {
+        try {
+            const { refundCompanyCommissionOnCancelOrRelease } = require('../middlewares/Wallet');
+            await refundCompanyCommissionOnCancelOrRelease({ order });
+            await Order.findByIdAndUpdate(order._id, { companyCommissionDeducted: false }).catch(() => {});
+        } catch (commErr) {
+            logger.error(`[releaseOrder] Failed to refund company commission: ${commErr.message}`);
+        }
     }
 
     const refId = String(order.orderId || req.params.id);

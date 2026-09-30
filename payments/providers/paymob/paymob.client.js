@@ -214,7 +214,34 @@ async function refundTransaction({ transactionId, amountPiastres, requestId }) {
     }
 }
 
+/**
+ * Query transaction status from Paymob Acceptance API.
+ * GET /api/acceptance/transactions/{id}
+ *
+ * @param {object} params
+ * @param {string|number} params.transactionId - Paymob transaction ID
+ * @param {string} params.requestId - Correlation ID
+ * @returns {Promise<object>} Paymob transaction details
+ */
+async function getTransaction({ transactionId, requestId }) {
+    const http = buildPaymobAxios();
+    try {
+        const response = await http.get(`/api/acceptance/transactions/${transactionId}`);
+        logger.info('[PaymobClient] Transaction inquiry succeeded', {
+            requestId,
+            transactionId,
+            is_refunded: response.data?.is_refunded,
+            success: response.data?.success,
+        });
+        return response.data;
+    } catch (err) {
+        if (err instanceof ApiError) throw err;
+        throw mapPaymobError(err, 'getTransaction', requestId);
+    }
+}
+
 module.exports = {
     createIntention,
     refundTransaction,
+    getTransaction,
 };

@@ -283,11 +283,66 @@ function extractDeliveryPriceFils(order) {
 }
 
 /**
+ * ─── Helper: التحقق من كفاية رصيد محفظة المندوب لعمولة الشركة دون خصم ─────
+ * Pre-flight check: validates balance before atomic order acceptance without mutating the wallet.
+ */
+async function checkCompanyCommissionSufficient({ order, repId }) {
+    if (!order || !repId) return { allowed: true, companyFeeFils: 0 };
+
+    const deliveryPriceFils = extractDeliveryPriceFils(order);
+    if (deliveryPriceFils <= 0) return { allowed: true, companyFeeFils: 0 };
+
+    const { getCachedRepCommission } = require('./RepCommission');
+    const commissionCfg = await getCachedRepCommission().catch(() => null);
+
+    const isPassenger = (order.orderCategory || '').toLowerCase().trim() === 'passenger';
+    let repCommissionPct = 100;
+    if (commissionCfg) {
+        repCommissionPct = isPassenger
+            ? (commissionCfg.passengerRepCommissionPct ?? 100)
+            : (commissionCfg.deliveryRepCommissionPct ?? 100);
+    }
+    repCommissionPct = Math.max(0, Math.min(100, Number(repCommissionPct)));
+
+    const companyPct = 100 - repCommissionPct;
+    const companyFeeFils = Math.round((deliveryPriceFils * companyPct) / 100);
+
+    if (companyFeeFils <= 0) {
+        return { allowed: true, companyFeeFils: 0 };
+    }
+
+    const wallet = await getOrCreateWallet(repId);
+    const potentialBalance = wallet.balanceFils - companyFeeFils;
+    const minAllowedFils = await getMinWalletBalanceFils();
+
+    if (potentialBalance < minAllowedFils) {
+        const limitKd = (Math.abs(minAllowedFils) / 1000).toFixed(2);
+        return {
+            allowed: false,
+            message: `برجاء شحن المحفظة لقبول الطلب، تم تجاوز الحد المسموح به للمديونية (${limitKd} ج.م)`,
+            code: 'INSUFFICIENT_WALLET_BALANCE',
+            requiredFils: companyFeeFils,
+            currentBalanceFils: wallet.balanceFils,
+            minBalanceFils: minAllowedFils,
+            companyFeeFils,
+        };
+    }
+
+    return { allowed: true, companyFeeFils };
+}
+
+/**
  * ─── Helper: الخصم التلقائي لنسبة الشركة من محفظة المندوب عند قبول الطلب ─────────────────
  * إذا كان خصم العمولة سيتجاوز الحد السالب (-5000 فلس / -5 KWD)، يمنع قبول الطلب
+ * IDEMPOTENT: If already deducted for this order, returns immediately without double-debiting.
  */
 async function deductCompanyCommissionOnAccept({ order, repId, isBusiness = false }) {
     if (!order || !repId) return { allowed: true, companyFeeFils: 0 };
+
+    // Idempotency: if commission was already deducted for this order, do not deduct again
+    if (order.companyCommissionDeducted) {
+        return { allowed: true, companyFeeFils: order.companyCommissionFils || 0 };
+    }
 
     const deliveryPriceFils = extractDeliveryPriceFils(order);
     if (deliveryPriceFils <= 0) return { allowed: true, companyFeeFils: 0 };
@@ -413,8 +468,12 @@ async function processOrderCompletionWallet(order) {
     let driverCredited = false;
 
     // 1. الخصم من محفظة العميل (فقط إذا اختار العميل الدفع بالمحفظة)
+    // SECURITY: Do NOT debit if paymentStatus is already 'paid' — that means the wallet
+    // was already debited atomically at checkout time (via payOrderFromWallet / webhook).
+    // Double-charging the same wallet order is prevented here by checking paymentStatus.
     const clientUserId = order.clientId || order.userId;
-    if (clientUserId && order.paymentMethod === 'wallet') {
+    const alreadyPaidViaCheckout = (order.paymentStatus === 'paid');
+    if (clientUserId && order.paymentMethod === 'wallet' && !alreadyPaidViaCheckout) {
         try {
             await debitWalletAllowNegative({
                 userId: clientUserId,
@@ -430,8 +489,26 @@ async function processOrderCompletionWallet(order) {
         }
     }
 
+    // Safety Net for Crash Point A: Ensure company commission was deducted
+    // If the server crashed after acceptance before commission deduction, deduct it now
+    if (order.representativeId && !order.companyCommissionDeducted) {
+        try {
+            await deductCompanyCommissionOnAccept({ order, repId: order.representativeId });
+        } catch (commErr) {
+            console.error(`[processOrderCompletionWallet] Safety commission deduction failed: ${commErr.message}`);
+        }
+    }
+
     // 2. إيداع أرباح التوصيل للمندوب عند الاكتمال التام للطلب
-    if (order.representativeId) {
+    // ACCOUNTING INVARIANT:
+    // في طلبات الكاش: يستلم المندوب كامل المبلغ كاش في يده من العميل مباشرة،
+    // ونسبة الشركة تم خصمها بالفعل من محفظة المندوب عند قبول الطلب.
+    // صافي ربح المندوب موجود بالفعل في جيبه كاش (المبلغ الإجمالي - عمولة الشركة).
+    // لذلك، إيداع أرباح إضافية في المحفظة لطلبات الكاش يؤدي إلى مضاعفة أرباح المندوب (دفع مزدوج).
+    // الإيداع في المحفظة مخصص فقط للطلبات الرقمية (online / card / wallet / mobile_wallet)
+    // حيث استلمت المنصة المبلغ رقمياً ويجب تحويل حصة المندوب لمحفظته.
+    const isCashOrder = String(order.paymentMethod || 'cash').toLowerCase().trim() === 'cash';
+    if (order.representativeId && !isCashOrder) {
         try {
             const { getCachedRepCommission } = require('./RepCommission');
             const commissionCfg = await getCachedRepCommission().catch(() => null);
@@ -462,6 +539,9 @@ async function processOrderCompletionWallet(order) {
         } catch (err) {
             console.error(`[processOrderCompletionWallet] فشل إيداع أرباح المندوب: ${err.message}`);
         }
+    } else if (order.representativeId && isCashOrder) {
+        // Record zero digital wallet payout for cash orders (cash retained by driver)
+        order.repEarningsFils = 0;
     }
 
     if (clientDebited || driverCredited || deliveryPriceFils > 0) {
@@ -534,6 +614,7 @@ module.exports = {
     creditWallet,
     debitWallet,
     debitWalletAllowNegative,
+    checkCompanyCommissionSufficient,
     deductCompanyCommissionOnAccept,
     refundCompanyCommissionOnCancelOrRelease,
     processOrderCompletionWallet,

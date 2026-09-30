@@ -364,6 +364,30 @@ async function payOrderFromWallet({ checkoutSessionId, userId, requestId }) {
                 paymentId:      existingSession.paymentId,
             };
         }
+
+        // Self-healing crash recovery: if session is stuck in PROCESSING but payment & order succeeded
+        if (existingSession?.status === 'PROCESSING') {
+            const existingPayment = await Payment.findOne({
+                checkoutSessionId,
+                status: 'PAID',
+            });
+            if (existingPayment && existingPayment.orderId) {
+                await CheckoutSession.findByIdAndUpdate(checkoutSessionId, {
+                    status: 'COMPLETED',
+                    finalOrderId: existingPayment.orderId,
+                    finalOrderNumericId: existingPayment.orderNumericId,
+                    paymentId: existingPayment._id,
+                    completedAt: new Date(),
+                }).catch(() => {});
+
+                return {
+                    orderId:        existingPayment.orderId,
+                    orderNumericId: existingPayment.orderNumericId,
+                    paymentId:      existingPayment._id,
+                };
+            }
+        }
+
         throw new ApiError(
             409,
             'جلسة الدفع قيد المعالجة حالياً أو تم إكمالها بالفعل',
@@ -584,18 +608,94 @@ async function refundToWallet({ orderId, amountFils, userId, paymentId, requestI
 
     const reference = `ORDER_REFUND_${orderId}`;
 
-    // Idempotency check
+    // Idempotency & recovery check
     const existing = await WalletLedger.findOne({ reference });
     if (existing) {
-        logger.info('[WalletPaymentService] Wallet refund already processed (idempotent)', {
-            requestId, reference, orderId,
-        });
-        return;
+        if (existing.status === 'COMPLETED') {
+            logger.info('[WalletPaymentService] Wallet refund already processed (idempotent)', {
+                requestId, reference, orderId,
+            });
+            return;
+        }
+
+        if (existing.status === 'PENDING') {
+            // Deterministic crash recovery for PENDING refund ledger:
+            // Check if wallet balance was already credited
+            const wallet = await getOrCreateWallet(userId);
+            const alreadyCredited = wallet.transactions && wallet.transactions.some(
+                t => t.type === 'credit' && String(t.refId) === String(orderId)
+            );
+
+            if (!alreadyCredited) {
+                const updated = await Wallet.findOneAndUpdate(
+                    { _id: wallet._id },
+                    { $inc: { balanceFils: amountFils } },
+                    { new: true }
+                );
+                if (updated) {
+                    updated.transactions = updated.transactions || [];
+                    updated.transactions.push({
+                        type:             'credit',
+                        amountFils,
+                        balanceAfterFils: updated.balanceFils,
+                        description:      'استرداد قيمة الطلب الملغي',
+                        refId:            String(orderId),
+                        performedBy:      'system',
+                    });
+                    await updated.save().catch(() => {});
+                }
+            }
+
+            await WalletLedger.findByIdAndUpdate(existing._id, {
+                status: 'COMPLETED',
+                balanceBeforeFils: wallet.balanceFils,
+                balanceAfterFils:  wallet.balanceFils + (alreadyCredited ? 0 : amountFils),
+            }).catch(() => {});
+
+            logger.info('[WalletPaymentService] Recovered PENDING wallet refund ledger', {
+                requestId, reference, orderId, alreadyCredited,
+            });
+            return;
+        }
     }
 
     const wallet = await getOrCreateWallet(userId);
 
-    // Atomic credit
+    // ── Step 1: Idempotency claim via WalletLedger unique reference ─────────
+    // Claim unique reference FIRST. If a concurrent duplicate arrives, the unique
+    // constraint on `reference` rejects it here before balance is ever mutated.
+    let ledgerEntry;
+    try {
+        ledgerEntry = await WalletLedger.create({
+            walletId:          wallet._id,
+            userId:            String(userId),
+            type:              'CREDIT',
+            source:            'ORDER_REFUND',
+            amountFils,
+            currency:          CURRENCY.EGP,
+            balanceBeforeFils: wallet.balanceFils,
+            balanceAfterFils:  wallet.balanceFils + amountFils,
+            status:            'PENDING',
+            paymentId:         paymentId ? (mongoose.Types.ObjectId.isValid(paymentId) ? paymentId : null) : null,
+            orderId:           orderId ? (mongoose.Types.ObjectId.isValid(orderId) ? orderId : null) : null,
+            reference,
+            description:       `Refund for cancelled order — ${filsToEgp(amountFils)} EGP`,
+            performedBy:       'system',
+        });
+    } catch (err) {
+        if (err.code === 11000) {
+            logger.info('[WalletPaymentService] Wallet refund already claimed or processed (idempotent)', {
+                requestId, reference, orderId,
+            });
+            return;
+        }
+        logger.error('[WalletPaymentService] Wallet refund ledger claim failed', {
+            requestId, err: err.message,
+        });
+        throw err;
+    }
+
+    // ── Step 2: Atomic wallet balance credit ────────────────────────────────
     const updatedWallet = await Wallet.findOneAndUpdate(
         { _id: wallet._id },
         { $inc: { balanceFils: amountFils } },
@@ -606,37 +706,19 @@ async function refundToWallet({ orderId, amountFils, userId, paymentId, requestI
         logger.error('[WalletPaymentService] Wallet disappeared during refund', {
             requestId, userId, orderId,
         });
+        await WalletLedger.findByIdAndUpdate(ledgerEntry._id, { status: 'FAILED' }).catch(() => {});
         return;
     }
 
     const balanceAfter  = updatedWallet.balanceFils;
     const balanceBefore = balanceAfter - amountFils;
 
-    // Create ledger entry
-    try {
-        await WalletLedger.create({
-            walletId:          wallet._id,
-            userId:            String(userId),
-            type:              'CREDIT',
-            source:            'ORDER_REFUND',
-            amountFils,
-            currency:          CURRENCY.EGP,
-            balanceBeforeFils: balanceBefore,
-            balanceAfterFils:  balanceAfter,
-            status:            'COMPLETED',
-            paymentId:         paymentId ? mongoose.Types.ObjectId.isValid(paymentId) ? paymentId : null : null,
-            orderId:           orderId ? mongoose.Types.ObjectId.isValid(orderId) ? orderId : null : null,
-            reference,
-            description:       `Refund for cancelled order — ${filsToEgp(amountFils)} EGP`,
-            performedBy:       'system',
-        });
-    } catch (err) {
-        if (err.code !== 11000) {
-            logger.error('[WalletPaymentService] Wallet refund ledger write failed', {
-                requestId, err: err.message,
-            });
-        }
-    }
+    // ── Step 3: Complete ledger entry with verified balances ────────────────
+    await WalletLedger.findByIdAndUpdate(ledgerEntry._id, {
+        status:            'COMPLETED',
+        balanceBeforeFils: balanceBefore,
+        balanceAfterFils:  balanceAfter,
+    }).catch(() => {});
 
     // Embed in existing wallet transactions
     updatedWallet.transactions = updatedWallet.transactions || [];
@@ -1012,7 +1094,7 @@ async function _createOrderFromSnapshot({ session, paymentId, paymentMethod, req
         orderCategory:             session.orderCategory || 'delivery',
         governorate:               session.governorate || null,
         paymentMethod:             paymentMethod || 'wallet',
-        paymentStatus:             'paid',
+        paymentStatus:             (paymentMethod === 'cash') ? 'unpaid' : 'paid',
         representativeWillPay:     snapshot.representativeWillPay || false,
         representativePaymentAmount: snapshot.representativePaymentAmount || 0,
         purchaseDetails:           snapshot.purchaseDetails || '',

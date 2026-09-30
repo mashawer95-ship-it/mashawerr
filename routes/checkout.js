@@ -20,6 +20,7 @@ const {
     getSession,
     payOnline,
     payWallet,
+    confirmCash,
 } = require('../payments/controllers/checkoutController');
 
 const sessionCreationLimiter = rateLimit({
@@ -56,5 +57,6 @@ router.post('/session',                  verifyToken, sessionCreationLimiter, cr
 router.get('/:sessionId',                verifyToken, getSession);
 router.post('/:sessionId/pay-online',    verifyToken, paymentLimiter, payOnline);
 router.post('/:sessionId/pay-wallet',    verifyToken, paymentLimiter, payWallet);
+router.post('/:sessionId/confirm-cash',  verifyToken, sessionCreationLimiter, confirmCash);
 
 module.exports = router;
