@@ -1874,12 +1874,35 @@ const cancelOrder = asyncHandler(async (req, res) => {
                         await order.save();
                     } else if (payment.provider === 'paymob') {
                         const paymentService = require('../payments/services/paymentService');
-                        await paymentService.refundPayment({
-                            paymentId:      payment._id,
-                            amountPiastres: remainingPiastres,
-                            requestedBy:    req.user?.id || 'system',
-                            requestId:      req.id,
-                        });
+                        try {
+                            await paymentService.refundPayment({
+                                paymentId:      payment._id,
+                                amountPiastres: remainingPiastres,
+                                requestedBy:    req.user?.id || 'system',
+                                requestId:      req.id,
+                            });
+                        } catch (err) {
+                            logger.warn(`[cancelOrder] paymentService.refundPayment error: ${err.message}. Direct fallback to in-app wallet refund.`, {
+                                orderId: order.orderId,
+                                err:     err.message,
+                            });
+                            const { piastresToFils } = require('../payments/utils/money');
+                            const { refundToWallet } = require('../payments/services/walletPaymentService');
+                            const amountFils = piastresToFils(remainingPiastres);
+
+                            await refundToWallet({
+                                orderId:    order._id,
+                                amountFils,
+                                userId:     order.clientId,
+                                paymentId:  payment._id,
+                                requestId:  req.id,
+                            });
+
+                            payment.refundedAmountPiastres = payment.amountPiastres;
+                            payment.status = 'REFUNDED';
+                            payment.refundedAt = new Date();
+                            await payment.save();
+                        }
 
                         order.paymentStatus = 'refunded';
                         await order.save();
@@ -1903,11 +1926,11 @@ const cancelOrder = asyncHandler(async (req, res) => {
     }
 
     // ─── إشعار العميل بالإلغاء ──────────────────────────────────────────────
+    const refundNote = order.paymentStatus === 'refunded' ? ' وتم استرداد المبلغ بالكامل إلى محفظتك بالتطبيق.' : '';
     notifyClient(
         order.clientId,
         '❌ تم إلغاء الطلب',
-        `طلبك تم إلغاؤه. السبب: ${value.reason || 'غير محدد'}`,
-
+        `طلبك تم إلغاؤه.${refundNote} السبب: ${value.reason || 'غير محدد'}`,
         { type: 'order_cancelled', orderId: String(order.orderId) },
     ).catch(() => { });
 

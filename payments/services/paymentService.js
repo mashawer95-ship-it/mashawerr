@@ -431,15 +431,46 @@ async function refundPayment({ paymentId, amountPiastres, requestedBy, requestId
             });
         } else {
             // Paymob refund
-            if (!payment.providerTransactionId) {
-                throw new ApiError(500, 'معرف المعاملة غير متاح للاسترداد', PAYMENT_ERROR_CODES.PAYMENT_PROVIDER_ERROR);
+            let gatewayRefundSucceeded = false;
+
+            if (payment.providerTransactionId) {
+                try {
+                    await paymobService.requestRefund({
+                        providerTransactionId: payment.providerTransactionId,
+                        amountPiastres:        refundAmount,
+                        requestId,
+                    });
+                    gatewayRefundSucceeded = true;
+                } catch (gatewayErr) {
+                    logger.warn(`[refundPayment] Paymob gateway refund failed (${gatewayErr.message}). Falling back to instant in-app wallet refund.`, {
+                        paymentId: payment._id,
+                        orderId:   payment.orderId,
+                        err:       gatewayErr.message,
+                    });
+                }
             }
 
-            await paymobService.requestRefund({
-                providerTransactionId: payment.providerTransactionId,
-                amountPiastres:        refundAmount,
-                requestId,
-            });
+            if (!gatewayRefundSucceeded) {
+                // If Paymob gateway refund cannot be processed (e.g. 400 insufficient merchant settlement float, or card limitations),
+                // fall back immediately to in-app wallet refund so customer money is NEVER lost or locked!
+                const { piastresToFils } = require('../utils/money');
+                const { refundToWallet } = require('./walletPaymentService');
+                const amountFils = piastresToFils(refundAmount);
+
+                await refundToWallet({
+                    orderId:    payment.orderId,
+                    amountFils,
+                    userId:     payment.userId,
+                    paymentId:  payment._id,
+                    requestId,
+                });
+
+                await Payment.findByIdAndUpdate(payment._id, {
+                    $set: {
+                        'metadata.refundMethod': 'WALLET_FALLBACK',
+                    },
+                }).catch(() => {});
+            }
         }
     } catch (refundErr) {
         // Rollback the reserved refund amount on failure
