@@ -353,6 +353,51 @@ async function getCheckoutSession({ sessionId, userId }) {
         session.status = 'EXPIRED';
     }
 
+    // Self-healing: if session is still pending but linked Payment was already marked PAID
+    if ((session.status === 'PENDING' || session.status === 'PAYMENT_PENDING') && session.paymentId) {
+        const { Payment } = require('../../middlewares/Payment');
+        const paymentDoc = await Payment.findById(session.paymentId).lean();
+        if (paymentDoc && paymentDoc.status === 'PAID') {
+            const paymentService = require('./paymentService');
+            await paymentService.processWebhookTransaction({
+                transaction: {
+                    id: paymentDoc.providerTransactionId,
+                    amount_cents: paymentDoc.amountPiastres,
+                    currency: paymentDoc.currency,
+                    success: true,
+                    pending: false,
+                    is_voided: false,
+                    integration_id: paymentDoc.integrationId,
+                    merchant_order_id: paymentDoc.specialReference,
+                    special_reference: paymentDoc.specialReference,
+                },
+                requestId: 'self-heal-checkout',
+            }).catch(() => {});
+
+            const refreshed = await CheckoutSession.findById(sessionId).lean();
+            if (refreshed) {
+                return {
+                    sessionId:                 refreshed._id,
+                    status:                    refreshed.status,
+                    paymentMethod:             refreshed.paymentMethod,
+                    totalDeliveryPriceFils:    refreshed.totalDeliveryPriceFils,
+                    totalDeliveryPriceEgp:     filsToEgp(refreshed.totalDeliveryPriceFils),
+                    originalDeliveryPriceFils: refreshed.originalDeliveryPriceFils,
+                    originalDeliveryPriceEgp:  filsToEgp(refreshed.originalDeliveryPriceFils),
+                    discountAmountFils:        refreshed.discountAmountFils,
+                    discountAmountEgp:         filsToEgp(refreshed.discountAmountFils),
+                    finalOrderId:              refreshed.finalOrderId,
+                    finalOrderNumericId:       refreshed.finalOrderNumericId,
+                    paymentId:                 refreshed.paymentId,
+                    expiresAt:                 refreshed.expiresAt,
+                    paidAt:                    refreshed.paidAt,
+                    completedAt:               refreshed.completedAt,
+                    createdAt:                 refreshed.createdAt,
+                };
+            }
+        }
+    }
+
     return {
         sessionId:                 session._id,
         status:                    session.status,

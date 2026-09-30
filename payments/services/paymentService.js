@@ -755,36 +755,6 @@ async function _processCheckoutSessionPayment({ payment, transaction, transactio
             message:           `Order creation failed post-payment: ${orderErr.message}`,
         });
     }
-
-    await _recordEvent({
-        paymentId:         updatedPayment._id,
-        orderId:           finalOrder._id,
-        checkoutSessionId: session._id,
-        eventType:         'PAYMENT_SUCCESS',
-        provider:          'paymob',
-        providerEventId:   transactionId,
-        requestId,
-        payloadSummary:    safePayload,
-        message:           'Payment confirmed and order created via webhook',
-    });
-
-    await _recordEvent({
-        paymentId:         updatedPayment._id,
-        orderId:           finalOrder._id,
-        checkoutSessionId: session._id,
-        eventType:         'ORDER_CREATED_AFTER_PAYMENT',
-        requestId,
-        message:           `Order #${finalOrder.orderId} created after Paymob payment`,
-        payloadSummary:    { orderNumericId: finalOrder.orderId },
-    });
-
-    logger.info('[PaymentService] PAYMENT_SUCCESS & ORDER_CREATED_AFTER_PAYMENT', {
-        requestId,
-        paymentId:      updatedPayment._id,
-        orderId:        finalOrder._id,
-        orderNumericId: finalOrder.orderId,
-        transactionId,
-    });
 }
 
 /**
