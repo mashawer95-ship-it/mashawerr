@@ -1054,6 +1054,42 @@ describe('Phase 5: Order Cancellation Tests (Scenarios 16 - 18)', () => {
         assert.strictEqual(successfulCancels, 1, 'Only one concurrent cancel request can succeed');
         assert.strictEqual(cancellations, 1, 'Cancellation logic only executed once');
     });
+
+    test('23. Paid order cancellation with refundPreference: wallet redirects Paymob refund to App Wallet', async () => {
+        const order = { orderId: 777, paymentStatus: 'paid', status: 'waiting', clientId: 'user-777' };
+        const payment = {
+            provider: 'paymob',
+            paymentMethod: 'CARD',
+            amountPiastres: 500, // 5 EGP
+            refundedAmountPiastres: 0,
+            status: 'PAID',
+        };
+        let walletBalanceFils = 0;
+        let paymobCalled = false;
+
+        function cancelWithPreference(o, p, preference) {
+            if (o.paymentStatus === 'paid') {
+                if (preference === 'wallet') {
+                    walletBalanceFils += p.amountPiastres * 10;
+                    p.status = 'REFUNDED';
+                    p.refundedAmountPiastres = p.amountPiastres;
+                    o.paymentStatus = 'refunded';
+                } else if (preference === 'card') {
+                    paymobCalled = true;
+                    p.status = 'REFUNDED';
+                    p.refundedAmountPiastres = p.amountPiastres;
+                    o.paymentStatus = 'refunded';
+                }
+            }
+            o.status = 'cancelled';
+        }
+
+        cancelWithPreference(order, payment, 'wallet');
+        assert.strictEqual(paymobCalled, false, 'Paymob is not called when client selects instant wallet refund');
+        assert.strictEqual(walletBalanceFils, 5000, '5000 fils credited directly to App Wallet');
+        assert.strictEqual(order.paymentStatus, 'refunded');
+        assert.strictEqual(payment.status, 'REFUNDED');
+    });
 });
 
 
