@@ -259,6 +259,10 @@ async function processWebhookTransaction({ transaction, requestId }) {
                 payment = await Payment.findById(cleanId).lean();
             }
         }
+        if (!payment && typeof specialRef === 'string' && specialRef.startsWith('pay_')) {
+            const cleanSessionId = specialRef.replace(/^pay_/, '');
+            payment = await Payment.findOne({ checkoutSessionId: cleanSessionId }).sort({ createdAt: -1 }).lean();
+        }
     }
 
     if (!payment && transaction.order?.id) {

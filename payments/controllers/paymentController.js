@@ -211,8 +211,8 @@ const paymobRedirect = asyncHandler(async (req, res) => {
         h2{color:${success ? '#22c55e' : '#ef4444'}}p{color:#666}</style></head>
         <body><div class="box">
         <h2>${success ? '✅ تم الدفع بنجاح' : '❌ لم يتم الدفع'}</h2>
-        <p>${success ? 'تم تأكيد عملية الشحن بنجاح، يمكنك العودة للتطبيق الآن.' : 'حدث خطأ في الدفع، يرجى المحاولة مرة أخرى.'}</p>
-        <p style="font-size:12px;color:#999;margin-top:24px">سيتم تحديث رصيد المحفظة فوراً.</p>
+        <p>${success ? 'تمت عملية الدفع بنجاح، يمكنك العودة للتطبيق الآن.' : 'حدث خطأ في الدفع، يرجى المحاولة مرة أخرى.'}</p>
+        <p style="font-size:12px;color:#999;margin-top:24px">سيتم تحديث حالة العملية فوراً في التطبيق.</p>
         </div></body></html>
     `);
 });
