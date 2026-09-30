@@ -684,7 +684,7 @@ async function validateTopupAmount({ amountFils, userId }) {
     if (!Number.isInteger(amountFils) || amountFils <= 0) {
         throw new ApiError(
             400,
-            `مبلغ الشحن غير صالح. يجب أن يكون عدداً صحيحاً موجباً (بالفلس).`,
+            `مبلغ الشحن غير صالح. يجب أن يكون مبلغاً موجباً بالجنيه المصري.`,
             PAYMENT_ERROR_CODES.WALLET_TOPUP_INVALID_AMOUNT
         );
     }
@@ -860,9 +860,11 @@ async function createWalletTopupPayment({
  */
 async function getWalletBalance(userId) {
     const wallet = await getOrCreateWallet(userId);
+    const egpAmount = filsToEgp(wallet.balanceFils);
     return {
+        balance:     egpAmount,
+        balanceEgp:  egpAmount,
         balanceFils: wallet.balanceFils,
-        balanceEgp:  filsToEgp(wallet.balanceFils),
         currency:    CURRENCY.EGP,
     };
 }

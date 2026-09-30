@@ -78,20 +78,36 @@ const PAYMENT_EXPIRY_MINUTES = 30;
 const CHECKOUT_EXPIRY_MINUTES = 45;
 
 // ─── Wallet Limits ────────────────────────────────────────────────────────────
-// All limits in FILS (1 EGP = 1000 fils).
-// These are safe defaults — override via environment variables if needed.
+// All limits configured in EGP (جنيه مصري) with internal storage in FILS (1 EGP = 1000 fils).
+// Defaults can be overridden via environment variables.
 
-/** Minimum wallet top-up amount (fils). Default: 10 EGP */
-const WALLET_MIN_TOPUP_FILS = parseInt(process.env.WALLET_MIN_TOPUP_FILS || '10000', 10);
+/** Minimum wallet top-up amount. Default: 1 EGP (جنيه واحد مصري) */
+const WALLET_MIN_TOPUP_EGP = parseFloat(process.env.WALLET_MIN_TOPUP_EGP || '1');
+const WALLET_MIN_TOPUP_FILS = parseInt(
+    process.env.WALLET_MIN_TOPUP_FILS || String(Math.round(WALLET_MIN_TOPUP_EGP * 1000)),
+    10
+);
 
-/** Maximum wallet top-up amount per transaction (fils). Default: 5000 EGP */
-const WALLET_MAX_TOPUP_FILS = parseInt(process.env.WALLET_MAX_TOPUP_FILS || '5000000', 10);
+/** Maximum wallet top-up amount per transaction. Default: 5000 EGP */
+const WALLET_MAX_TOPUP_EGP = parseFloat(process.env.WALLET_MAX_TOPUP_EGP || '5000');
+const WALLET_MAX_TOPUP_FILS = parseInt(
+    process.env.WALLET_MAX_TOPUP_FILS || String(Math.round(WALLET_MAX_TOPUP_EGP * 1000)),
+    10
+);
 
-/** Maximum wallet balance allowed (fils). Default: 10000 EGP */
-const WALLET_MAX_BALANCE_FILS = parseInt(process.env.WALLET_MAX_BALANCE_FILS || '10000000', 10);
+/** Maximum wallet balance allowed. Default: 10000 EGP */
+const WALLET_MAX_BALANCE_EGP = parseFloat(process.env.WALLET_MAX_BALANCE_EGP || '10000');
+const WALLET_MAX_BALANCE_FILS = parseInt(
+    process.env.WALLET_MAX_BALANCE_FILS || String(Math.round(WALLET_MAX_BALANCE_EGP * 1000)),
+    10
+);
 
-/** Maximum daily top-up total per user (fils). Default: 10000 EGP */
-const WALLET_DAILY_TOPUP_LIMIT_FILS = parseInt(process.env.WALLET_DAILY_TOPUP_LIMIT_FILS || '10000000', 10);
+/** Maximum daily top-up total per user. Default: 10000 EGP */
+const WALLET_DAILY_TOPUP_LIMIT_EGP = parseFloat(process.env.WALLET_DAILY_TOPUP_LIMIT_EGP || '10000');
+const WALLET_DAILY_TOPUP_LIMIT_FILS = parseInt(
+    process.env.WALLET_DAILY_TOPUP_LIMIT_FILS || String(Math.round(WALLET_DAILY_TOPUP_LIMIT_EGP * 1000)),
+    10
+);
 
 // ─── Error Codes ──────────────────────────────────────────────────────────────
 const PAYMENT_ERROR_CODES = Object.freeze({
@@ -147,9 +163,13 @@ module.exports = {
     PAYMOB_HTTP_TIMEOUT_MS,
     PAYMENT_EXPIRY_MINUTES,
     CHECKOUT_EXPIRY_MINUTES,
+    WALLET_MIN_TOPUP_EGP,
     WALLET_MIN_TOPUP_FILS,
+    WALLET_MAX_TOPUP_EGP,
     WALLET_MAX_TOPUP_FILS,
+    WALLET_MAX_BALANCE_EGP,
     WALLET_MAX_BALANCE_FILS,
+    WALLET_DAILY_TOPUP_LIMIT_EGP,
     WALLET_DAILY_TOPUP_LIMIT_FILS,
     PAYMENT_ERROR_CODES,
 };

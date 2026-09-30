@@ -38,10 +38,15 @@ const initiateTopup = asyncHandler(async (req, res) => {
         );
     }
 
-    let amountFils = value.amountFils;
-    if (!amountFils && (value.amountEgp || value.amount)) {
+    let amountFils;
+    if (value.amountEgp !== undefined && value.amountEgp !== null) {
         const { egpToFils } = require('../utils/money');
-        amountFils = egpToFils(value.amountEgp || value.amount);
+        amountFils = egpToFils(value.amountEgp);
+    } else if (value.amount !== undefined && value.amount !== null) {
+        const { egpToFils } = require('../utils/money');
+        amountFils = egpToFils(value.amount);
+    } else {
+        amountFils = value.amountFils;
     }
 
     const paymentMethod = value.paymentMethod;
@@ -51,6 +56,7 @@ const initiateTopup = asyncHandler(async (req, res) => {
         requestId,
         userId,
         amountFils,
+        amountEgp: value.amountEgp || value.amount,
         paymentMethod,
     });
 
@@ -71,8 +77,9 @@ const initiateTopup = asyncHandler(async (req, res) => {
             checkoutUrl:   result.checkoutUrl,
             publicKey:     result.publicKey,
             expiresAt:     result.expiresAt,
-            amountFils:    result.amountFils,
+            amount:        result.amountEgp,
             amountEgp:     result.amountEgp,
+            amountFils:    result.amountFils,
             paymentMethod: result.paymentMethod,
         },
     });
