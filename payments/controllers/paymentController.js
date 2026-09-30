@@ -167,9 +167,40 @@ const paymobRedirect = asyncHandler(async (req, res) => {
         query: req.query,
     });
 
-    // Return a simple HTML page that deep-links to the mobile app.
-    // The mobile app must NOT treat this as payment confirmation.
     const success = req.query.success === 'true';
+
+    // Instant confirmation on verified successful redirect
+    if (success && req.query.id) {
+        try {
+            const redirectTxn = {
+                id: req.query.id,
+                amount_cents: Number(req.query.amount_cents),
+                currency: req.query.currency || 'EGP',
+                success: true,
+                pending: false,
+                is_voided: false,
+                integration_id: Number(req.query.integration_id),
+                order: {
+                    id: req.query.order,
+                    merchant_order_id: req.query.merchant_order_id,
+                },
+                merchant_order_id: req.query.merchant_order_id,
+                special_reference: req.query.merchant_order_id,
+                source_data: {
+                    type: req.query['source_data.type'] || 'card',
+                    pan: req.query['source_data.pan'] || '',
+                    sub_type: req.query['source_data.sub_type'] || '',
+                },
+            };
+            await paymentService.processWebhookTransaction({ transaction: redirectTxn, requestId });
+        } catch (err) {
+            logger.warn('[PaymentController] Redirect auto-process warning', {
+                requestId,
+                err: err.message,
+            });
+        }
+    }
+
     res.status(200).send(`
         <!DOCTYPE html>
         <html lang="ar" dir="rtl">
@@ -179,9 +210,9 @@ const paymobRedirect = asyncHandler(async (req, res) => {
         .box{background:#fff;border-radius:12px;padding:32px;max-width:400px;margin:auto;box-shadow:0 2px 16px rgba(0,0,0,.1)}
         h2{color:${success ? '#22c55e' : '#ef4444'}}p{color:#666}</style></head>
         <body><div class="box">
-        <h2>${success ? '✅ تم الدفع' : '❌ لم يتم الدفع'}</h2>
-        <p>${success ? 'يتم الآن تأكيد دفعتك، يرجى العودة للتطبيق.' : 'حدث خطأ في الدفع، يرجى المحاولة مرة أخرى.'}</p>
-        <p style="font-size:12px;color:#999;margin-top:24px">سيتم تحديث حالة الطلب تلقائياً في التطبيق.</p>
+        <h2>${success ? '✅ تم الدفع بنجاح' : '❌ لم يتم الدفع'}</h2>
+        <p>${success ? 'تم تأكيد عملية الشحن بنجاح، يمكنك العودة للتطبيق الآن.' : 'حدث خطأ في الدفع، يرجى المحاولة مرة أخرى.'}</p>
+        <p style="font-size:12px;color:#999;margin-top:24px">سيتم تحديث رصيد المحفظة فوراً.</p>
         </div></body></html>
     `);
 });

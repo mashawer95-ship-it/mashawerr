@@ -242,14 +242,23 @@ async function createPayment({ orderId, userId, requestId }) {
 async function processWebhookTransaction({ transaction, requestId }) {
     const transactionId = String(transaction.id);
     const specialRef    = transaction.special_reference
+                       || transaction.order?.merchant_order_id
+                       || transaction.merchant_order_id
                        || transaction.extras?.payment_reference
+                       || transaction.extras?.merchant_order_id
                        || null;
 
-    // 1. Find our Payment by special_reference OR providerTransactionId
+    // 1. Find our Payment by special_reference OR providerTransactionId OR clean ID
     let payment = null;
 
     if (specialRef) {
         payment = await Payment.findOne({ specialReference: specialRef }).lean();
+        if (!payment && typeof specialRef === 'string' && specialRef.startsWith('topup_')) {
+            const cleanId = specialRef.replace(/^topup_/, '');
+            if (mongoose.Types.ObjectId.isValid(cleanId)) {
+                payment = await Payment.findById(cleanId).lean();
+            }
+        }
     }
 
     if (!payment && transaction.order?.id) {
