@@ -1320,9 +1320,21 @@ const createOrder = asyncHandler(async (req, res) => {
  * @access Private (Client, Representative, or Admin)
  */
 const getOrderRoute = asyncHandler(async (req, res) => {
-    const id = parseInt(req.params.id, 10);
-    if (isNaN(id) || id < 1) {
-        return res.status(400).json({ message: 'orderId must be a positive integer' });
+    const rawId = String(req.params.id || '').trim();
+    const numId = !isNaN(Number(rawId)) ? Number(rawId) : -1;
+    const isValidObjId = mongoose.isValidObjectId(rawId);
+
+    if (numId <= 0 && !isValidObjId) {
+        return res.status(400).json({ message: 'orderId must be a positive integer or valid ObjectId' });
+    }
+
+    let id = numId > 0 ? numId : null;
+    if (!id && isValidObjId) {
+        const o = await Order.findById(rawId).select('orderId').lean();
+        if (o) id = o.orderId;
+    }
+    if (!id) {
+        return res.status(404).json({ message: 'Order not found' });
     }
 
     // 🚀 Check active live trip route from Redis or Mongo Trip first
@@ -1436,16 +1448,27 @@ const getOrderRoute = asyncHandler(async (req, res) => {
  * @access Public
  */
 const getOrderById = asyncHandler(async (req, res) => {
-    const id = parseInt(req.params.id, 10);
-    if (isNaN(id) || id < 1) {
-        return res.status(400).json({ message: 'orderId must be a positive integer' });
+    const rawId = String(req.params.id || '').trim();
+    const numId = !isNaN(Number(rawId)) ? Number(rawId) : -1;
+    const isValidObjId = mongoose.isValidObjectId(rawId);
+
+    if (numId <= 0 && !isValidObjId) {
+        return res.status(400).json({ message: 'orderId must be a positive integer or valid ObjectId' });
     }
 
-    let order = await Order.findOne({
-        orderId: id,
+    const baseFilter = {
         isBusinessOrder: { $ne: true },
         orderCategory: { $ne: 'business' },
-    });
+    };
+
+    let order = null;
+    if (numId > 0) {
+        order = await Order.findOne({ orderId: numId, ...baseFilter });
+    }
+    if (!order && isValidObjId) {
+        order = await Order.findOne({ _id: rawId, ...baseFilter });
+    }
+
     const commissionCfg = await getCachedRepCommission().catch(() => null);
     if (!order) {
         return sanitizeErrorResponse(res, false, true);
@@ -1702,12 +1725,23 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
  * @access Public
  */
 const getOrderStatus = asyncHandler(async (req, res) => {
-    const id = parseInt(req.params.id, 10);
-    if (isNaN(id) || id < 1) {
-        return res.status(400).json({ message: 'orderId must be a positive integer' });
+    const rawId = String(req.params.id || '').trim();
+    const numId = !isNaN(Number(rawId)) ? Number(rawId) : -1;
+    const isValidObjId = mongoose.isValidObjectId(rawId);
+
+    if (numId <= 0 && !isValidObjId) {
+        return res.status(400).json({ message: 'orderId must be a positive integer or valid ObjectId' });
     }
 
-    const order = await Order.findOne({ orderId: id }).select('orderId clientId representativeId status updatedAt cancellationReason reviewReason orderType');
+    const selectFields = 'orderId clientId representativeId status updatedAt cancellationReason reviewReason orderType';
+    let order = null;
+    if (numId > 0) {
+        order = await Order.findOne({ orderId: numId }).select(selectFields);
+    }
+    if (!order && isValidObjId) {
+        order = await Order.findById(rawId).select(selectFields);
+    }
+
     if (!order) {
         return sanitizeErrorResponse(res, false, true);
     }
@@ -1749,9 +1783,12 @@ const getOrderStatus = asyncHandler(async (req, res) => {
  * @access Public
  */
 const cancelOrder = asyncHandler(async (req, res) => {
-    const id = parseInt(req.params.id, 10);
-    if (isNaN(id) || id < 1) {
-        return res.status(400).json({ message: 'orderId must be a positive integer' });
+    const rawId = String(req.params.id || '').trim();
+    const numId = !isNaN(Number(rawId)) ? Number(rawId) : -1;
+    const isValidObjId = mongoose.isValidObjectId(rawId);
+
+    if (numId <= 0 && !isValidObjId) {
+        return res.status(400).json({ message: 'orderId must be a positive integer or valid ObjectId' });
     }
 
     const { error, value } = validateCancelOrder(req.body);
@@ -1761,7 +1798,14 @@ const cancelOrder = asyncHandler(async (req, res) => {
         });
     }
 
-    const order = await Order.findOne({ orderId: id });
+    let order = null;
+    if (numId > 0) {
+        order = await Order.findOne({ orderId: numId });
+    }
+    if (!order && isValidObjId) {
+        order = await Order.findById(rawId);
+    }
+
     if (!order) {
         return sanitizeErrorResponse(res, false, true);
     }
@@ -1889,7 +1933,11 @@ const cancelOrder = asyncHandler(async (req, res) => {
         try {
             const { Payment } = require('../middlewares/Payment');
             const payment = await Payment.findOne({
-                orderId: order._id,
+                $or: [
+                    { orderId: order._id },
+                    { orderNumericId: order.orderId },
+                    { orderId: String(order._id) },
+                ],
                 status:  { $in: ['PAID', 'PARTIALLY_REFUNDED'] },
             });
 
@@ -2290,9 +2338,12 @@ const listWaitingOrders = asyncHandler(async (req, res) => {
  * @access Public (representative)
  */
 const acceptOrder = asyncHandler(async (req, res) => {
-    const id = parseInt(req.params.id, 10);
-    if (isNaN(id) || id < 1) {
-        return res.status(400).json({ message: 'orderId must be a positive integer' });
+    const rawId = String(req.params.id || '').trim();
+    const numId = !isNaN(Number(rawId)) ? Number(rawId) : -1;
+    const isValidObjId = mongoose.isValidObjectId(rawId);
+
+    if (numId <= 0 && !isValidObjId) {
+        return res.status(400).json({ message: 'orderId must be a positive integer or valid ObjectId' });
     }
 
     const { error, value } = joi
@@ -2305,7 +2356,13 @@ const acceptOrder = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: error.details[0].message });
     }
 
-    const order = await Order.findOne({ orderId: id });
+    let order = null;
+    if (numId > 0) {
+        order = await Order.findOne({ orderId: numId });
+    }
+    if (!order && isValidObjId) {
+        order = await Order.findById(rawId);
+    }
     if (!order) {
         return res.status(404).json({ message: 'Order not found' });
     }

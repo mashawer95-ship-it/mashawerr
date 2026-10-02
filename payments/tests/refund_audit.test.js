@@ -514,6 +514,65 @@ async function main() {
         return { rejected };
     });
 
+    // ─────────────────────────────────────────────────────────────────────────────
+    // TEST 9: Cancel order by MongoDB ObjectId (24-char hex)
+    // ─────────────────────────────────────────────────────────────────────────────
+    await runScenario(9, 'Cancel and refund order using MongoDB ObjectId string', async () => {
+        const userId = `user_t9_${runTag}`;
+        const orderIdNum = await getNextGlobalOrderId();
+        const order = await Order.create({
+            orderId: orderIdNum,
+            clientId: userId,
+            status: 'waiting',
+            totalDeliveryPrice: 5000,
+            paymentStatus: 'paid',
+            cancellationReason: runTag,
+        });
+
+        const payment = await Payment.create({
+            userId,
+            orderId: order._id,
+            orderNumericId: order.orderId,
+            provider: 'app_wallet',
+            paymentMethod: 'APP_WALLET',
+            amountPiastres: 500,
+            refundedAmountPiastres: 0,
+            status: 'PAID',
+        });
+
+        const req = {
+            params: { id: order._id.toString() }, // 24-char hex ObjectId
+            body: { reason: 'Customer cancelled by MongoDB ObjectId', refundPreference: 'APP_WALLET' },
+            user: { id: userId, isAdmin: false },
+        };
+
+        let responseStatusCode = null;
+        let responseJson = null;
+        const res = {
+            status: (code) => {
+                responseStatusCode = code;
+                return {
+                    json: (data) => { responseJson = data; },
+                };
+            },
+        };
+
+        const { cancelOrder } = require('../../Controllers/orderController');
+        await cancelOrder(req, res);
+
+        assert.strictEqual(responseStatusCode, 200, `Cancelling with ObjectId must return 200, got ${responseStatusCode}`);
+        assert.strictEqual(responseJson?.message, 'Order cancelled successfully');
+
+        const orderAfter = await Order.findById(order._id);
+        assert.strictEqual(orderAfter.status, 'cancelled');
+
+        const paymentAfter = await Payment.findById(payment._id);
+        assert.strictEqual(paymentAfter.status, 'REFUNDED');
+        assert.strictEqual(paymentAfter.refundedAmountPiastres, 500);
+
+        return { responseStatusCode, orderStatus: orderAfter.status, paymentStatus: paymentAfter.status };
+    });
+
     await cleanupTestData(runTag);
 
     console.log(`\n═══════════════════════════════════════════════════════════════════`);
