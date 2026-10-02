@@ -162,8 +162,24 @@ async function rotateRefreshToken(rawToken, meta = {}) {
         throw Object.assign(new Error('Refresh token not found.'), { code: 'REFRESH_TOKEN_INVALID' });
     }
 
-    // Step 3: Replay attack detection
+    // Step 3: Replay attack detection (with OAuth 2.0 / Auth0 standard 30s grace window for concurrent requests)
     if (storedToken.isRevoked) {
+        const GRACE_PERIOD_MS = 30 * 1000; // 30-second leeway window for concurrent mobile requests
+        const timeSinceRevocation = Date.now() - new Date(storedToken.updatedAt).getTime();
+
+        if (storedToken.replacedByHash && timeSinceRevocation <= GRACE_PERIOD_MS) {
+            console.log(`[TokenService] ℹ️ Token rotation grace period active (${timeSinceRevocation}ms ago). Serving active replacement.`);
+            const user = await User.findById(storedToken.userId);
+            if (user && !user.isSuspended && user.status !== 'blocked') {
+                const accessToken = generateAccessToken(user);
+                return {
+                    accessToken,
+                    refreshToken: null, // Client already has the rotated token from the first request
+                    user,
+                };
+            }
+        }
+
         console.warn(`[TokenService] ⚠️ REPLAY ATTACK DETECTED – family: ${storedToken.family}, user: ${storedToken.userId}`);
         // Revoke the entire family → force re-login
         await RefreshToken.revokeFamilyTokens(storedToken.family);
