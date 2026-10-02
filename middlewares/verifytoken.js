@@ -152,8 +152,32 @@ function verifyTokenAndAuthorization(req, res, next) {
     });
 }
 
+/**
+ * Optional authentication: enriches req.user if a valid token is provided,
+ * but allows unauthenticated requests to proceed.
+ */
+async function optionalAuth(req, res, next) {
+    const token = extractToken(req);
+    if (!token) {
+        req.user = null;
+        return next();
+    }
+    try {
+        const decoded = jwt.verify(token, ACCESS_SECRET);
+        if (decoded && typeof decoded.userType === 'string') {
+            decoded.userType = decoded.userType.trim();
+        }
+        req.user = decoded;
+        return checkUserStatus(req, res, next);
+    } catch (_) {
+        req.user = null;
+        return next();
+    }
+}
+
 module.exports = {
     authenticate,
+    optionalAuth,
     verifyToken,              // alias
     protect,                  // alias
     verifyTokenAndAdmin,      // alias
