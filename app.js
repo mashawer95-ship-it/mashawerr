@@ -192,7 +192,6 @@ app.use('/api/config', require('./routes/config'));
 // ─── Static: uploaded order photos ──────────────────────────────────────────
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-const { verifyTokenAndAdmin } = require('./middlewares/verifytoken');
 app.get('/admin/route-metrics', verifyTokenAndAdmin, require('./Controllers/tripController').getRouteMetricsHandler);
 
 // Static paths are already handled above by /uploads

@@ -407,7 +407,7 @@ function validateCancelOrder(object) {
             'string.min': 'reason cannot be empty',
             'string.max': 'reason is too long (max 2000 characters)',
         }),
-        refundPreference: joi.string().valid('wallet', 'card').optional().allow(null, ''),
+        refundPreference: joi.string().valid('wallet', 'card', 'APP_WALLET', 'ORIGINAL_PAYMENT', 'app_wallet', 'original_payment').optional().allow(null, ''),
     });
     return schema.validate(object, { abortEarly: false, allowUnknown: true });
 }

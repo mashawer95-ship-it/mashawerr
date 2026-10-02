@@ -287,9 +287,10 @@ const refundPayment = asyncHandler(async (req, res) => {
 
     const result = await paymentService.refundPayment({
         paymentId,
-        amountPiastres: body.amount || null,
-        requestedBy:    userId,
+        amountPiastres:   body.amount || null,
+        requestedBy:      userId,
         requestId,
+        refundPreference: body.refundPreference || null,
     });
 
     return res.status(200).json({

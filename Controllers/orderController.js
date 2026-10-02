@@ -1879,7 +1879,9 @@ const cancelOrder = asyncHandler(async (req, res) => {
     }
 
     // ─── Payment-Aware Refund Handling (Phase 5) ───────────────────────────
-    const refundPref = (value.refundPreference || 'wallet').toLowerCase();
+    const rawPref = String(value.refundPreference || 'APP_WALLET').trim().toUpperCase();
+    const isOriginalPayment = rawPref === 'ORIGINAL_PAYMENT' || rawPref === 'CARD';
+    const refundPref = isOriginalPayment ? 'ORIGINAL_PAYMENT' : 'APP_WALLET';
     let refundDestination = null;
     let refundMessage = null;
 
@@ -1894,113 +1896,30 @@ const cancelOrder = asyncHandler(async (req, res) => {
             if (payment) {
                 const remainingPiastres = payment.amountPiastres - (payment.refundedAmountPiastres || 0);
                 if (remainingPiastres > 0) {
-                    const isAppWallet = payment.provider === 'app_wallet' || payment.paymentMethod === 'APP_WALLET';
-                    
-                    if (isAppWallet || refundPref === 'wallet') {
-                        // User chose instant wallet refund OR paid originally via internal wallet
-                        const { piastresToFils } = require('../payments/utils/money');
-                        const { refundToWallet } = require('../payments/services/walletPaymentService');
-                        const amountFils = piastresToFils(remainingPiastres);
-
-                        await refundToWallet({
-                            orderId:    order._id,
-                            amountFils,
-                            userId:     order.clientId,
-                            paymentId:  payment._id,
-                            requestId:  req.id,
+                    const paymentService = require('../payments/services/paymentService');
+                    try {
+                        const refundResult = await paymentService.refundPayment({
+                            paymentId:        payment._id,
+                            amountPiastres:   remainingPiastres,
+                            requestedBy:      order.clientId,
+                            requestId:        req.id,
+                            refundPreference: refundPref,
                         });
 
-                        payment.refundedAmountPiastres = payment.amountPiastres;
-                        payment.status = 'REFUNDED';
-                        payment.refundedAt = new Date();
-                        payment.metadata = {
-                            ...(payment.metadata || {}),
-                            refundMethod:     'APP_WALLET',
-                            refundPreference: refundPref,
-                        };
-                        await payment.save();
-
-                        order.paymentStatus = 'refunded';
-                        await order.save();
-
-                        refundDestination = 'wallet';
-                        refundMessage = 'تم استرداد كامل المبلغ إلى محفظتك بالتطبيق فوراً.';
-                    } else if (refundPref === 'card' && payment.provider === 'paymob') {
-                        // User explicitly requested refund to original card
-                        let cardRefundSucceeded = false;
-
-                        if (payment.providerTransactionId) {
-                            try {
-                                const paymobService = require('../payments/providers/paymob/paymob.service');
-                                await paymobService.requestRefund({
-                                    providerTransactionId: payment.providerTransactionId,
-                                    amountPiastres:        remainingPiastres,
-                                    requestId:             req.id,
-                                });
-                                cardRefundSucceeded = true;
-                                refundDestination = 'card';
-                                refundMessage = 'تم قبول طلب الاسترداد لبطاقتك البنكية، وسيصل لحسابك خلال 5-14 يوم عمل حسب بنكك.';
-
-                                payment.refundedAmountPiastres = payment.amountPiastres;
-                                payment.status = 'REFUNDED';
-                                payment.refundedAt = new Date();
-                                payment.metadata = {
-                                    ...(payment.metadata || {}),
-                                    refundMethod:     'CARD_GATEWAY',
-                                    refundPreference: 'card',
-                                };
-                                await payment.save();
-                            } catch (cardErr) {
-                                const { isDefinitiveRefundRejection } = require('../payments/services/paymentService');
-                                if (isDefinitiveRefundRejection(cardErr)) {
-                                    logger.warn(`[cancelOrder] Card gateway definitively rejected refund (${cardErr.message}). Safe fallback to app wallet.`);
-                                } else {
-                                    logger.error(`[cancelOrder] Card gateway refund outcome uncertain (${cardErr.message}). Blocking wallet fallback to prevent double payout.`);
-                                    payment.metadata = {
-                                        ...(payment.metadata || {}),
-                                        refundStatus: 'UNCERTAIN',
-                                        refundError: cardErr.message,
-                                    };
-                                    await payment.save().catch(() => {});
-                                    return res.status(504).json({
-                                        message: 'حالة استرداد المبلغ عبر البطاقة البنكية قيد المراجعة مع البنك، يرجى الانتظار أو مراجعة الدعم الفني لتجنب تكرار الاسترداد',
-                                        code: 'REFUND_STATUS_UNCERTAIN',
-                                    });
-                                }
-                            }
-                        }
-
-                        if (!cardRefundSucceeded) {
-                            // Gateway couldn't refund to card (e.g. 400 insufficient merchant settlement float / card limitation).
-                            // Fallback to app wallet so money is NEVER lost or locked!
-                            const { piastresToFils } = require('../payments/utils/money');
-                            const { refundToWallet } = require('../payments/services/walletPaymentService');
-                            const amountFils = piastresToFils(remainingPiastres);
-
-                            await refundToWallet({
-                                orderId:    order._id,
-                                amountFils,
-                                userId:     order.clientId,
-                                paymentId:  payment._id,
-                                requestId:  req.id,
+                        refundDestination = refundResult.metadata?.refundMethod || refundPref;
+                        refundMessage = (refundDestination === 'ORIGINAL_PAYMENT' || refundDestination === 'CARD_GATEWAY')
+                            ? 'تم قبول طلب الاسترداد لوسيلة الدفع الأصلية، وسيصل لحسابك خلال 24–72 ساعة أو حسب البنك.'
+                            : 'تم استرداد كامل المبلغ إلى محفظتك بالتطبيق فوراً.';
+                    } catch (refundOpErr) {
+                        if (refundOpErr.statusCode === 504 || refundOpErr.errorCode === 'REFUND_STATUS_UNCERTAIN') {
+                            return res.status(504).json({
+                                message: 'حالة استرداد المبلغ عبر وسيلة الدفع الأصلية قيد المراجعة مع البنك، يرجى الانتظار لتجنب تكرار الاسترداد',
+                                code: 'REFUND_STATUS_UNCERTAIN',
                             });
-
-                            payment.refundedAmountPiastres = payment.amountPiastres;
-                            payment.status = 'REFUNDED';
-                            payment.refundedAt = new Date();
-                            payment.metadata = {
-                                ...(payment.metadata || {}),
-                                refundMethod:     'WALLET_FALLBACK',
-                                refundPreference: 'card',
-                            };
-                            await payment.save();
-
-                            refundDestination = 'wallet_fallback';
-                            refundMessage = 'تعذر رد المبلغ للبطاقة البنكية مباشرة من البنك، ولحماية أموالك تم إيداع المبلغ بالكامل في محفظتك بالتطبيق فوراً.';
                         }
-
-                        order.paymentStatus = 'refunded';
-                        await order.save();
+                        logger.error(`[cancelOrder] Refund execution error: ${refundOpErr.message}`);
+                        refundDestination = 'FAILED';
+                        refundMessage = 'تعذر استرداد المبلغ تلقائياً، يرجى التواصل مع الدعم الفني.';
                     }
                 }
             }
@@ -2036,10 +1955,8 @@ const cancelOrder = asyncHandler(async (req, res) => {
     // ─── إشعار العميل بالإلغاء ──────────────────────────────────────────────
     let refundNote = '';
     if (order.paymentStatus === 'refunded') {
-        if (refundDestination === 'card') {
-            refundNote = ' وسيتم إرجاع المبلغ لبطاقتك البنكية خلال 5-14 يوم عمل حسب بنكك.';
-        } else if (refundDestination === 'wallet_fallback') {
-            refundNote = ' ولتعذر رد المبلغ للبطاقة فوراً، تم إيداعه بالكامل في محفظتك بالتطبيق فوراً.';
+        if (refundDestination === 'ORIGINAL_PAYMENT' || refundDestination === 'CARD_GATEWAY' || refundDestination === 'card') {
+            refundNote = ' وسيتم إرجاع المبلغ لوسيلة الدفع الأصلية خلال 24–72 ساعة أو حسب بنكك.';
         } else {
             refundNote = ' وتم استرداد المبلغ بالكامل إلى محفظتك بالتطبيق فوراً.';
         }

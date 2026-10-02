@@ -77,6 +77,7 @@ function validateRefundRequest(body) {
             'number.min':     'amount must be at least 1 piastre',
         }),
         reason: joi.string().trim().max(500).allow('', null).optional(),
+        refundPreference: joi.string().valid('wallet', 'card', 'APP_WALLET', 'ORIGINAL_PAYMENT', 'app_wallet', 'original_payment').optional().allow(null, ''),
     });
     return schema.validate(body, { abortEarly: false });
 }

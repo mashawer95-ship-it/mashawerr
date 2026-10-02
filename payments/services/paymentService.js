@@ -349,7 +349,7 @@ async function processWebhookTransaction({ transaction, requestId }) {
  * @param {string} params.requestId
  * @returns {Promise<object>} Updated payment document
  */
-async function refundPayment({ paymentId, amountPiastres, requestedBy, requestId }) {
+async function refundPayment({ paymentId, amountPiastres, requestedBy, requestId, refundPreference }) {
     const payment = await Payment.findById(paymentId).lean();
     if (!payment) {
         throw new ApiError(404, 'سجل الدفع غير موجود', PAYMENT_ERROR_CODES.PAYMENT_NOT_FOUND);
@@ -375,7 +375,12 @@ async function refundPayment({ paymentId, amountPiastres, requestedBy, requestId
         throw new ApiError(422, 'مبلغ الاسترداد يتجاوز المبلغ المدفوع', PAYMENT_ERROR_CODES.REFUND_EXCEEDS_PAID);
     }
 
-    const isAppWallet = payment.provider === 'app_wallet' || payment.paymentMethod === 'APP_WALLET';
+    const rawPref = String(refundPreference || '').trim().toUpperCase();
+    const isExplicitOriginal = rawPref === 'ORIGINAL_PAYMENT' || rawPref === 'CARD';
+    const isExplicitWallet = rawPref === 'APP_WALLET' || rawPref === 'WALLET';
+
+    const isAppWallet = payment.provider === 'app_wallet' || payment.paymentMethod === 'APP_WALLET' || isExplicitWallet;
+    let actualRefundMethod = isAppWallet ? 'APP_WALLET' : 'ORIGINAL_PAYMENT';
 
     await _recordEvent({
         paymentId:         payment._id,
@@ -385,7 +390,7 @@ async function refundPayment({ paymentId, amountPiastres, requestedBy, requestId
         provider:          payment.provider || 'system',
         requestId,
         message:           `Refund of ${refundAmount} piastres requested by ${requestedBy}`,
-        payloadSummary:    { refundAmount, requestedBy, isAppWallet },
+        payloadSummary:    { refundAmount, requestedBy, isAppWallet, refundPreference },
     });
 
     // Atomically reserve the refund amount on the Payment document
@@ -429,8 +434,9 @@ async function refundPayment({ paymentId, amountPiastres, requestedBy, requestId
                 paymentId:  payment._id,
                 requestId,
             });
+            actualRefundMethod = 'APP_WALLET';
         } else {
-            // Paymob refund
+            // Paymob refund to original payment method
             let gatewayRefundSucceeded = false;
 
             if (payment.providerTransactionId) {
@@ -441,13 +447,20 @@ async function refundPayment({ paymentId, amountPiastres, requestedBy, requestId
                         requestId,
                     });
                     gatewayRefundSucceeded = true;
+                    actualRefundMethod = 'CARD_GATEWAY';
                 } catch (gatewayErr) {
                     if (isDefinitiveRefundRejection(gatewayErr)) {
-                        logger.warn(`[refundPayment] Paymob gateway definitively rejected refund (${gatewayErr.message}). Safe fallback to instant in-app wallet refund.`, {
-                            paymentId: payment._id,
-                            orderId:   payment.orderId,
-                            err:       gatewayErr.message,
-                        });
+                        if (isExplicitOriginal) {
+                            // User explicitly requested ORIGINAL_PAYMENT -> rule: "لا تحول المبلغ إلى App Wallet في هذا المسار"
+                            logger.warn(`[refundPayment] Paymob gateway definitively rejected refund (${gatewayErr.message}). Wallet fallback blocked by user preference.`);
+                            throw gatewayErr;
+                        } else {
+                            logger.warn(`[refundPayment] Paymob gateway definitively rejected refund (${gatewayErr.message}). Safe fallback to instant in-app wallet refund.`, {
+                                paymentId: payment._id,
+                                orderId:   payment.orderId,
+                                err:       gatewayErr.message,
+                            });
+                        }
                     } else {
                         // Gateway outcome is indeterminate (timeout, network error, 5xx, or already refunded).
                         // Invariant: MUST NOT execute wallet fallback on indeterminate gateway status to prevent double payout!
@@ -456,6 +469,17 @@ async function refundPayment({ paymentId, amountPiastres, requestedBy, requestId
                             orderId:   payment.orderId,
                             err:       gatewayErr.message,
                         });
+                        const currentMeta = (payment.metadata && typeof payment.metadata === 'object') ? payment.metadata : {};
+                        await Payment.findByIdAndUpdate(payment._id, {
+                            $set: {
+                                metadata: {
+                                    ...currentMeta,
+                                    refundStatus: 'UNCERTAIN',
+                                    refundError: gatewayErr.message,
+                                    refundPreference,
+                                },
+                            },
+                        }).catch(() => {});
                         throw new ApiError(
                             504,
                             'حالة استرداد المبلغ عبر البطاقة البنكية قيد المراجعة مع البنك، يرجى الانتظار لتجنب تكرار الاسترداد',
@@ -466,8 +490,10 @@ async function refundPayment({ paymentId, amountPiastres, requestedBy, requestId
             }
 
             if (!gatewayRefundSucceeded) {
-                // If Paymob gateway refund was definitively rejected (e.g. 400 insufficient merchant settlement float, or card limitations),
-                // fall back safely to in-app wallet refund so customer money is not locked.
+                if (isExplicitOriginal) {
+                    throw new ApiError(400, 'تعذر استرداد المبلغ إلى وسيلة الدفع الأصلية', PAYMENT_ERROR_CODES.PAYMENT_PROVIDER_ERROR);
+                }
+                // Fall back safely to in-app wallet refund only if not strictly ORIGINAL_PAYMENT
                 const { piastresToFils } = require('../utils/money');
                 const { refundToWallet } = require('./walletPaymentService');
                 const amountFils = piastresToFils(refundAmount);
@@ -480,18 +506,16 @@ async function refundPayment({ paymentId, amountPiastres, requestedBy, requestId
                     requestId,
                 });
 
-                await Payment.findByIdAndUpdate(payment._id, {
-                    $set: {
-                        'metadata.refundMethod': 'WALLET_FALLBACK',
-                    },
-                }).catch(() => {});
+                actualRefundMethod = 'WALLET_FALLBACK';
             }
         }
     } catch (refundErr) {
-        // Rollback the reserved refund amount on failure
-        await Payment.findByIdAndUpdate(payment._id, {
-            $inc: { refundedAmountPiastres: -refundAmount },
-        }).catch(() => {});
+        // Rollback the reserved refund amount on failure (except for indeterminate timeout 504)
+        if (refundErr.statusCode !== 504 && refundErr.errorCode !== 'REFUND_STATUS_UNCERTAIN') {
+            await Payment.findByIdAndUpdate(payment._id, {
+                $inc: { refundedAmountPiastres: -refundAmount },
+            }).catch(() => {});
+        }
         throw refundErr;
     }
 
@@ -499,12 +523,18 @@ async function refundPayment({ paymentId, amountPiastres, requestedBy, requestId
     const isFullRefund     = newRefundedTotal >= reservedPayment.amountPiastres;
     const newStatus        = isFullRefund ? 'REFUNDED' : 'PARTIALLY_REFUNDED';
 
+    const currentMeta = (payment.metadata && typeof payment.metadata === 'object') ? payment.metadata : {};
     const updatedPayment = await Payment.findByIdAndUpdate(
         payment._id,
         {
             $set:  {
                 status:      newStatus,
                 refundedAt:  isFullRefund ? new Date() : undefined,
+                metadata: {
+                    ...currentMeta,
+                    refundMethod: actualRefundMethod,
+                    refundPreference: refundPreference || (isAppWallet ? 'APP_WALLET' : 'ORIGINAL_PAYMENT'),
+                },
             },
         },
         { new: true }
@@ -1228,7 +1258,29 @@ async function reconcileUncertainRefund({ paymentId, requestId }) {
             amountPiastres: refundedPiastres,
         };
     } else {
-        // Confirmed: No card refund happened at the bank. Safe to execute wallet fallback!
+        // Confirmed: No card refund happened at the bank.
+        const pref = String(payment.metadata?.refundPreference || '').trim().toUpperCase();
+        if (pref === 'ORIGINAL_PAYMENT' || pref === 'CARD') {
+            // Customer explicitly chose ORIGINAL_PAYMENT -> rule: do NOT convert to App Wallet!
+            // Roll back the reservation so it can be retried or handled without double payout
+            await Payment.findByIdAndUpdate(payment._id, {
+                $inc: { refundedAmountPiastres: -payment.amountPiastres },
+                $set: {
+                    'metadata.refundStatus': 'FAILED',
+                    'metadata.refundFailureReason': 'Card gateway confirmed transaction was not refunded at bank',
+                },
+            });
+            logger.info('[PaymentService] Uncertain refund reconciled: Card refund confirmed NOT executed at bank. Wallet fallback skipped per ORIGINAL_PAYMENT preference.', {
+                paymentId: payment._id,
+            });
+            return {
+                status: 'FAILED',
+                refundMethod: 'ORIGINAL_PAYMENT',
+                amountPiastres: 0,
+            };
+        }
+
+        // Safe to execute wallet fallback if not strictly ORIGINAL_PAYMENT
         const { piastresToFils } = require('../utils/money');
         const { refundToWallet } = require('./walletPaymentService');
         const amountFils = piastresToFils(payment.amountPiastres);
