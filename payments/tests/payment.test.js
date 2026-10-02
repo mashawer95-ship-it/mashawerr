@@ -226,6 +226,51 @@ describe('paymob.hmac.js — HMAC verification', () => {
         const h2 = computeTransactionHmac(other);
         assert.notStrictEqual(h1, h2);
     });
+
+    test('verifyTransactionResponseHmac returns true for authentic Paymob redirect query', async () => {
+        const { verifyTransactionResponseHmac, TRANSACTION_RESPONSE_HMAC_FIELDS } =
+            require('./../../payments/providers/paymob/paymob.hmac');
+        const crypto = require('crypto');
+
+        const query = {
+            id: '546389634',
+            pending: 'false',
+            amount_cents: '500',
+            success: 'true',
+            is_auth: 'false',
+            is_capture: 'false',
+            is_standalone_payment: 'true',
+            is_voided: 'false',
+            is_refunded: 'false',
+            is_3d_secure: 'true',
+            integration_id: '5544416',
+            order: '623415680',
+            created_at: '2026-10-02T19:12:42.228408',
+            currency: 'EGP',
+            error_occured: 'false',
+            owner: '2107409',
+            'source_data.pan': '9052',
+            'source_data.sub_type': 'Maestro',
+            'source_data.type': 'card',
+        };
+
+        const secret = process.env.PAYMOB_HMAC_SECRET;
+        const concat = TRANSACTION_RESPONSE_HMAC_FIELDS.map((f) => query[f] || '').join('');
+        const validHmac = crypto.createHmac('sha512', secret).update(concat).digest('hex');
+
+        const ok = verifyTransactionResponseHmac(query, validHmac, 'test-redirect-valid');
+        assert.strictEqual(ok, true, 'Authentic redirect HMAC must pass verification');
+
+        const tampered = verifyTransactionResponseHmac(
+            { ...query, amount_cents: '500000' },
+            validHmac,
+            'test-redirect-tampered'
+        );
+        assert.strictEqual(tampered, false, 'Tampered redirect amount must fail verification');
+
+        const invalidHmac = verifyTransactionResponseHmac(query, 'bad_hmac_hex', 'test-redirect-bad');
+        assert.strictEqual(invalidHmac, false, 'Invalid HMAC must fail verification');
+    });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

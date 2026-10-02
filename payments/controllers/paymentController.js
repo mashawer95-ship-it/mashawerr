@@ -119,8 +119,19 @@ const paymobWebhook = asyncHandler(async (req, res) => {
         // Never log hmac value or body
     });
 
-    // 1. Validate query parameters
-    const { error: queryError, value: queryValue } = validateWebhookQuery(req.query);
+    // 1. Validate query parameters (allow HMAC from query, headers, or body for resilience)
+    const effectiveHmac = req.query.hmac
+        || req.headers['hmac']
+        || req.headers['x-paymob-hmac']
+        || req.body?.hmac
+        || req.body?.obj?.hmac;
+
+    const candidateQuery = {
+        ...req.query,
+        hmac: effectiveHmac,
+    };
+
+    const { error: queryError, value: queryValue } = validateWebhookQuery(candidateQuery);
     if (queryError) {
         logger.warn('[PaymentController] Webhook query validation failed', {
             requestId,
@@ -150,40 +161,79 @@ const paymobWebhook = asyncHandler(async (req, res) => {
 /**
  * Paymob redirect endpoint — called when customer completes checkout on Paymob's page.
  *
- * SECURITY: This endpoint MUST NOT confirm payment status.
- * It only provides a user-facing acknowledgement.
- * The webhook is the authoritative payment confirmation.
+ * SECURE DUAL-CONFIRMATION:
+ * Paymob appends all transaction fields and a cryptographically signed HMAC (?hmac=...)
+ * to the redirection URL (Transaction Response Callback).
  *
- * The mobile app should:
- *   1. Deep link back to the app from this page, OR
- *   2. Poll GET /api/orders/:orderId/payment-status to check current state.
+ * If HMAC is verified with our PAYMOB_HMAC_SECRET:
+ *  - We process the payment immediately (0-delay balance credit / order finalization).
+ *  - Idempotency guarantees zero double-crediting if the webhook also arrives.
+ *
+ * If HMAC is missing or invalid:
+ *  - NO financial operation is executed (UX display only).
+ *  - Protects against malicious query param crafting.
  */
 const paymobRedirect = asyncHandler(async (req, res) => {
     const requestId = req.id;
-    // ── SECURITY: This endpoint is UX-only navigation.
-    // It MUST NOT confirm payment status, trigger financial operations,
-    // mark payments as paid, or call processWebhookTransaction.
-    // The ONLY authoritative confirmation source is the server-to-server
-    // Paymob webhook at POST /api/payments/paymob/webhook (which verifies
-    // the HMAC signature before any business logic).
-    //
-    // This page exists solely to give the user a human-readable result page
-    // in the browser after returning from Paymob's hosted checkout.
-    // The mobile app polls GET /api/orders/:orderId/payment-status for the
-    // authoritative payment state.
-    logger.info('[PaymentController] Paymob redirect received (UX-only, no financial action)', {
+    const receivedHmac = req.query?.hmac;
+
+    logger.info('[PaymentController] Paymob redirect received', {
         requestId,
-        // Only log non-sensitive query keys for diagnostics (never log hmac/tokens)
-        success: req.query.success,
-        pending: req.query.pending,
+        hasHmac: !!receivedHmac,
+        id: req.query?.id,
+        success: req.query?.success,
+        pending: req.query?.pending,
     });
 
-    // Derive the display state from the query param — this is DISPLAY ONLY,
-    // never used to alter payment, order, wallet, or ledger state.
-    const success = req.query.success === 'true';
-    const isPending = req.query.pending === 'true';
+    const success = req.query?.success === 'true';
+    const isPending = req.query?.pending === 'true';
 
-    // Determine display state — purely cosmetic, NEVER financial
+    // ── SECURE TRANSACTION CONFIRMATION VIA REDIRECT HMAC ──────────────────────
+    // Cryptographically verified via Paymob HMAC SHA-512 signature before any mutation.
+    if (receivedHmac && paymobService.verifyTransactionResponseHmac(req.query, receivedHmac, requestId)) {
+        if (success && req.query.id && req.query.amount_cents) {
+            const transaction = {
+                id: req.query.id,
+                amount_cents: Number(req.query.amount_cents),
+                currency: (req.query.currency || 'EGP').trim().toUpperCase(),
+                success: true,
+                pending: false,
+                is_voided: req.query.is_voided === 'true' || req.query.is_void === 'true',
+                integration_id: Number(req.query.integration_id),
+                order: {
+                    id: req.query.order,
+                    merchant_order_id: req.query.merchant_order_id,
+                },
+                special_reference: req.query.merchant_order_id,
+                source_data: {
+                    type: req.query['source_data.type'] || req.query.source_data?.type || '',
+                    sub_type: req.query['source_data.sub_type'] || req.query.source_data?.sub_type || '',
+                    pan: req.query['source_data.pan'] || req.query.source_data?.pan || '',
+                },
+            };
+
+            try {
+                await paymentService.processWebhookTransaction({ transaction, requestId });
+                logger.info('[PaymentController] Payment successfully confirmed and processed via verified redirect HMAC', {
+                    requestId,
+                    transactionId: transaction.id,
+                    specialRef: transaction.special_reference,
+                });
+            } catch (err) {
+                logger.error('[PaymentController] Error processing verified redirect payment', {
+                    requestId,
+                    err: err.message,
+                });
+            }
+        }
+    } else if (receivedHmac) {
+        logger.warn('[PaymentController] Paymob redirect HMAC signature invalid — skipping automatic confirmation', {
+            requestId,
+            id: req.query?.id,
+        });
+    }
+
+    // Determine display state — purely cosmetic for the browser / WebView
     const displayColor = success ? '#22c55e' : isPending ? '#f59e0b' : '#ef4444';
     const displayIcon  = success ? '✅' : isPending ? '⏳' : '❌';
     const displayTitle = success ? 'تم الدفع بنجاح' : isPending ? 'جارٍ المعالجة...' : 'لم يتم الدفع';

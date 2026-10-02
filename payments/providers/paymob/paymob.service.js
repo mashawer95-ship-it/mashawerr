@@ -273,10 +273,16 @@ function buildRedirectionUrl() {
     return `${base.replace(/\/$/, '')}/api/payments/paymob/redirect`;
 }
 
+function verifyTransactionResponseHmac(queryParams, receivedHmac, requestId) {
+    const { verifyTransactionResponseHmac: verifyHmac } = require('./paymob.hmac');
+    return verifyHmac(queryParams, receivedHmac, requestId);
+}
+
 module.exports = {
     createPaymobIntention,
     validateTransactionCallback,
     assertValidHmac,
+    verifyTransactionResponseHmac,
     requestRefund,
     getTransaction,
 };

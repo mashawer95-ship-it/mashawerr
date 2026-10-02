@@ -221,10 +221,99 @@ function verifyTokenCallbackHmac(tokenData, receivedHmac, requestId) {
     }
 }
 
+/**
+ * Fields used for TRANSACTION RESPONSE (Redirect) callback HMAC, in the exact required order.
+ * Reference: Paymob Accept Transaction Response Callback.
+ */
+const TRANSACTION_RESPONSE_HMAC_FIELDS = Object.freeze([
+    'amount_cents',
+    'created_at',
+    'currency',
+    'error_occured',
+    'has_parent_transaction',
+    'id',
+    'integration_id',
+    'is_3d_secure',
+    'is_auth',
+    'is_capture',
+    'is_refunded',
+    'is_standalone_payment',
+    'is_voided',
+    'order',
+    'owner',
+    'pending',
+    'source_data.pan',
+    'source_data.sub_type',
+    'source_data.type',
+    'success',
+]);
+
+/**
+ * Verify HMAC for a Paymob TRANSACTION RESPONSE callback (Redirect URL query params).
+ *
+ * @param {object} queryParams - Query parameters from redirect request
+ * @param {string} receivedHmac - HMAC hex string from req.query.hmac
+ * @param {string} requestId - Correlation ID
+ * @returns {boolean} true if valid, false if invalid or tampered
+ */
+function verifyTransactionResponseHmac(queryParams, receivedHmac, requestId) {
+    try {
+        if (!receivedHmac || typeof receivedHmac !== 'string') {
+            return false;
+        }
+
+        const hmacSecret = paymobConfig.hmacSecret;
+        if (!hmacSecret) {
+            throw new Error('[PaymobHmac] PAYMOB_HMAC_SECRET not configured');
+        }
+
+        const concatenated = TRANSACTION_RESPONSE_HMAC_FIELDS.map((field) => {
+            const val = queryParams[field];
+            return val != null ? String(val) : '';
+        }).join('');
+
+        const expected = crypto
+            .createHmac('sha512', hmacSecret)
+            .update(concatenated)
+            .digest('hex');
+
+        const expectedBuf = Buffer.from(expected, 'hex');
+        const receivedBuf = Buffer.from(receivedHmac, 'hex');
+
+        if (expectedBuf.length !== receivedBuf.length) {
+            logger.warn('[PaymobHmac] Response HMAC length mismatch', {
+                requestId,
+                expectedLen: expectedBuf.length,
+                receivedLen: receivedBuf.length,
+            });
+            return false;
+        }
+
+        const isValid = crypto.timingSafeEqual(expectedBuf, receivedBuf);
+        if (!isValid) {
+            logger.warn('[PaymobHmac] Response HMAC verification FAILED — possible tampering', {
+                requestId,
+                transactionId: queryParams?.id,
+            });
+        }
+
+        return isValid;
+    } catch (err) {
+        logger.error('[PaymobHmac] Exception during response HMAC verification', {
+            requestId,
+            message: err.message,
+        });
+        return false;
+    }
+}
+
 module.exports = {
     verifyTransactionCallbackHmac,
     verifyTokenCallbackHmac,
+    verifyTransactionResponseHmac,
     buildTransactionHmacString, // exported for unit testing only
     computeTransactionHmac,     // exported for unit testing only
     TRANSACTION_HMAC_FIELDS,
+    TRANSACTION_RESPONSE_HMAC_FIELDS,
 };
+
