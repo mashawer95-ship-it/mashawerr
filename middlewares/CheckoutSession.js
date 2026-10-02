@@ -24,13 +24,14 @@ const mongoose = require('mongoose');
 
 // ─── Session Statuses ─────────────────────────────────────────────────────────
 const CHECKOUT_STATUSES = Object.freeze([
-    'PENDING',      // Created, awaiting payment
+    'PENDING',         // Created, awaiting payment
+    'PROCESSING',      // Claimed for processing (wallet or cash)
     'PAYMENT_PENDING', // Paymob intention created, customer in checkout
-    'PAID',         // Payment verified — proceeding to order creation
-    'COMPLETED',    // Final Order created and linked
-    'FAILED',       // Payment failed
-    'EXPIRED',      // Expired without payment
-    'CANCELLED',    // Cancelled by user before payment
+    'PAID',            // Payment verified — proceeding to order creation
+    'COMPLETED',       // Final Order created and linked
+    'FAILED',          // Payment failed
+    'EXPIRED',         // Expired without payment
+    'CANCELLED',       // Cancelled by user before payment
 ]);
 
 // ─── Payment Method Intents ───────────────────────────────────────────────────
@@ -166,7 +167,6 @@ const CheckoutSessionSchema = new mongoose.Schema(
             type: mongoose.Schema.Types.ObjectId,
             ref: 'Payment',
             default: null,
-            index: true,
         },
 
         /** Paymob's own intention ID (echoed for debugging) */

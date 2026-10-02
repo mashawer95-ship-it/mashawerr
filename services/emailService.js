@@ -252,7 +252,7 @@ const getPasswordResetEmailHtml = (otp, userName = 'there') => {
  * @param {string} [userName] - Display name for greeting
  */
 const sendVerificationEmail = async (to, code, userName) => {
-    console.log(`[OTP] Verification Code for ${to}: ${code}`);
+    console.log(`[OTP] Dispatching email verification to ${to}`);
 
     const html = getVerificationEmailHtml(code, userName || 'there');
     await sendEmail({
@@ -269,7 +269,7 @@ const sendVerificationEmail = async (to, code, userName) => {
  * @param {string} [userName] - Display name for greeting
  */
 const sendPasswordResetEmail = async (to, code, userName) => {
-    console.log(`[OTP] Password Reset Code for ${to}: ${code}`);
+    console.log(`[OTP] Dispatching password reset code to ${to}`);
 
     const html = getPasswordResetEmailHtml(code, userName || 'there');
     await sendEmail({
@@ -349,7 +349,7 @@ const getPasswordResetLinkEmailHtml = (resetUrl, userName = 'there') => {
 const sendPasswordResetLinkEmail = async (to, token, userName) => {
     const baseUrl = process.env.FRONTEND_URL || process.env.BASE_URL || 'https://mashawerr.com';
     const resetUrl = `${baseUrl.replace(/\/$/, '')}/reset-password?token=${token}`;
-    console.log(`[PasswordReset] Reset Link generated for ${to}: ${resetUrl}`);
+    console.log(`[PasswordReset] Reset Link generated and dispatched for ${to}`);
 
     const html = getPasswordResetLinkEmailHtml(resetUrl, userName || 'there');
     await sendEmail({

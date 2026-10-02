@@ -114,8 +114,21 @@ async function getOrCreateWallet(userId) {
         try {
             wallet = await Wallet.create({ userId: uStr, balanceFils: 0, transactions: [] });
         } catch (err) {
-            if (mongoose.Types.ObjectId.isValid(userId)) {
-                wallet = await Wallet.create({ userId: new mongoose.Types.ObjectId(userId), balanceFils: 0, transactions: [] });
+            if (err.code === 11000) {
+                wallet = await Wallet.findOne({ userId: uStr });
+                if (!wallet && mongoose.Types.ObjectId.isValid(userId)) {
+                    wallet = await Wallet.findOne({ userId: new mongoose.Types.ObjectId(userId) });
+                }
+            } else if (mongoose.Types.ObjectId.isValid(userId)) {
+                try {
+                    wallet = await Wallet.create({ userId: new mongoose.Types.ObjectId(userId), balanceFils: 0, transactions: [] });
+                } catch (innerErr) {
+                    if (innerErr.code === 11000) {
+                        wallet = await Wallet.findOne({ userId: new mongoose.Types.ObjectId(userId) });
+                    } else {
+                        throw innerErr;
+                    }
+                }
             } else {
                 throw err;
             }
@@ -208,65 +221,151 @@ function dispatchWalletNotification({ userId, type, amountFils, balanceAfterFils
 // ─── Helper: Credit (add) balance ────────────────────────────────────────────
 async function creditWallet({ userId, amountFils, type = 'credit', description = '', refId = null, performedBy = 'system' }) {
     if (!amountFils || amountFils <= 0) throw new Error('amountFils must be positive');
+    amountFils = Math.round(Number(amountFils));
     const wallet = await getOrCreateWallet(userId);
-    wallet.balanceFils += amountFils;
-    wallet.transactions.push({
-        type,
-        amountFils,
-        balanceAfterFils: wallet.balanceFils,
-        description,
-        refId,
-        performedBy,
-    });
-    await wallet.save();
-    dispatchWalletNotification({ userId, type, amountFils, balanceAfterFils: wallet.balanceFils, description, refId });
-    return wallet;
+
+    // Idempotency: if refId is provided and already recorded for this transaction type, return existing
+    if (refId && Array.isArray(wallet.transactions) && wallet.transactions.some(t => t.refId === String(refId) && t.type === type)) {
+        return wallet;
+    }
+
+    const updated = await Wallet.findOneAndUpdate(
+        { _id: wallet._id },
+        {
+            $inc: { balanceFils: amountFils },
+            $push: {
+                transactions: {
+                    type,
+                    amountFils,
+                    description,
+                    refId: refId ? String(refId) : null,
+                    performedBy,
+                    createdAt: new Date(),
+                }
+            }
+        },
+        { new: true }
+    );
+
+    if (!updated) {
+        throw new Error(`Wallet not found for user ${userId}`);
+    }
+
+    const lastTx = updated.transactions[updated.transactions.length - 1];
+    if (lastTx) {
+        lastTx.balanceAfterFils = updated.balanceFils;
+        await Wallet.updateOne(
+            { _id: updated._id, 'transactions._id': lastTx._id },
+            { $set: { 'transactions.$.balanceAfterFils': updated.balanceFils } }
+        ).catch(() => {});
+    }
+
+    dispatchWalletNotification({ userId, type, amountFils, balanceAfterFils: updated.balanceFils, description, refId });
+    return updated;
 }
 
 // ─── Helper: Debit (deduct) balance — standard (no negative) ────────────────────────
 async function debitWallet({ userId, amountFils, description = '', refId = null, performedBy = 'system' }) {
     if (!amountFils || amountFils <= 0) throw new Error('amountFils must be positive');
+    amountFils = Math.round(Number(amountFils));
     const wallet = await getOrCreateWallet(userId);
-    if (wallet.balanceFils < amountFils) {
-        throw new Error(`Insufficient balance. Available: ${wallet.balanceFils} fils, Requested: ${amountFils} fils`);
+
+    if (refId && Array.isArray(wallet.transactions) && wallet.transactions.some(t => t.refId === String(refId) && t.type === 'debit')) {
+        return wallet;
     }
-    wallet.balanceFils -= amountFils;
-    wallet.transactions.push({
-        type: 'debit',
-        amountFils,
-        balanceAfterFils: wallet.balanceFils,
-        description,
-        refId,
-        performedBy,
-    });
-    await wallet.save();
-    dispatchWalletNotification({ userId, type: 'debit', amountFils, balanceAfterFils: wallet.balanceFils, description, refId });
-    return wallet;
+
+    const updated = await Wallet.findOneAndUpdate(
+        {
+            _id: wallet._id,
+            balanceFils: { $gte: amountFils },
+        },
+        {
+            $inc: { balanceFils: -amountFils },
+            $push: {
+                transactions: {
+                    type: 'debit',
+                    amountFils,
+                    description,
+                    refId: refId ? String(refId) : null,
+                    performedBy,
+                    createdAt: new Date(),
+                }
+            }
+        },
+        { new: true }
+    );
+
+    if (!updated) {
+        const currentWallet = await Wallet.findById(wallet._id).lean();
+        const avail = currentWallet?.balanceFils ?? 0;
+        throw new Error(`Insufficient balance. Available: ${avail} fils, Requested: ${amountFils} fils`);
+    }
+
+    const lastTx = updated.transactions[updated.transactions.length - 1];
+    if (lastTx) {
+        lastTx.balanceAfterFils = updated.balanceFils;
+        await Wallet.updateOne(
+            { _id: updated._id, 'transactions._id': lastTx._id },
+            { $set: { 'transactions.$.balanceAfterFils': updated.balanceFils } }
+        ).catch(() => {});
+    }
+
+    dispatchWalletNotification({ userId, type: 'debit', amountFils, balanceAfterFils: updated.balanceFils, description, refId });
+    return updated;
 }
 
 // ─── Helper: Debit balance allowing negative down to dynamic limit ──────────────────
 // مخصص لخصم رسوم التأخير/الإلغاء من محفظة العميل (يسمح بالسالب حتى الحد الأقصى للمديونية المحدد)
 async function debitWalletAllowNegative({ userId, amountFils, type = 'debit', description = '', refId = null, performedBy = 'system' }) {
     if (!amountFils || amountFils <= 0) throw new Error('amountFils must be positive');
+    amountFils = Math.round(Number(amountFils));
     const wallet = await getOrCreateWallet(userId);
-    const newBalance = wallet.balanceFils - amountFils;
-    const minAllowedFils = await getMinWalletBalanceFils();
-    if (newBalance < minAllowedFils) {
-        const limitKd = (Math.abs(minAllowedFils) / 1000).toFixed(2);
-        throw new Error(`الرصيد سيتجاوز الحد الأقصى للمديونية المسموح بها (${limitKd} ج.م). الرصيد الحالي: ${wallet.balanceFils} قرش.`);
+
+    if (refId && Array.isArray(wallet.transactions) && wallet.transactions.some(t => t.refId === String(refId) && t.type === type)) {
+        return wallet;
     }
-    wallet.balanceFils = newBalance;
-    wallet.transactions.push({
-        type,
-        amountFils,
-        balanceAfterFils: wallet.balanceFils,
-        description,
-        refId,
-        performedBy,
-    });
-    await wallet.save();
-    dispatchWalletNotification({ userId, type, amountFils, balanceAfterFils: wallet.balanceFils, description, refId });
-    return wallet;
+
+    const minAllowedFils = await getMinWalletBalanceFils();
+    const requiredMinBalance = minAllowedFils + amountFils;
+
+    const updated = await Wallet.findOneAndUpdate(
+        {
+            _id: wallet._id,
+            balanceFils: { $gte: requiredMinBalance },
+        },
+        {
+            $inc: { balanceFils: -amountFils },
+            $push: {
+                transactions: {
+                    type,
+                    amountFils,
+                    description,
+                    refId: refId ? String(refId) : null,
+                    performedBy,
+                    createdAt: new Date(),
+                }
+            }
+        },
+        { new: true }
+    );
+
+    if (!updated) {
+        const currentWallet = await Wallet.findById(wallet._id).lean();
+        const limitKd = (Math.abs(minAllowedFils) / 1000).toFixed(2);
+        throw new Error(`الرصيد سيتجاوز الحد الأقصى للمديونية المسموح بها (${limitKd} ج.م). الرصيد الحالي: ${currentWallet?.balanceFils ?? 0} قرش.`);
+    }
+
+    const lastTx = updated.transactions[updated.transactions.length - 1];
+    if (lastTx) {
+        lastTx.balanceAfterFils = updated.balanceFils;
+        await Wallet.updateOne(
+            { _id: updated._id, 'transactions._id': lastTx._id },
+            { $set: { 'transactions.$.balanceAfterFils': updated.balanceFils } }
+        ).catch(() => {});
+    }
+
+    dispatchWalletNotification({ userId, type, amountFils, balanceAfterFils: updated.balanceFils, description, refId });
+    return updated;
 }
 
 /**

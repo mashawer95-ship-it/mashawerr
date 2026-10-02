@@ -1223,11 +1223,19 @@ const createOrder = asyncHandler(async (req, res) => {
             }
         }
 
-        // Preserve client's original delivery price if sent, else use calculated
-        value.originalDeliveryPrice = value.originalDeliveryPrice ?? originalFils;
     } catch (pricingErr) {
         logger.error(`[OrderController] Pricing calculation failed: ${pricingErr.message}`);
-        backendDeliveryPriceFils = value.totalDeliveryPrice;
+        return res.status(422).json({
+            message: 'تعذر احتساب سعر التوصيل بشكل صحيح، يرجى المحاولة مرة أخرى لاحقاً',
+            code: 'PRICING_CALCULATION_FAILED'
+        });
+    }
+
+    if (!backendDeliveryPriceFils || backendDeliveryPriceFils <= 0) {
+        return res.status(422).json({
+            message: 'سعر التوصيل غير صالح',
+            code: 'INVALID_DELIVERY_PRICE'
+        });
     }
 
     const clientDeliveryPriceFils = (value.totalDeliveryPrice || 0) < 100
@@ -1448,7 +1456,12 @@ const getOrderById = asyncHandler(async (req, res) => {
     const isRepOwner = order.representativeId && order.representativeId.toString() === req.user?.id?.toString();
     const isWaiting = normalizeOrderStatus(order.status) === 'waiting';
 
-    const isAgent = (req.user?.userType || req.fullUser?.userType || '').toString().trim().toLowerCase() === 'agent';
+    // Verify authenticated user role safely to prevent normal clients from accessing waiting orders
+    const rawUserRole = (req.user?.userType || req.fullUser?.userType || req.user?.role || req.fullUser?.role || '').toString().trim().toLowerCase();
+    const isRepOrDriver = ['representative', 'driver', 'delegate'].includes(rawUserRole);
+    const isWaitingRep = isWaiting && isRepOrDriver;
+
+    const isAgent = rawUserRole === 'agent';
     let isAgentAuthorized = false;
 
     if (isAgent) {
@@ -1467,7 +1480,7 @@ const getOrderById = asyncHandler(async (req, res) => {
         }
     }
 
-    if (!isClientOwner && !isRepOwner && !isWaiting && !isAdmin && !isAgentAuthorized) {
+    if (!isClientOwner && !isRepOwner && !isWaitingRep && !isAdmin && !isAgentAuthorized) {
         return sanitizeErrorResponse(res, true, true);
     }
 
@@ -1786,62 +1799,10 @@ const cancelOrder = asyncHandler(async (req, res) => {
         }
     }
 
-    // ─── خصم رسوم الإلغاء إذا مضى وقت أكثر من التايمر على قبول المندوب ───
-    let cancellationFeeApplied = false;
-    if (
-        ['accepted', 'delivering', 'confirmed', 'processing'].includes(st) &&
-        order.acceptedAt &&
-        order.representativeId
-    ) {
-        try {
-            const pricing = await getOrCreatePricing();
-            const cancelMinutes = pricing.clientCancellationTimerMinutes ?? pricing.arrivalTimerMinutes ?? 10;
-            const timerMs = cancelMinutes * 60 * 1000;
-            const elapsedMs = Date.now() - new Date(order.acceptedAt).getTime();
-
-            if (elapsedMs >= timerMs && pricing.cancellationFeeForClient > 0) {
-                const { debitWalletAllowNegative, creditWallet } = require('../middlewares/Wallet');
-                const refId = String(order.orderId);
-
-                // خصم من محفظة العميل
-                try {
-                    await debitWalletAllowNegative({
-                        userId: order.clientId,
-                        amountFils: pricing.cancellationFeeForClient,
-                        type: 'cancellation_fee',
-                        description: `رسوم إلغاء الأوردر #${order.orderId}`,
-                        refId,
-                        performedBy: 'system',
-                    });
-                    cancellationFeeApplied = true;
-                } catch (walletErr) {
-                    logger.error(`[cancelOrder] فشل خصم رسوم الإلغاء من العميل: ${walletErr.message}`);
-                }
-
-                // إضافة مكافأة للمندوب
-                if (pricing.cancellationRewardForDriver > 0) {
-                    try {
-                        await creditWallet({
-                            userId: order.representativeId,
-                            amountFils: pricing.cancellationRewardForDriver,
-                            type: 'cancellation_reward',
-                            description: `مكافأة إلغاء العميل — أوردر #${order.orderId}`,
-                            refId,
-                            performedBy: 'system',
-                        });
-                    } catch (driverWalletErr) {
-                        logger.error(`[cancelOrder] فشل إضافة مكافأة المندوب: ${driverWalletErr.message}`);
-                    }
-                }
-            }
-        } catch (pricingErr) {
-            logger.error(`[cancelOrder] خطأ في جلب إعدادات التسعير: ${pricingErr.message}`);
-        }
-    }
-
     const oldRepId = order.representativeId;
 
-    // Atomically transition status from non-cancelled to cancelled to prevent concurrent double-cancels/refunds
+    // Atomically transition status from non-cancelled to cancelled first (lock claim)
+    // Only the single winning request is permitted to perform financial mutations (cancellation fees, driver rewards, refunds)
     const atomicCancelledOrder = await Order.findOneAndUpdate(
         {
             _id: order._id,
@@ -1862,6 +1823,60 @@ const cancelOrder = asyncHandler(async (req, res) => {
 
     order.status = 'cancelled';
     order.cancellationReason = value.reason;
+
+    // ─── خصم رسوم الإلغاء إذا مضى وقت أكثر من التايمر على قبول المندوب (فقط للطلب الفائز بالـ atomic lock) ───
+    let cancellationFeeApplied = false;
+    if (
+        ['accepted', 'delivering', 'confirmed', 'processing'].includes(st) &&
+        order.acceptedAt &&
+        order.representativeId
+    ) {
+        try {
+            const pricing = await getOrCreatePricing();
+            const cancelMinutes = pricing.clientCancellationTimerMinutes ?? pricing.arrivalTimerMinutes ?? 10;
+            const timerMs = cancelMinutes * 60 * 1000;
+            const elapsedMs = Date.now() - new Date(order.acceptedAt).getTime();
+
+            if (elapsedMs >= timerMs && pricing.cancellationFeeForClient > 0) {
+                const { debitWalletAllowNegative, creditWallet } = require('../middlewares/Wallet');
+                const feeRefId = `ORDER_CANCEL_FEE_${order.orderId}`;
+                const rewardRefId = `ORDER_CANCEL_REWARD_${order.orderId}`;
+
+                // خصم من محفظة العميل
+                try {
+                    await debitWalletAllowNegative({
+                        userId: order.clientId,
+                        amountFils: pricing.cancellationFeeForClient,
+                        type: 'cancellation_fee',
+                        description: `رسوم إلغاء الأوردر #${order.orderId}`,
+                        refId: feeRefId,
+                        performedBy: 'system',
+                    });
+                    cancellationFeeApplied = true;
+                } catch (walletErr) {
+                    logger.error(`[cancelOrder] فشل خصم رسوم الإلغاء من العميل: ${walletErr.message}`);
+                }
+
+                // إضافة مكافأة للمندوب
+                if (pricing.cancellationRewardForDriver > 0) {
+                    try {
+                        await creditWallet({
+                            userId: order.representativeId,
+                            amountFils: pricing.cancellationRewardForDriver,
+                            type: 'cancellation_reward',
+                            description: `مكافأة إلغاء العميل — أوردر #${order.orderId}`,
+                            refId: rewardRefId,
+                            performedBy: 'system',
+                        });
+                    } catch (driverWalletErr) {
+                        logger.error(`[cancelOrder] فشل إضافة مكافأة المندوب: ${driverWalletErr.message}`);
+                    }
+                }
+            }
+        } catch (pricingErr) {
+            logger.error(`[cancelOrder] خطأ في جلب إعدادات التسعير: ${pricingErr.message}`);
+        }
+    }
 
     // ─── Payment-Aware Refund Handling (Phase 5) ───────────────────────────
     const refundPref = (value.refundPreference || 'wallet').toLowerCase();

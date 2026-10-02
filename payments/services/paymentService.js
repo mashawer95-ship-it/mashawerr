@@ -664,9 +664,9 @@ async function _processCheckoutSessionPayment({ payment, transaction, transactio
         inTransaction = false;
     }
 
+    let updatedPayment = null;
     try {
-        // Atomic update on payment: only transition from PENDING
-        const updatedPayment = await Payment.findOneAndUpdate(
+        updatedPayment = await Payment.findOneAndUpdate(
             { _id: payment._id, status: 'PENDING' },
             {
                 $set: {
@@ -681,10 +681,28 @@ async function _processCheckoutSessionPayment({ payment, transaction, transactio
             },
             { new: true, session: mongoSession || undefined }
         );
+    } catch (lockErr) {
+        if (inTransaction) {
+            await mongoSession.abortTransaction().catch(() => {});
+            mongoSession.endSession();
+        }
+        logger.info('[PaymentService] Concurrent webhook lock contested — returning safely', {
+            requestId, paymentId: payment._id, err: lockErr.message,
+        });
+        return;
+    }
 
-        if (!updatedPayment) {
+    if (!updatedPayment) {
+        // Check if payment was marked PAID in a previous attempt but final order was not completed (crash recovery)
+        const existingPaidPayment = await Payment.findOne({ _id: payment._id, status: 'PAID' });
+        if (existingPaidPayment && !existingPaidPayment.orderId && existingPaidPayment.checkoutSessionId) {
+            logger.warn('[PaymentService] Recovery: Payment is PAID but missing orderId. Attempting recovery...', {
+                requestId, paymentId: existingPaidPayment._id
+            });
+            updatedPayment = existingPaidPayment;
+        } else {
             if (inTransaction) {
-                await mongoSession.abortTransaction();
+                await mongoSession.abortTransaction().catch(() => {});
                 mongoSession.endSession();
             }
             logger.info('[PaymentService] Checkout payment already transitioned (concurrent webhook)', {
@@ -692,7 +710,9 @@ async function _processCheckoutSessionPayment({ payment, transaction, transactio
             });
             return;
         }
+    }
 
+    try {
         const session = await CheckoutSession.findById(payment.checkoutSessionId).session(mongoSession || undefined);
         if (!session) {
             if (inTransaction) {
@@ -800,6 +820,66 @@ async function _processCheckoutSessionPayment({ payment, transaction, transactio
             requestId,
             message:           `Order creation failed post-payment: ${orderErr.message}`,
         });
+
+        // RECOVERY: The customer was charged by Paymob, but Order creation failed.
+        // First check if another concurrent webhook already succeeded in creating the Order or completing the session
+        try {
+            const refreshedPayment = await Payment.findById(payment._id);
+            const refreshedSession = payment.checkoutSessionId ? await CheckoutSession.findById(payment.checkoutSessionId) : null;
+            if (refreshedPayment?.orderId || refreshedSession?.status === 'COMPLETED' || refreshedSession?.finalOrderId) {
+                logger.info('[PaymentService] Order was created by a concurrent webhook worker — skipping compensating refund', {
+                    requestId, paymentId: payment._id, orderId: refreshedPayment?.orderId || refreshedSession?.finalOrderId,
+                });
+                return;
+            }
+
+            const { piastresToFils } = require('../utils/money');
+            const { refundToWallet } = require('./walletPaymentService');
+            const refundAmountFils = piastresToFils(payment.amountPiastres);
+            const recoveryRef = `ORDER_RECOVERY_REFUND_${payment._id}`;
+
+            await refundToWallet({
+                orderId: null,
+                amountFils: refundAmountFils,
+                userId: payment.userId,
+                paymentId: payment._id,
+                requestId,
+                reference: recoveryRef,
+            });
+
+            const currentMeta = (payment.metadata && typeof payment.metadata === 'object') ? payment.metadata : {};
+            await Payment.findByIdAndUpdate(payment._id, {
+                $set: {
+                    status: 'REFUNDED',
+                    providerTransactionId: transactionId,
+                    paidAt: new Date(),
+                    refundedAmountPiastres: payment.amountPiastres,
+                    refundedAt: new Date(),
+                    failureReason: `Order creation failed post-payment: ${orderErr.message}. Automatically compensated via wallet refund.`,
+                    metadata: {
+                        ...currentMeta,
+                        recoveryRefundReference: recoveryRef,
+                    },
+                }
+            });
+
+            if (payment.checkoutSessionId) {
+                await CheckoutSession.findByIdAndUpdate(payment.checkoutSessionId, {
+                    $set: {
+                        status: 'FAILED',
+                        cancellationReason: `Order creation failed post-payment: ${orderErr.message}. Automatically compensated via wallet refund.`,
+                    }
+                });
+            }
+
+            logger.info('[PaymentService] Compensating wallet refund completed successfully after order creation failure', {
+                requestId, paymentId: payment._id, recoveryRef,
+            });
+        } catch (recoveryErr) {
+            logger.error('[PaymentService] CRITICAL: Failed to issue compensating refund after order creation failure', {
+                requestId, paymentId: payment._id, err: recoveryErr.message,
+            });
+        }
     }
 }
 
@@ -852,9 +932,117 @@ async function _processLegacyOrderPayment({ payment, transaction, transactionId,
     });
 
     if (payment.orderId) {
-        await Order.findByIdAndUpdate(payment.orderId, {
-            $set: { paymentMethod: 'online', paymentStatus: 'paid' },
-        });
+        // Query order to check its current status
+        const order = await Order.findById(payment.orderId);
+        const orderStatus = order ? (order.status || '').toLowerCase() : null;
+
+        // If order was cancelled or deleted before this payment arrived, immediately trigger compensating refund!
+        if (!order || orderStatus === 'cancelled' || orderStatus === 'deleted') {
+            logger.warn('[PaymentService] Legacy payment succeeded for cancelled/deleted order — triggering automatic compensation refund', {
+                requestId, orderId: payment.orderId, paymentId: payment._id, orderStatus,
+            });
+
+            const { piastresToFils } = require('../utils/money');
+            const { refundToWallet } = require('./walletPaymentService');
+            const amountFils = piastresToFils(payment.amountPiastres);
+            const refundRef = `ORDER_REFUND_${payment.orderId}_${payment._id}`;
+
+            try {
+                await refundToWallet({
+                    orderId: payment.orderId,
+                    amountFils,
+                    userId: payment.userId,
+                    paymentId: payment._id,
+                    requestId,
+                    reference: refundRef,
+                });
+
+                await Payment.findByIdAndUpdate(payment._id, {
+                    $set: {
+                        status: 'REFUNDED',
+                        refundedAmountPiastres: payment.amountPiastres,
+                        refundedAt: new Date(),
+                        'metadata.refundReason': 'ORDER_ALREADY_CANCELLED_COMPENSATION',
+                        'metadata.refundReference': refundRef,
+                    }
+                });
+
+                if (order) {
+                    await Order.findByIdAndUpdate(order._id, {
+                        $set: { paymentStatus: 'refunded' }
+                    });
+                }
+
+                await _recordEvent({
+                    paymentId: payment._id,
+                    orderId: payment.orderId,
+                    eventType: 'PAYMENT_REFUND_SUCCEEDED',
+                    provider: 'paymob',
+                    providerEventId: transactionId,
+                    requestId,
+                    payloadSummary: safePayload,
+                    message: 'Automatic wallet compensation refund for cancelled order payment',
+                });
+            } catch (refundErr) {
+                logger.error('[PaymentService] Failed to compensate cancelled order payment', {
+                    requestId, orderId: payment.orderId, paymentId: payment._id, error: refundErr.message,
+                });
+            }
+            return;
+        }
+
+        // Validate payment ownership
+        if (order.clientId && String(order.clientId) !== String(payment.userId)) {
+            logger.error('[PaymentService] Payment user does not match order client', {
+                requestId, orderClientId: order.clientId, paymentUserId: payment.userId
+            });
+            return;
+        }
+
+        // Atomically update order only if not cancelled/deleted concurrently
+        const updatedOrder = await Order.findOneAndUpdate(
+            { _id: order._id, status: { $nin: ['cancelled', 'deleted'] } },
+            { $set: { paymentMethod: 'online', paymentStatus: 'paid' } },
+            { new: true }
+        );
+
+        if (!updatedOrder) {
+            // Cancel race: order was cancelled concurrently between read and update! Trigger compensation refund!
+            logger.warn('[PaymentService] Order cancelled during payment confirmation race — compensating with refund', {
+                requestId, orderId: payment.orderId, paymentId: payment._id
+            });
+            const { piastresToFils } = require('../utils/money');
+            const { refundToWallet } = require('./walletPaymentService');
+            const amountFils = piastresToFils(payment.amountPiastres);
+            const refundRef = `ORDER_REFUND_${payment.orderId}_${payment._id}`;
+
+            try {
+                await refundToWallet({
+                    orderId: payment.orderId,
+                    amountFils,
+                    userId: payment.userId,
+                    paymentId: payment._id,
+                    requestId,
+                    reference: refundRef,
+                });
+                await Payment.findByIdAndUpdate(payment._id, {
+                    $set: {
+                        status: 'REFUNDED',
+                        refundedAmountPiastres: payment.amountPiastres,
+                        refundedAt: new Date(),
+                        'metadata.refundReason': 'ORDER_CONCURRENT_CANCEL_COMPENSATION',
+                        'metadata.refundReference': refundRef,
+                    }
+                });
+                await Order.findByIdAndUpdate(order._id, {
+                    $set: { paymentStatus: 'refunded' }
+                });
+            } catch (refundErr) {
+                logger.error('[PaymentService] Failed to compensate cancelled order during race', {
+                    requestId, orderId: payment.orderId, error: refundErr.message
+                });
+            }
+        }
     }
 }
 
@@ -901,10 +1089,15 @@ async function _processFailedTransaction({ payment, transaction, transactionId, 
 
     if (payment.checkoutSessionId) {
         const { CheckoutSession } = require('../../middlewares/CheckoutSession');
-        await CheckoutSession.findByIdAndUpdate(payment.checkoutSessionId, {
-            status:             'FAILED',
-            cancellationReason: failureReason,
-        }).catch(() => {});
+        await CheckoutSession.findOneAndUpdate(
+            { _id: payment.checkoutSessionId, status: { $in: ['PENDING', 'PAYMENT_PENDING'] } },
+            {
+                $set: {
+                    status:             'FAILED',
+                    cancellationReason: failureReason,
+                }
+            }
+        ).catch(() => {});
     } else if (payment.orderId) {
         await Order.findByIdAndUpdate(payment.orderId, {
             $set: { paymentStatus: 'failed' },

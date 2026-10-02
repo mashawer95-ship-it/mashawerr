@@ -83,41 +83,26 @@ app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', db: isDbReady() ? 'connected' : 'connecting' });
 });
 
-// Diagnostic endpoint to test live email sending configuration
-app.all('/api/test-email', async (req, res) => {
-    const to = req.query.to || req.body?.to || process.env.USER_EMAIL || 'amirrashraff1@gmail.com';
+// Diagnostic endpoint to test live email sending configuration (Protected — Admin only)
+const { verifyTokenAndAdmin } = require('./middlewares/verifytoken');
+app.all('/api/test-email', verifyTokenAndAdmin, async (req, res) => {
+    // Only allow dispatching diagnostic emails to system administrator email
+    const to = process.env.USER_EMAIL || 'amirrashraff1@gmail.com';
     const { sendEmail } = require('./services/emailService');
     try {
-        const result = await sendEmail({
+        await sendEmail({
             to,
             subject: 'Mashawerr API Live Email Diagnostic Test',
             html: `<div style="font-family: sans-serif; padding: 20px;"><h2>Mashawerr Email Test</h2><p>If you see this, email sending on your live server is 100% operational!</p></div>`,
         });
         res.json({
             success: true,
-            message: `Email successfully dispatched to ${to}`,
-            result,
-            envConfig: {
-                hasBrevoApiKey: !!process.env.BREVO_API_KEY,
-                brevoSenderEmail: process.env.BREVO_SENDER_EMAIL || process.env.USER_EMAIL || 'not_set',
-                hasUserEmail: !!process.env.USER_EMAIL,
-                hasUserPass: !!process.env.USER_PASS,
-                hasSmtpHost: !!process.env.SMTP_HOST,
-                hasResendApiKey: !!process.env.RESEND_API_KEY,
-            },
+            message: 'Email diagnostic dispatched successfully',
         });
     } catch (err) {
         res.status(500).json({
             success: false,
-            error: err.message,
-            envConfig: {
-                hasBrevoApiKey: !!process.env.BREVO_API_KEY,
-                brevoSenderEmail: process.env.BREVO_SENDER_EMAIL || process.env.USER_EMAIL || 'not_set',
-                hasUserEmail: !!process.env.USER_EMAIL,
-                hasUserPass: !!process.env.USER_PASS,
-                hasSmtpHost: !!process.env.SMTP_HOST,
-                hasResendApiKey: !!process.env.RESEND_API_KEY,
-            },
+            message: 'Email diagnostic dispatch failed',
         });
     }
 });

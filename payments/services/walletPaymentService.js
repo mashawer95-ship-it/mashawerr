@@ -601,12 +601,12 @@ async function payOrderFromWallet({ checkoutSessionId, userId, requestId }) {
  * @param {string} params.paymentId   - Payment._id
  * @param {string} params.requestId
  */
-async function refundToWallet({ orderId, amountFils, userId, paymentId, requestId }) {
+async function refundToWallet({ orderId, amountFils, userId, paymentId, requestId, reference: customReference }) {
     if (!isValidFils(amountFils)) {
         throw new Error(`[WalletPaymentService] Invalid refund amount: ${amountFils}`);
     }
 
-    const reference = `ORDER_REFUND_${orderId}`;
+    const reference = customReference || (orderId ? `ORDER_REFUND_${orderId}` : `ORDER_RECOVERY_REFUND_${paymentId}`);
 
     // Idempotency & recovery check
     const existing = await WalletLedger.findOne({ reference });

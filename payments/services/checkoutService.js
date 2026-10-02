@@ -432,6 +432,12 @@ async function getCheckoutSession({ sessionId, userId }) {
 
 /**
  * Initiate online Paymob payment for an active CheckoutSession.
+ *
+ * State machine integrity:
+ *  - Only transitions PENDING -> PAYMENT_PENDING atomically
+ *  - Strict rejection of PROCESSING, COMPLETED, FAILED, CANCELLED, EXPIRED
+ *  - Strict rejection if paymentMethod is APP_WALLET or CASH
+ *  - Reuses existing PENDING payment if already in PAYMENT_PENDING (idempotent)
  */
 async function payCheckoutSessionOnline({ sessionId, userId, paymentMethod = 'CARD', requestId }) {
     const session = await CheckoutSession.findById(sessionId);
@@ -447,12 +453,27 @@ async function payCheckoutSessionOnline({ sessionId, userId, paymentMethod = 'CA
         throw new ApiError(409, 'تم معالجة هذا الدفع بالفعل', PAYMENT_ERROR_CODES.CHECKOUT_ALREADY_COMPLETED);
     }
 
+    if (session.status === 'PROCESSING') {
+        throw new ApiError(409, 'جلسة الدفع قيد المعالجة حالياً من خلال طريقة دفع أخرى', PAYMENT_ERROR_CODES.CHECKOUT_ALREADY_COMPLETED);
+    }
+
+    if (session.paymentMethod === 'APP_WALLET') {
+        throw new ApiError(409, 'طريقة الدفع في هذه الجلسة مخصصة لمحفظة التطبيق', PAYMENT_ERROR_CODES.PAYMENT_METHOD_UNAVAILABLE);
+    }
+
+    if (session.paymentMethod === 'CASH') {
+        throw new ApiError(422, 'طريقة الدفع في هذه الجلسة مخصصة للدفع نقداً (كاش)', PAYMENT_ERROR_CODES.PAYMENT_METHOD_UNAVAILABLE);
+    }
+
     if (session.status === 'FAILED' || session.status === 'CANCELLED') {
         throw new ApiError(422, 'جلسة الدفع ملغية أو فاشلة', PAYMENT_ERROR_CODES.CHECKOUT_NOT_FOUND);
     }
 
     if (session.expiresAt < new Date()) {
-        await CheckoutSession.findByIdAndUpdate(sessionId, { $set: { status: 'EXPIRED' } });
+        await CheckoutSession.findOneAndUpdate(
+            { _id: sessionId, status: { $in: ['PENDING', 'PAYMENT_PENDING'] } },
+            { $set: { status: 'EXPIRED' } }
+        ).catch(() => {});
         throw new ApiError(422, 'انتهت صلاحية جلسة الدفع', PAYMENT_ERROR_CODES.CHECKOUT_EXPIRED);
     }
 
@@ -472,17 +493,20 @@ async function payCheckoutSessionOnline({ sessionId, userId, paymentMethod = 'CA
 
     const amountPiastres = filsToEgpPiastres(session.totalDeliveryPriceFils);
 
-    // Idempotency: Reuse existing PENDING payment if already created and still valid
-    let payment = null;
-    if (session.paymentId) {
-        payment = await Payment.findById(session.paymentId);
+    // Idempotency: Reuse existing PENDING payment if session is in PAYMENT_PENDING and still valid
+    if (session.status === 'PAYMENT_PENDING' && session.paymentId) {
+        const payment = await Payment.findById(session.paymentId);
         if (payment && payment.status === 'PENDING' && payment.expiresAt > new Date()) {
             logger.info('[CheckoutService] Reusing existing pending payment for checkout session', {
                 requestId, sessionId, paymentId: payment._id,
             });
+            const retryRef = `${payment.specialReference}_r${Date.now()}`;
+            payment.specialReference = retryRef;
+            await payment.save().catch(() => {});
+
             const intention = await paymobService.createPaymobIntention({
                 amountPiastres,
-                specialReference: payment.specialReference,
+                specialReference: retryRef,
                 user,
                 requestId,
             });
@@ -502,48 +526,115 @@ async function payCheckoutSessionOnline({ sessionId, userId, paymentMethod = 'CA
         ? paymobConfig.walletIntegrationId
         : (paymobConfig.cardIntegrationId || paymobConfig.integrationId);
 
-    payment = new Payment({
-        userId:            String(userId),
-        purpose:           'ORDER_PAYMENT',
-        paymentMethod:     selectedPm,
-        provider:          'paymob',
-        checkoutSessionId: session._id,
-        amountPiastres,
-        currency:          CURRENCY.EGP,
-        integrationId:     selectedIntegrationId,
-        status:            'PENDING',
-    });
-    payment.specialReference = `pay_${session._id}`;
-    await payment.save();
+    // Atomic conditional claim: only transition from PENDING -> PAYMENT_PENDING
+    const lockedSession = await CheckoutSession.findOneAndUpdate(
+        {
+            _id: sessionId,
+            userId: String(userId),
+            status: 'PENDING',
+            expiresAt: { $gt: new Date() },
+            paymentMethod: { $nin: ['APP_WALLET', 'CASH'] },
+        },
+        {
+            $set: {
+                status: 'PAYMENT_PENDING',
+                paymentMethod: selectedPm,
+            }
+        },
+        { new: true }
+    );
 
-    const intention = await paymobService.createPaymobIntention({
-        amountPiastres,
-        specialReference: payment.specialReference,
-        user,
-        paymentMethod: selectedPm,
-        requestId,
-    });
+    if (!lockedSession) {
+        // Race condition: another request won the claim
+        const currentSession = await CheckoutSession.findById(sessionId).lean();
+        if (!currentSession) {
+            throw new ApiError(404, 'جلسة الدفع غير موجودة', PAYMENT_ERROR_CODES.CHECKOUT_NOT_FOUND);
+        }
+        if (currentSession.status === 'COMPLETED' || currentSession.status === 'PROCESSING') {
+            throw new ApiError(409, 'جلسة الدفع قيد المعالجة حالياً أو تم إكمالها بالفعل', PAYMENT_ERROR_CODES.CHECKOUT_ALREADY_COMPLETED);
+        }
+        if (currentSession.status === 'PAYMENT_PENDING' && currentSession.paymentId) {
+            const existingPayment = await Payment.findById(currentSession.paymentId);
+            if (existingPayment && existingPayment.status === 'PENDING' && existingPayment.expiresAt > new Date()) {
+                const retryRef = `${existingPayment.specialReference}_r${Date.now()}`;
+                await Payment.findByIdAndUpdate(existingPayment._id, { specialReference: retryRef }).catch(() => {});
 
-    await Payment.findByIdAndUpdate(payment._id, {
-        providerIntentionId: intention.providerIntentionId,
-        providerOrderId:     intention.providerOrderId,
-        expiresAt:           intention.expiresAt,
-    });
+                const intention = await paymobService.createPaymobIntention({
+                    amountPiastres,
+                    specialReference: retryRef,
+                    user,
+                    requestId,
+                });
+                return {
+                    paymentId:    existingPayment._id,
+                    status:       existingPayment.status,
+                    clientSecret: intention.clientSecret,
+                    checkoutUrl:  intention.checkoutUrl,
+                    publicKey:    intention.publicKey || paymobConfig.publicKey,
+                    expiresAt:    intention.expiresAt,
+                };
+            }
+        }
+        throw new ApiError(422, 'جلسة الدفع غير متاحة للدفع أونلاين', PAYMENT_ERROR_CODES.CHECKOUT_NOT_FOUND);
+    }
 
-    await CheckoutSession.findByIdAndUpdate(session._id, {
-        status:              'PAYMENT_PENDING',
-        paymentId:           payment._id,
-        providerIntentionId: intention.providerIntentionId,
-    });
+    let payment = null;
+    try {
+        payment = new Payment({
+            userId:            String(userId),
+            purpose:           'ORDER_PAYMENT',
+            paymentMethod:     selectedPm,
+            provider:          'paymob',
+            checkoutSessionId: lockedSession._id,
+            amountPiastres,
+            currency:          CURRENCY.EGP,
+            integrationId:     selectedIntegrationId,
+            status:            'PENDING',
+        });
+        payment.specialReference = `pay_${lockedSession._id}`;
+        await payment.save();
 
-    return {
-        paymentId:    payment._id,
-        status:       'PENDING',
-        clientSecret: intention.clientSecret,
-        checkoutUrl:  intention.checkoutUrl,
-        publicKey:    intention.publicKey || paymobConfig.publicKey,
-        expiresAt:    intention.expiresAt,
-    };
+        const intention = await paymobService.createPaymobIntention({
+            amountPiastres,
+            specialReference: payment.specialReference,
+            user,
+            paymentMethod: selectedPm,
+            requestId,
+        });
+
+        await Payment.findByIdAndUpdate(payment._id, {
+            providerIntentionId: intention.providerIntentionId,
+            providerOrderId:     intention.providerOrderId,
+            expiresAt:           intention.expiresAt,
+        });
+
+        await CheckoutSession.findOneAndUpdate(
+            { _id: lockedSession._id, status: 'PAYMENT_PENDING' },
+            {
+                $set: {
+                    paymentId:           payment._id,
+                    providerIntentionId: intention.providerIntentionId,
+                }
+            }
+        );
+
+        return {
+            paymentId:    payment._id,
+            status:       'PENDING',
+            clientSecret: intention.clientSecret,
+            checkoutUrl:  intention.checkoutUrl,
+            publicKey:    intention.publicKey || paymobConfig.publicKey,
+            expiresAt:    intention.expiresAt,
+        };
+    } catch (err) {
+        if (!payment || !payment._id) {
+            await CheckoutSession.findOneAndUpdate(
+                { _id: lockedSession._id, status: 'PAYMENT_PENDING', paymentId: null },
+                { $set: { status: 'PENDING' } }
+            ).catch(() => {});
+        }
+        throw err;
+    }
 }
 
 /**

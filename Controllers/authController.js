@@ -366,7 +366,7 @@ const forgotPassword = asyncHandler(async (req, res) => {
 
     // 4. Dispatch Email Job to Background Worker Queue (Non-blocking response)
     dispatchBackgroundEmail(async () => {
-        console.log(`[ForgotPassword] Dispatching OTP reset email to: ${user.email} (OTP: ${code})`);
+        console.log(`[ForgotPassword] Dispatching OTP reset email to: ${user.email}`);
         await sendPasswordResetEmail(user.email, code, user.firstName).catch(err => console.error('[ForgotPassword] OTP email error:', err.message));
     });
 
