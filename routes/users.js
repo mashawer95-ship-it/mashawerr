@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { updateUser, getAllUser, getProfile, getUserbyid, uploadProfileImageHandler, DeleteUserbyid, toggleRepresentativeAvailability, setUserAsRepresentative, migrateRepresentatives, updateVehicleInfo, clearStaleImages, updateOnlineLocation, getOnlineRepresentatives, suspendUser, unsuspendUser, getSuspendedUsers, blockUser, unblockUser, getRepresentativeOrders, getRepresentativeRatingsAdmin, toggleVehicleEditPermission, changeUserType, getBannedDevices, unbanBannedDevice, updateUserGovernorate } = require('../Controllers/userController');
 const { uploadProfileImage, uploadVehicleImage } = require('../middlewares/upload');
-const { verifyToken, verifyTokenAndAdmin } = require('../middlewares/verifytoken');
+const { verifyToken, verifyTokenAndAdmin, optionalAuth } = require('../middlewares/verifytoken');
 const { authorize } = require('../middlewares/authorize');
 const { createRoleRequest, getAllRoleRequests, updateRoleRequestStatus } = require('../Controllers/roleRequestController');
 
@@ -42,7 +42,8 @@ router.patch('/:id/vehicle-edit-permissions', verifyToken, authorize('admin', 'a
 router.patch('/:id/toggle-vehicle-edit', verifyToken, authorize('admin', 'administration', 'agent'), toggleVehicleEditPermission);
 
 // 🚗 Live map tracking: Get all online available representatives (MUST be before /:id)
-router.get('/online-representatives/locations', verifyToken, getOnlineRepresentatives);
+router.get('/online-representatives/locations', optionalAuth, getOnlineRepresentatives);
+router.get('/online-representatives', optionalAuth, getOnlineRepresentatives);
 
 // 📍 Representative / User Governorate update
 router.patch('/:id/governorate', verifyToken, updateUserGovernorate);

@@ -497,11 +497,12 @@ const toggleRepresentativeAvailability = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: '`isAvailable` must be a boolean (true | false)' });
     }
 
+    const targetId = (req.params.id === 'me' || !req.params.id) ? req.user?.id : req.params.id;
     const isAdmin = req.user?.isAdmin === true || req.fullUser?.isAdmin === true;
-    const isOwner = req.user?.id?.toString() === req.params.id.toString();
+    const isOwner = req.user?.id?.toString() === targetId?.toString();
 
     // Include lastLocation in select to update it if needed
-    const user = await User.findById(req.params.id).select('_id firstName lastName userType isAvailable lastLocation');
+    const user = await User.findById(targetId).select('_id firstName lastName userType isAvailable lastLocation');
     if (!user) {
         return sanitizeErrorResponse(res, false, true);
     }
@@ -747,10 +748,11 @@ const updateOnlineLocation = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: 'lat and lng are required' });
     }
 
+    const targetId = (req.params.id === 'me' || !req.params.id) ? req.user?.id : req.params.id;
     const isAdmin = req.user?.isAdmin === true || req.fullUser?.isAdmin === true;
-    const isOwner = req.user?.id?.toString() === req.params.id.toString();
+    const isOwner = req.user?.id?.toString() === targetId?.toString();
 
-    const user = await User.findById(req.params.id);
+    const user = await User.findById(targetId);
     if (!user) {
         return sanitizeErrorResponse(res, false, true);
     }
@@ -764,25 +766,47 @@ const updateOnlineLocation = asyncHandler(async (req, res) => {
         lng: Number(lng),
         updatedAt: new Date()
     };
+    // إذا كان المندوب يرسل إحداثياته الحية، نتأكد من تفعيل وضع الاستقبال له تلقائياً
+    if (!user.isAvailable) {
+        user.isAvailable = true;
+    }
 
     await user.save();
+
+    // Update Redis tracking if available
+    try {
+        const { setDriverLocation } = require('../redis/trackingRedis');
+        await setDriverLocation(user._id.toString(), {
+            lat: Number(lat),
+            lng: Number(lng),
+            timestamp: Date.now()
+        });
+    } catch (_) {}
+
     return res.status(200).json({
         message: 'Location updated',
+        isAvailable: user.isAvailable,
         lastLocation: user.lastLocation
     });
 });
 
 /**
- * @description Get all available representatives with their last known location updated within the last 15 minutes
+ * @description Get all available representatives with their last known location updated within the last 20 minutes
  * @route GET /api/users/online-representatives
  * @access public
  */
 const getOnlineRepresentatives = asyncHandler(async (req, res) => {
-    // Match any representative/driver who is marked as available and has location data
+    const { lat, lng, radius, governorate } = req.query;
+
+    // مهلة حداثة الموقع (20 دقيقة): لمنع ظهور مناديب غير نشطين أو في أماكن قديمة
+    const maxAgeMinutes = 20;
+    const cutoffDate = new Date(Date.now() - maxAgeMinutes * 60 * 1000);
+
     const filter = {
         userType: { $regex: /^(representative|driver)$/i },
         isAvailable: true,
         'lastLocation.lat': { $exists: true, $ne: null },
+        'lastLocation.updatedAt': { $gte: cutoffDate },
     };
     const isAgentOnline = (req.user?.userType || req.fullUser?.userType || '').toString().trim().toLowerCase() === 'agent';
     const agentGovOnline = (req.fullUser?.governorate || req.user?.governorate || '').trim();
@@ -792,11 +816,44 @@ const getOnlineRepresentatives = asyncHandler(async (req, res) => {
             return res.status(200).json([]);
         }
         filter.governorate = { $regex: new RegExp(agentGovOnline.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&'), 'i') };
-    } else if (req.query.governorate && req.query.governorate.trim()) {
-        filter.governorate = { $regex: new RegExp(req.query.governorate.trim(), 'i') };
+    } else if (governorate && governorate.trim()) {
+        const { normalizeGovernorate } = require('../utils/governorateHelper');
+        const normGov = normalizeGovernorate(governorate);
+        if (normGov) {
+            filter.governorate = { $regex: new RegExp(normGov, 'i') };
+        }
     }
 
-    const users = await User.find(filter).select('_id firstName lastName phone profileImage vehicleModel vehicleNumber vehicleColor lastLocation preferredOrderTypes governorate');
+    let users = await User.find(filter)
+        .select('_id firstName lastName phone profileImage vehicleModel vehicleNumber vehicleColor lastLocation preferredOrderTypes governorate')
+        .lean();
+
+    // فلترة وترتيب المناديب حسب المسافة إذا أرسل العميل إحداثياته (نطاق 25 كم افتراضياً)
+    if (lat !== undefined && lng !== undefined) {
+        const clientLat = parseFloat(lat);
+        const clientLng = parseFloat(lng);
+        const maxRadiusKm = parseFloat(radius) || 25;
+
+        if (!isNaN(clientLat) && !isNaN(clientLng)) {
+            const { haversineDistance } = require('../utils/geoUtils');
+            users = users
+                .map(u => {
+                    const uLat = u.lastLocation?.lat;
+                    const uLng = u.lastLocation?.lng;
+                    let distanceKm = null;
+                    if (uLat != null && uLng != null) {
+                        distanceKm = haversineDistance({ lat: clientLat, lng: clientLng }, { lat: uLat, lng: uLng }) / 1000;
+                    }
+                    return {
+                        ...u,
+                        distanceKm: distanceKm != null ? Number(distanceKm.toFixed(2)) : null,
+                    };
+                })
+                .filter(u => u.distanceKm != null && u.distanceKm <= maxRadiusKm);
+
+            users.sort((a, b) => (a.distanceKm || 9999) - (b.distanceKm || 9999));
+        }
+    }
 
     res.status(200).json(users);
 });

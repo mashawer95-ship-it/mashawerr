@@ -29,12 +29,12 @@ async function checkRepCanAcceptOrder(repId, order = null) {
     }
 
     if (!rep.isAvailable) {
-        return {
-            canAccept: false,
-            statusCode: 403,
-            code: 'RECEIVING_ORDERS_DISABLED',
-            message: 'يجب تفعيل وضع استقبال الطلبات أولاً لقبول أي طلب',
-        };
+        // Auto-heal: المندوب يباشر قبول الطلب صراحة، لذا نقوم بتفعيل استقبال الطلبات له تلقائياً
+        // بدلاً من رفضه، لضمان عدم حجب المندوب عند وجود أي عدم تزامن لحظي بين التطبيق وقاعدة البيانات
+        try {
+            await User.findByIdAndUpdate(repId, { isAvailable: true });
+            rep.isAvailable = true;
+        } catch (_) {}
     }
 
     // 2. Check Vehicle info completion
