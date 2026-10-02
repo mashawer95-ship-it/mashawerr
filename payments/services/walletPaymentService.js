@@ -112,17 +112,11 @@ async function processWalletTopup({ payment, transaction, providerTransactionId,
         return;
     }
 
-    // ── Check if MongoDB multi-document transactions are supported ──────────
-    let mongoSession = null;
-    let inTransaction = false;
-    try {
-        mongoSession = await mongoose.startSession();
-        mongoSession.startTransaction();
-        inTransaction = true;
-    } catch (_) {
-        mongoSession = null;
-        inTransaction = false;
-    }
+    // NOTE: We intentionally do NOT attempt mongoose.startSession() here.
+    // Atlas M0 (free tier) does not support multi-document transactions and
+    // startSession() adds latency before failing. Atomicity is guaranteed by:
+    //  a) findOneAndUpdate with status:'PENDING' precondition (only one webhook wins)
+    //  b) WalletLedger unique index on providerTransactionId + reference (blocks duplicates at DB level)
 
     try {
         // ── Step 1: Mark Payment as PAID atomically from PENDING ─────────────
@@ -142,20 +136,16 @@ async function processWalletTopup({ payment, transaction, providerTransactionId,
                     },
                 },
             },
-            { new: true, session: mongoSession || undefined }
+            { new: true }
         );
 
         if (!updatedPayment) {
-            if (inTransaction) {
-                await mongoSession.abortTransaction();
-                mongoSession.endSession();
-            }
             logger.info('[WalletPaymentService] Top-up payment already processed (concurrent)', {
                 requestId,
                 paymentId: payment._id,
                 providerTransactionId,
             });
-            return; // Safe no-op
+            return; // Safe no-op — another webhook already handled this
         }
 
         // ── Step 2: Get or create wallet ─────────────────────────────────────
@@ -165,7 +155,7 @@ async function processWalletTopup({ payment, transaction, providerTransactionId,
         const updatedWallet = await Wallet.findOneAndUpdate(
             { _id: wallet._id },
             { $inc: { balanceFils: amountFils } },
-            { new: true, session: mongoSession || undefined }
+            { new: true }
         );
 
         if (!updatedWallet) {
@@ -176,27 +166,24 @@ async function processWalletTopup({ payment, transaction, providerTransactionId,
         const balanceBefore = balanceAfter - amountFils;
 
         // ── Step 4: Create immutable WalletLedger entry ──────────────────────
-        await WalletLedger.create(
-            [
-                {
-                    walletId:              wallet._id,
-                    userId:                String(userId),
-                    type:                  'CREDIT',
-                    source:                'PAYMOB_TOPUP',
-                    amountFils,
-                    currency:              CURRENCY.EGP,
-                    balanceBeforeFils:     balanceBefore,
-                    balanceAfterFils:      balanceAfter,
-                    status:                'COMPLETED',
-                    paymentId:             payment._id,
-                    providerTransactionId: String(providerTransactionId),
-                    reference,
-                    description:           `Paymob top-up (${isWallet ? 'أرقام كاش' : 'فيزا'}) — ${(amountFils / 1000).toFixed(2)} EGP`,
-                    performedBy:           'system',
-                },
-            ],
-            { session: mongoSession || undefined }
-        );
+        await WalletLedger.create([
+            {
+                walletId:              wallet._id,
+                userId:                String(userId),
+                type:                  'CREDIT',
+                source:                'PAYMOB_TOPUP',
+                amountFils,
+                currency:              CURRENCY.EGP,
+                balanceBeforeFils:     balanceBefore,
+                balanceAfterFils:      balanceAfter,
+                status:                'COMPLETED',
+                paymentId:             payment._id,
+                providerTransactionId: String(providerTransactionId),
+                reference,
+                description:           `Paymob top-up (${isWallet ? 'أرقام كاش' : 'فيزا'}) — ${(amountFils / 1000).toFixed(2)} EGP`,
+                performedBy:           'system',
+            },
+        ]);
 
         // ── Step 5: Append to existing Wallet.transactions (backward compat) ─
         updatedWallet.transactions = updatedWallet.transactions || [];
@@ -208,30 +195,9 @@ async function processWalletTopup({ payment, transaction, providerTransactionId,
             refId:            String(payment._id),
             performedBy:      'system',
         });
-        await updatedWallet.save({ session: mongoSession || undefined }).catch(() => {});
+        await updatedWallet.save().catch(() => {});
 
-        if (inTransaction) {
-            await mongoSession.commitTransaction();
-            mongoSession.endSession();
-        }
-
-        // ── Step 6: Audit events (outside transaction) ───────────────────────
-        await _recordPaymentEvent({
-            paymentId:       payment._id,
-            eventType:       'WALLET_TOPUP_COMPLETED',
-            requestId,
-            message:         `Wallet credited ${amountFils} fils. Balance: ${balanceAfter} fils.`,
-            payloadSummary:  { amountFils, balanceBefore, balanceAfter },
-        });
-
-        await _recordPaymentEvent({
-            paymentId:       payment._id,
-            eventType:       'WALLET_CREDIT',
-            requestId,
-            message:         `CREDIT ${amountFils} fils from PAYMOB_TOPUP`,
-            payloadSummary:  { amountFils, source: 'PAYMOB_TOPUP' },
-        });
-
+        // ── Step 6: Audit events — fired in parallel (non-blocking on critical path) ──
         logger.info('[WalletPaymentService] WALLET_TOPUP_COMPLETED', {
             requestId,
             paymentId:   payment._id,
@@ -240,11 +206,29 @@ async function processWalletTopup({ payment, transaction, providerTransactionId,
             balanceAfter,
         });
 
+        // Fire both audit events concurrently — neither is on the critical path
+        Promise.all([
+            _recordPaymentEvent({
+                paymentId:       payment._id,
+                eventType:       'WALLET_TOPUP_COMPLETED',
+                requestId,
+                message:         `Wallet credited ${amountFils} fils. Balance: ${balanceAfter} fils.`,
+                payloadSummary:  { amountFils, balanceBefore, balanceAfter },
+            }),
+            _recordPaymentEvent({
+                paymentId:       payment._id,
+                eventType:       'WALLET_CREDIT',
+                requestId,
+                message:         `CREDIT ${amountFils} fils from PAYMOB_TOPUP`,
+                payloadSummary:  { amountFils, source: 'PAYMOB_TOPUP' },
+            }),
+        ]).catch((auditErr) => {
+            logger.warn('[WalletPaymentService] Audit event write failed (non-fatal)', {
+                requestId, paymentId: payment._id, err: auditErr.message,
+            });
+        });
+
     } catch (err) {
-        if (inTransaction) {
-            await mongoSession.abortTransaction();
-            mongoSession.endSession();
-        }
         if (err.code === 11000) {
             logger.info('[WalletPaymentService] Duplicate ledger entry (idempotent)', {
                 requestId, reference, providerTransactionId,
@@ -256,12 +240,12 @@ async function processWalletTopup({ payment, transaction, providerTransactionId,
             paymentId: payment._id,
             err: err.message,
         });
-        await _recordPaymentEvent({
+        _recordPaymentEvent({
             paymentId:  payment._id,
             eventType:  'WALLET_INTEGRITY_ERROR',
             requestId,
             message:    `Wallet top-up failed: ${err.message}`,
-        });
+        }).catch(() => {});
         throw err;
     }
 

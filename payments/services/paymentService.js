@@ -683,16 +683,11 @@ async function _processCheckoutSessionPayment({ payment, transaction, transactio
     const { _createOrderFromSnapshot } = require('./walletPaymentService');
     const { consumeDiscountAfterSuccessfulOrder } = require('../../middlewares/Discount');
 
-    let mongoSession = null;
-    let inTransaction = false;
-    try {
-        mongoSession = await mongoose.startSession();
-        mongoSession.startTransaction();
-        inTransaction = true;
-    } catch (_) {
-        mongoSession = null;
-        inTransaction = false;
-    }
+    // NOTE: We intentionally do NOT attempt mongoose.startSession() here.
+    // Atlas M0 (free tier) does not support multi-document transactions and
+    // startSession() adds latency before failing. Atomicity is guaranteed by:
+    //  a) findOneAndUpdate with status:'PENDING' precondition (only one webhook wins)
+    //  b) CheckoutSession.status field acts as a distributed lock
 
     let updatedPayment = null;
     try {
@@ -709,13 +704,9 @@ async function _processCheckoutSessionPayment({ payment, transaction, transactio
                     },
                 },
             },
-            { new: true, session: mongoSession || undefined }
+            { new: true }
         );
     } catch (lockErr) {
-        if (inTransaction) {
-            await mongoSession.abortTransaction().catch(() => {});
-            mongoSession.endSession();
-        }
         logger.info('[PaymentService] Concurrent webhook lock contested — returning safely', {
             requestId, paymentId: payment._id, err: lockErr.message,
         });
@@ -731,10 +722,6 @@ async function _processCheckoutSessionPayment({ payment, transaction, transactio
             });
             updatedPayment = existingPaidPayment;
         } else {
-            if (inTransaction) {
-                await mongoSession.abortTransaction().catch(() => {});
-                mongoSession.endSession();
-            }
             logger.info('[PaymentService] Checkout payment already transitioned (concurrent webhook)', {
                 requestId, paymentId: payment._id, transactionId,
             });
@@ -743,12 +730,8 @@ async function _processCheckoutSessionPayment({ payment, transaction, transactio
     }
 
     try {
-        const session = await CheckoutSession.findById(payment.checkoutSessionId).session(mongoSession || undefined);
+        const session = await CheckoutSession.findById(payment.checkoutSessionId);
         if (!session) {
-            if (inTransaction) {
-                await mongoSession.abortTransaction();
-                mongoSession.endSession();
-            }
             logger.error('[PaymentService] CheckoutSession not found during webhook completion', {
                 requestId, checkoutSessionId: payment.checkoutSessionId,
             });
@@ -756,10 +739,6 @@ async function _processCheckoutSessionPayment({ payment, transaction, transactio
         }
 
         if (session.status === 'COMPLETED' || session.finalOrderId) {
-            if (inTransaction) {
-                await mongoSession.abortTransaction();
-                mongoSession.endSession();
-            }
             logger.info('[PaymentService] CheckoutSession already completed (idempotent)', {
                 requestId, checkoutSessionId: session._id, finalOrderId: session.finalOrderId,
             });
@@ -772,41 +751,27 @@ async function _processCheckoutSessionPayment({ payment, transaction, transactio
             paymentId:     updatedPayment._id,
             paymentMethod: payment.paymentMethod === 'MOBILE_WALLET' ? 'mobile_wallet' : 'online',
             requestId,
-            mongoSession,
         });
 
-        // Update CheckoutSession to COMPLETED
-        await CheckoutSession.findByIdAndUpdate(
-            session._id,
-            {
+        // Update CheckoutSession to COMPLETED and link Payment — run concurrently
+        await Promise.all([
+            CheckoutSession.findByIdAndUpdate(session._id, {
                 status:              'COMPLETED',
                 finalOrderId:        finalOrder._id,
                 finalOrderNumericId: finalOrder.orderId,
                 paymentId:           updatedPayment._id,
                 paidAt:              new Date(),
                 completedAt:         new Date(),
-            },
-            { session: mongoSession || undefined }
-        );
-
-        // Link Order to Payment
-        await Payment.findByIdAndUpdate(
-            updatedPayment._id,
-            {
+            }),
+            Payment.findByIdAndUpdate(updatedPayment._id, {
                 orderId:        finalOrder._id,
                 orderNumericId: finalOrder.orderId,
-            },
-            { session: mongoSession || undefined }
-        );
+            }),
+        ]);
 
-        if (inTransaction) {
-            await mongoSession.commitTransaction();
-            mongoSession.endSession();
-        }
-
-        // Consume discount if applicable (outside transaction)
+        // Consume discount if applicable (non-blocking)
         if (session.discountCode || (session.discountAmountFils && session.discountAmountFils > 0)) {
-            await consumeDiscountAfterSuccessfulOrder({
+            consumeDiscountAfterSuccessfulOrder({
                 clientId:       session.userId,
                 discountCode:   session.discountCode,
                 discountType:   session.discountType,
@@ -818,7 +783,7 @@ async function _processCheckoutSessionPayment({ payment, transaction, transactio
             });
         }
 
-        await _recordEvent({
+        _recordEvent({
             paymentId:         updatedPayment._id,
             orderId:           finalOrder._id,
             checkoutSessionId: session._id,
@@ -826,7 +791,7 @@ async function _processCheckoutSessionPayment({ payment, transaction, transactio
             requestId,
             message:           `Order #${finalOrder.orderId} finalized from checkout session snapshot`,
             payloadSummary:    { orderNumericId: finalOrder.orderId, transactionId },
-        });
+        }).catch(() => {});
 
         logger.info('[PaymentService] Checkout payment and order creation finalized', {
             requestId,
@@ -836,10 +801,6 @@ async function _processCheckoutSessionPayment({ payment, transaction, transactio
             sessionId:      session._id,
         });
     } catch (orderErr) {
-        if (inTransaction) {
-            await mongoSession.abortTransaction();
-            mongoSession.endSession();
-        }
         logger.error('[PaymentService] Failed to create Order from snapshot after payment', {
             requestId, checkoutSessionId: payment.checkoutSessionId, err: orderErr.message,
         });
