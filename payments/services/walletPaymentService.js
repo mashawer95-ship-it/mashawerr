@@ -976,36 +976,86 @@ async function getWalletTransactions({ userId, page = 1, limit = 20 }) {
     const skip = (page - 1) * limit;
     const userIdStr = String(userId);
 
-    const [transactions, total] = await Promise.all([
+    // 1. Fetch from WalletLedger and user's Wallet document concurrently
+    const [transactions, ledgerTotal, walletDoc] = await Promise.all([
         WalletLedger.find({ userId: userIdStr })
             .sort({ createdAt: -1 })
-            .skip(skip)
-            .limit(limit)
             .select('-metadata -__v')
             .lean(),
         WalletLedger.countDocuments({ userId: userIdStr }),
+        Wallet.findOne({
+            $or: [
+                { userId: userIdStr },
+                ...(mongoose.Types.ObjectId.isValid(userId) ? [{ userId: new mongoose.Types.ObjectId(userId) }] : [])
+            ]
+        }).select('transactions').lean(),
     ]);
 
-    // Return safe fields only
-    const safe = transactions.map((tx) => ({
-        _id:           tx._id,
-        type:          tx.type,
-        source:        tx.source,
-        amountFils:    tx.amountFils,
-        amountEgp:     filsToEgp(tx.amountFils),
-        currency:      tx.currency,
-        balanceAfterFils: tx.balanceAfterFils,
-        balanceAfterEgp:  filsToEgp(tx.balanceAfterFils),
-        status:        tx.status,
-        description:   tx.description,
-        reference:     tx.reference,
-        createdAt:     tx.createdAt,
-        // Include orderId/paymentId for linkage but never provider secrets
-        orderId:       tx.orderId,
-        paymentId:     tx.paymentId,
-    }));
+    // 2. Build set of existing references/IDs to avoid any duplicate transaction
+    const knownRefs = new Set();
+    for (const tx of transactions) {
+        if (tx.reference) knownRefs.add(String(tx.reference));
+        if (tx.paymentId) knownRefs.add(String(tx.paymentId));
+        if (tx.orderId) knownRefs.add(String(tx.orderId));
+    }
 
-    return { transactions: safe, total, page, limit };
+    // 3. Map any transactions from wallet.transactions (e.g. representative earnings/rewards/commission)
+    const extraTxs = [];
+    if (walletDoc && Array.isArray(walletDoc.transactions)) {
+        for (const tx of walletDoc.transactions) {
+            const ref = tx.refId ? String(tx.refId) : null;
+            if (ref && knownRefs.has(ref)) continue;
+
+            const txType = (tx.type || '').toLowerCase();
+            const isCredit = txType === 'credit' || txType.includes('reward');
+            const type = isCredit ? 'CREDIT' : 'DEBIT';
+
+            extraTxs.push({
+                _id: tx._id,
+                type,
+                source: txType.includes('reward') ? 'REWARD' : 'OTHER',
+                amountFils: tx.amountFils,
+                amountEgp: filsToEgp(tx.amountFils),
+                currency: CURRENCY.EGP,
+                balanceAfterFils: tx.balanceAfterFils || 0,
+                balanceAfterEgp: filsToEgp(tx.balanceAfterFils || 0),
+                status: 'COMPLETED',
+                description: tx.description || (isCredit ? 'إضافة رصيد' : 'خصم رصيد'),
+                reference: ref,
+                createdAt: tx.createdAt || new Date(),
+                orderId: ref,
+                paymentId: null,
+            });
+        }
+    }
+
+    // 4. Combine and sort all transactions by createdAt descending
+    const allMapped = [
+        ...transactions.map((tx) => ({
+            _id:              tx._id,
+            type:             tx.type,
+            source:           tx.source,
+            amountFils:       tx.amountFils,
+            amountEgp:        filsToEgp(tx.amountFils),
+            currency:         tx.currency,
+            balanceAfterFils: tx.balanceAfterFils,
+            balanceAfterEgp:  filsToEgp(tx.balanceAfterFils),
+            status:           tx.status,
+            description:      tx.description,
+            reference:        tx.reference,
+            createdAt:        tx.createdAt,
+            orderId:          tx.orderId,
+            paymentId:        tx.paymentId,
+        })),
+        ...extraTxs,
+    ];
+
+    allMapped.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    const total = allMapped.length;
+    const paginated = allMapped.slice(skip, skip + limit);
+
+    return { transactions: paginated, total, page, limit };
 }
 
 // ─── Private Helpers ──────────────────────────────────────────────────────────
