@@ -371,6 +371,7 @@ function formatOrder(req, order, commissionCfg) {
         orderType: order.orderType || null,
         orderCategory: order.orderCategory || 'delivery',
         paymentMethod: order.paymentMethod || 'cash',
+        paymentStatus: order.paymentStatus || 'unpaid',
         representativeWillPay: Boolean(order.representativeWillPay),
         representativePaymentAmount: order.representativePaymentAmount || 0,
         purchaseDetails: order.purchaseDetails || null,
