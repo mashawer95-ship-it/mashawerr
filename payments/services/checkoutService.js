@@ -22,6 +22,7 @@ const { VehicleType } = require('../../middlewares/VehicleType');
 const { User } = require('../../middlewares/User');
 const { getOrCreatePricing, kdToFils } = require('../../middlewares/Pricing');
 const { calculateRoute } = require('../../services/googleRoutesService');
+const { detectGovernorateFromText } = require('../../utils/governorateHelper');
 const {
     assertUserCanUseDiscountCode,
     assertUserCanUseGlobalDiscount,
@@ -306,6 +307,17 @@ async function createCheckoutSession({ userId, orderPayload, requestId }) {
 
     const expiresAt = new Date(Date.now() + CHECKOUT_EXPIRY_MINUTES * 60 * 1000);
 
+    let sessionGovernorate = value.governorate || orderSnapshot.governorate || null;
+    if (!sessionGovernorate && orderSnapshot.tasks && orderSnapshot.tasks[0]) {
+        sessionGovernorate = detectGovernorateFromText(orderSnapshot.tasks[0].googleMapAddressFrom) || null;
+    }
+    if (!sessionGovernorate && userIdStr && mongoose.isValidObjectId(userIdStr)) {
+        try {
+            const uDoc = await User.findById(userIdStr).select('governorate').lean();
+            sessionGovernorate = uDoc?.governorate || null;
+        } catch (_) {}
+    }
+
     const session = new CheckoutSession({
         userId:                   userIdStr,
         status:                   'PENDING',
@@ -319,7 +331,7 @@ async function createCheckoutSession({ userId, orderPayload, requestId }) {
         orderSnapshot,
         vehicleTypeId:            value.vehicleTypeId ? String(value.vehicleTypeId) : null,
         orderCategory:            value.orderCategory || (value.orderType === 'passenger' ? 'passenger' : (value.orderType === 'purchase' ? 'purchase' : 'delivery')),
-        governorate:              value.governorate || null,
+        governorate:              sessionGovernorate,
         expiresAt,
     });
 

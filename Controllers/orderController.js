@@ -33,6 +33,7 @@ const gunzipAsync = util.promisify(zlib.gunzip);
 const { getCachedRepCommission, calcRepEarnings } = require('../middlewares/RepCommission');
 const { checkAndRewardTarget } = require('../utils/targetRewardHelper');
 const { sanitizeErrorResponse, isOwnerOrAuthorized } = require('../middlewares/objectAuthorization');
+const { normalizeGovernorate, detectGovernorateFromText, EGYPT_GOVERNORATES } = require('../utils/governorateHelper');
 
 /** Returns null for stale Render-local image URLs that no longer exist. */
 function sanitizeImageUrl(url) {
@@ -225,8 +226,8 @@ async function enrichOrdersWithClientData(req, formattedOrders) {
                 clientName,
                 clientPhoneNumber,
                 clientPhotoUrl,
-                clientGovernorate: clientGov,
-                governorate: clientGov,
+                clientGovernorate: o.governorate || clientGov || null,
+                governorate: o.governorate || clientGov || null,
                 clientGender,
             };
         });
@@ -339,6 +340,8 @@ function formatOrder(req, order, commissionCfg) {
     const deliveryPhotoUrl = rootDeliveryRaw ? sanitizeImageUrl(buildUrl(req, rootDeliveryRaw)) : null;
 
     return {
+        id: order._id ? order._id.toString() : (order.orderId ? String(order.orderId) : undefined),
+        _id: order._id || undefined,
         orderId: order.orderId,
         clientId: order.clientId,
         representativeId: order.representativeId || null,
@@ -370,6 +373,8 @@ function formatOrder(req, order, commissionCfg) {
         status,
         orderType: order.orderType || null,
         orderCategory: order.orderCategory || 'delivery',
+        governorate: order.governorate || null,
+        clientGovernorate: order.governorate || null,
         paymentMethod: order.paymentMethod || 'cash',
         paymentStatus: order.paymentStatus || 'unpaid',
         representativeWillPay: Boolean(order.representativeWillPay),
@@ -1255,11 +1260,14 @@ const createOrder = asyncHandler(async (req, res) => {
     }
 
     let orderGov = value.governorate || req.body.governorate || null;
-    if (!orderGov && value.clientId) {
+    if (!orderGov && value.clientId && mongoose.isValidObjectId(value.clientId)) {
         try {
             const cDoc = await User.findById(value.clientId).select('governorate').lean();
             orderGov = cDoc?.governorate || null;
         } catch (_) {}
+    }
+    if (!orderGov && tasks[0]?.googleMapAddressFrom) {
+        orderGov = detectGovernorateFromText(tasks[0].googleMapAddressFrom) || null;
     }
 
     const order = new Order({
@@ -2059,8 +2067,8 @@ function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
 
 function extractTaskPickupCoords(task) {
     if (!task) return null;
-    let lat = task.fromLatitude ?? task.pickupLocation?.lat ?? task.pickupLocation?.latitude;
-    let lng = task.fromLongitude ?? task.pickupLocation?.lng ?? task.pickupLocation?.longitude;
+    let lat = task.fromLatitude ?? task.pickupLocation?.lat ?? task.pickupLocation?.latitude ?? task.pickupLatitude ?? task.pickupLat ?? task.latitude ?? task.lat;
+    let lng = task.fromLongitude ?? task.pickupLocation?.lng ?? task.pickupLocation?.longitude ?? task.pickupLongitude ?? task.pickupLng ?? task.longitude ?? task.lng;
     if (lat != null && lng != null) {
         let pLat = parseFloat(lat);
         let pLng = parseFloat(lng);
@@ -2118,22 +2126,7 @@ function calculateOrderTripDistance(order) {
 
 const jwt = require('jsonwebtoken');
 
-/**
- * Helper to normalize Egyptian governorate names for accurate comparison
- */
-function normalizeGovernorate(gov) {
-    if (!gov || typeof gov !== 'string') return '';
-    return gov
-        .trim()
-        .toLowerCase()
-        .replace(/محافظ[ةه]\s*/g, '')
-        .replace(/[أإآ]/g, 'ا')
-        .replace(/ة/g, 'ه')
-        .replace(/ى/g, 'ي')
-        .replace(/[\u064B-\u065F]/g, '')
-        .replace(/\s+/g, '')
-        .trim();
-}
+// normalizeGovernorate is imported from utils/governorateHelper
 
 function isFemaleGender(g) {
     if (!g) return false;
@@ -2191,7 +2184,7 @@ const listWaitingOrders = asyncHandler(async (req, res) => {
         orders
             .filter(o => (o.orderCategory === 'passenger' || o.orderType === 'passenger') && o.clientId)
             .map(o => o.clientId)
-    )];
+    )].filter(id => mongoose.isValidObjectId(id));
 
     const passengerClients = passengerClientIds.length > 0
         ? await User.find({ _id: { $in: passengerClientIds } }).select('_id gender').lean()
@@ -2230,8 +2223,8 @@ const listWaitingOrders = asyncHandler(async (req, res) => {
     if (repGov && repGov.trim()) {
         const normRepGov = normalizeGovernorate(repGov);
 
-        // جلب محافظات العملاء لأصحاب الطلبات المعلقة لمقارنتها بدقة
-        const clientIds = [...new Set(orders.map(o => o.clientId).filter(Boolean))];
+        // جلب محافظات العملاء لأصحاب الطلبات المعلقة لمقارنتها بدقة (مع فلترة الـ ObjectIds الصالحة لمنع خطأ BSONError)
+        const clientIds = [...new Set(orders.map(o => o.clientId).filter(Boolean))].filter(id => mongoose.isValidObjectId(id));
         const clients = clientIds.length > 0
             ? await User.find({ _id: { $in: clientIds } }).select('_id governorate').lean()
             : [];
@@ -2240,20 +2233,45 @@ const listWaitingOrders = asyncHandler(async (req, res) => {
             if (c && c._id) clientGovMap[c._id.toString()] = c.governorate || '';
         }
 
+        const userLat = lat ? parseFloat(lat) : null;
+        const userLng = lng ? parseFloat(lng) : null;
+        const hasDriverCoords = userLat != null && userLng != null && !isNaN(userLat) && !isNaN(userLng);
+
         orders = orders.filter(o => {
-            const orderGov = o.governorate || '';
+            const rawAddresses = (o.tasks || []).map(t => `${t.googleMapAddressFrom || ''} ${t.googleMapAddressTo || ''}`).join(' ');
+            const detectedGov = !o.governorate ? detectGovernorateFromText(rawAddresses) : null;
+            const orderGov = o.governorate || detectedGov || '';
             const clientGov = clientGovMap[o.clientId?.toString()] || '';
-            const addresses = (o.tasks || []).map(t => `${t.googleMapAddressFrom || ''} ${t.googleMapAddressTo || ''}`).join(' ');
 
             const normOrderGov = normalizeGovernorate(orderGov);
             const normClientGov = normalizeGovernorate(clientGov);
-            const normAddresses = normalizeGovernorate(addresses);
+            const normAddresses = normalizeGovernorate(rawAddresses);
 
             const matchesOrderGov = normOrderGov && (normOrderGov.includes(normRepGov) || normRepGov.includes(normOrderGov));
             const matchesClientGov = normClientGov && (normClientGov.includes(normRepGov) || normRepGov.includes(normClientGov));
             const matchesAddress = normAddresses && normAddresses.includes(normRepGov);
 
-            return matchesOrderGov || matchesClientGov || matchesAddress;
+            // Proximity check: إذا كان المندوب جمب مكان استلام الطلب (أقل من أو يساوي 15 كم)، فهو مؤهل جغرافياً
+            let isNearby = false;
+            if (hasDriverCoords) {
+                const firstTask = o.tasks && o.tasks[0];
+                const pickup = extractTaskPickupCoords(firstTask);
+                if (pickup) {
+                    const dist = getDistanceFromLatLonInKm(userLat, userLng, pickup.lat, pickup.lng);
+                    if (dist != null && dist <= 15) {
+                        isNearby = true;
+                    }
+                }
+            }
+
+            const isMatch = matchesOrderGov || matchesClientGov || matchesAddress || isNearby;
+
+            // إذا تطابق الطلب ولم تكن المحافظة مسجلة به، نملأها بمحافظة المندوب حتى لا يُحجب في واجهات العرض
+            if (isMatch && !o.governorate && repGov) {
+                o.governorate = repGov;
+            }
+
+            return isMatch;
         });
     }
 

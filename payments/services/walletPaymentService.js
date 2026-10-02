@@ -35,6 +35,7 @@ const { WalletLedger } = require('../../middlewares/WalletLedger');
 const { Payment, PaymentEvent } = require('../../middlewares/Payment');
 const { CheckoutSession } = require('../../middlewares/CheckoutSession');
 const { Order, getNextGlobalOrderId, getNextTaskId } = require('../../middlewares/Order');
+const { detectGovernorateFromText } = require('../../utils/governorateHelper');
 const {
     PAYMENT_ERROR_CODES,
     WALLET_MIN_TOPUP_FILS,
@@ -1126,7 +1127,7 @@ async function _createOrderFromSnapshot({ session, paymentId, paymentMethod, req
         is_ladies_only:            snapshot.is_ladies_only || false,
         orderType:                 snapshot.orderType || null,
         orderCategory:             session.orderCategory || 'delivery',
-        governorate:               session.governorate || null,
+        governorate:               session.governorate || snapshot.governorate || (tasks[0] ? detectGovernorateFromText(tasks[0].googleMapAddressFrom) : null) || null,
         paymentMethod:             paymentMethod || 'wallet',
         paymentStatus:             (paymentMethod === 'cash') ? 'unpaid' : 'paid',
         representativeWillPay:     snapshot.representativeWillPay || false,
