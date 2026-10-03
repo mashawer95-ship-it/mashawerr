@@ -12,26 +12,35 @@
 const { socketAuthMiddleware } = require('../middlewares/socketAuth');
 const Message = require('../models/Message');
 const { notifyClient } = require('../services/notifyClient');
+const { resolveOrderIds } = require('../utils/orderIdResolver');
 const logger = require('../utils/logger');
 
 // ── Helper: count unread messages for a user (optionally scoped to one order) ──
 async function getUnreadCount(userId, orderId = null) {
     const query = { receiverId: userId, status: { $ne: 'read' } };
-    if (orderId) query.orderId = String(orderId);
+    if (orderId) {
+        const { allIds } = await resolveOrderIds(orderId);
+        query.orderId = { $in: allIds };
+    }
     return Message.countDocuments(query);
 }
 
 // ── Helper: push unread counts to a user's personal socket room ──────────────
 async function pushUnreadCount(nsp, userId, orderId) {
+    const { allIds } = await resolveOrderIds(orderId);
     const [orderCount, totalCount] = await Promise.all([
         getUnreadCount(userId, orderId),
         getUnreadCount(userId),
     ]);
-    nsp.to(`user:${userId}`).emit('unreadCount', {
-        orderId,
-        orderUnread: orderCount,   // Badge on THIS order's chat icon
-        totalUnread: totalCount,    // Badge on the main chat/tab icon
-    });
+
+    // Push unread count under ALL identifiers so badges bound to either numeric or mongoId receive it
+    for (const oid of allIds) {
+        nsp.to(`user:${userId}`).emit('unreadCount', {
+            orderId: oid,
+            orderUnread: orderCount,   // Badge on THIS order's chat icon
+            totalUnread: totalCount,    // Badge on the main chat/tab icon
+        });
+    }
 }
 
 function registerChatSocket(io) {
@@ -50,28 +59,38 @@ function registerChatSocket(io) {
         socket.broadcast.emit('userStatus', { userId: user.id, status: 'online' });
         logger.debug(`[Chat] User ${user.id} connected. Socket ID: ${socket.id}`);
 
-        // 2. Join a specific order's chat room
-        socket.on('joinChat', ({ orderId }) => {
+        // 2. Join a specific order's chat room (joins rooms for ALL representations of the orderId)
+        socket.on('joinChat', async ({ orderId }) => {
             if (!orderId) return;
-            socket.join(`chat:${orderId}`);
-            logger.debug(`[Chat] User ${user.id} joined chat room: ${orderId}`);
+            const { allIds } = await resolveOrderIds(orderId);
+            for (const oid of allIds) {
+                socket.join(`chat:${oid}`);
+            }
+            logger.debug(`[Chat] User ${user.id} joined chat rooms: ${allIds.join(', ')}`);
         });
 
         // 3. Leave a specific order's chat room
-        socket.on('leaveChat', ({ orderId }) => {
+        socket.on('leaveChat', async ({ orderId }) => {
             if (!orderId) return;
-            socket.leave(`chat:${orderId}`);
-            logger.debug(`[Chat] User ${user.id} left chat room: ${orderId}`);
+            const { allIds } = await resolveOrderIds(orderId);
+            for (const oid of allIds) {
+                socket.leave(`chat:${oid}`);
+            }
+            logger.debug(`[Chat] User ${user.id} left chat rooms: ${allIds.join(', ')}`);
         });
 
         // 4. Typing indicator
-        socket.on('typing', ({ orderId, isTyping }) => {
+        socket.on('typing', async ({ orderId, isTyping }) => {
             if (!orderId) return;
-            socket.to(`chat:${orderId}`).emit('userTyping', {
-                orderId,
-                userId: user.id,
-                isTyping
-            });
+            const { allIds } = await resolveOrderIds(orderId);
+            for (const oid of allIds) {
+                socket.to(`chat:${oid}`).emit('userTyping', {
+                    orderId: oid,
+                    allOrderIds: allIds,
+                    userId: user.id,
+                    isTyping
+                });
+            }
         });
 
         // 5. Send a new message (supports text, image, voice)
@@ -103,9 +122,12 @@ function registerChatSocket(io) {
                 const userFullName = user.name || (user.firstName ? `${user.firstName} ${user.lastName || ''}`.trim() : '');
                 const effectiveSenderName = clientProvidedSenderName || userFullName || '';
 
-                // Save to MongoDB
+                const { allIds, numericId, mongoId, canonicalId } = await resolveOrderIds(orderId);
+                const primaryOrderId = canonicalId || String(orderId);
+
+                // Save to MongoDB with canonical orderId
                 const message = new Message({
-                    orderId: String(orderId),
+                    orderId: primaryOrderId,
                     senderId: user.id,
                     receiverId,
                     text: text || '',
@@ -120,13 +142,20 @@ function registerChatSocket(io) {
                 await message.save();
                 const msgData = message.toObject();
 
-                // Broadcast to the order's chat room
-                nsp.to(`chat:${orderId}`).emit('receiveMessage', msgData);
+                // Attach alternative order identifiers so any client matching rule succeeds
+                msgData.allOrderIds = allIds;
+                if (mongoId) msgData.orderMongoId = mongoId;
+                if (numericId) msgData.orderNumericId = numericId;
+
+                // Broadcast to ALL order room aliases (e.g. chat:45 and chat:66f28...)
+                for (const oid of allIds) {
+                    nsp.to(`chat:${oid}`).emit('receiveMessage', msgData);
+                }
 
                 // Also broadcast to the receiver's personal room
                 socket.to(`user:${receiverId}`).emit('receiveMessage', msgData);
 
-                // ── Push updated unread count to the RECEIVER immediately ────
+                // ── Push updated unread count to the RECEIVER immediately (for all orderId aliases) ────
                 await pushUnreadCount(nsp, receiverId, orderId);
 
                 // ── Send Push Notification (FCM) to the RECEIVER ─────────────
@@ -146,7 +175,10 @@ function registerChatSocket(io) {
                         notificationBody,
                         {
                             type: 'CHAT_MESSAGE',
-                            orderId: String(orderId),
+                            orderId: primaryOrderId,
+                            rawOrderId: String(orderId),
+                            orderMongoId: mongoId || '',
+                            orderNumericId: numericId || '',
                             senderId: String(user.id),
                             messageId: String(message._id),
                             messageType: resolvedType
@@ -180,14 +212,18 @@ function registerChatSocket(io) {
                 );
 
                 const now = new Date();
+                const { allIds } = await resolveOrderIds(orderId);
 
-                // Notify others in the chat room that these messages were read
-                nsp.to(`chat:${orderId}`).emit('messagesRead', {
-                    orderId,
-                    messageIds,
-                    readBy: user.id,
-                    readAt: now
-                });
+                // Notify others in ALL chat room aliases for this order
+                for (const oid of allIds) {
+                    nsp.to(`chat:${oid}`).emit('messagesRead', {
+                        orderId: oid,
+                        allOrderIds: allIds,
+                        messageIds,
+                        readBy: user.id,
+                        readAt: now
+                    });
+                }
 
                 // ── Push updated (now lower) unread count back to READER ─────
                 await pushUnreadCount(nsp, user.id, orderId);

@@ -2,8 +2,8 @@ const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
 const Message = require('../models/Message');
 const { Order } = require('../middlewares/Order');
-// StoreOrder removed – delivery-only
 const { sanitizeErrorResponse } = require('../middlewares/objectAuthorization');
+const { resolveOrderIds } = require('../utils/orderIdResolver');
 
 /**
  * GET /api/chat/:orderId
@@ -16,26 +16,29 @@ const getChatHistory = asyncHandler(async (req, res) => {
     const { orderId } = req.params;
     const { limit = 50, before } = req.query;
 
+    const { allIds, numericId, mongoId } = await resolveOrderIds(orderId);
+
     const isAdmin = req.user?.isAdmin === true || req.fullUser?.isAdmin === true;
     if (!isAdmin) {
         if (process.env.TEST_MODE === 'true' && mongoose.connection.readyState !== 1) {
             return sanitizeErrorResponse(res, true, true);
         }
         const userIdStr = req.user?.id?.toString();
-        const isValidObjectId = mongoose.Types.ObjectId.isValid(orderId) && /^[0-9a-fA-F]{24}$/.test(orderId);
-        const numericOrderId = Number(orderId);
-        const isNumeric = !isNaN(numericOrderId);
 
         const orderConditions = [];
-        if (isNumeric) {
-            orderConditions.push({ orderId: numericOrderId });
+        if (numericId && !isNaN(Number(numericId))) {
+            orderConditions.push({ orderId: Number(numericId) });
         }
-        if (isValidObjectId) {
-            orderConditions.push({ _id: orderId });
+        if (mongoId && mongoose.isValidObjectId(mongoId)) {
+            orderConditions.push({ _id: mongoId });
+        }
+        for (const id of allIds) {
+            if (!isNaN(Number(id))) orderConditions.push({ orderId: Number(id) });
+            if (mongoose.isValidObjectId(id)) orderConditions.push({ _id: id });
         }
 
         const [isParticipant, normalOrder] = await Promise.all([
-            Message.exists({ orderId: String(orderId), $or: [{ senderId: userIdStr }, { receiverId: userIdStr }] }),
+            Message.exists({ orderId: { $in: allIds }, $or: [{ senderId: userIdStr }, { receiverId: userIdStr }] }),
             orderConditions.length > 0
                 ? Order.findOne({ $or: orderConditions }).select('clientId representativeId').lean()
                 : null
@@ -48,7 +51,7 @@ const getChatHistory = asyncHandler(async (req, res) => {
         }
     }
 
-    let query = { orderId };
+    let query = { orderId: { $in: allIds } };
     if (before) {
         query.createdAt = { $lt: new Date(before) };
     }
@@ -71,9 +74,10 @@ const getChatHistory = asyncHandler(async (req, res) => {
 const getUnreadForOrder = asyncHandler(async (req, res) => {
     const { orderId } = req.params;
     const userId = req.user.id;
+    const { allIds } = await resolveOrderIds(orderId);
 
     const count = await Message.countDocuments({
-        orderId,
+        orderId: { $in: allIds },
         receiverId: userId,
         status: { $ne: 'read' },
     });
@@ -91,8 +95,11 @@ const getTotalUnread = asyncHandler(async (req, res) => {
     const userId = req.user.id;
     const { orderId } = req.query;
 
-    const query = { receiverId: userId, status: { $ne: 'read' } };
-    if (orderId) query.orderId = orderId;
+    let query = { receiverId: userId, status: { $ne: 'read' } };
+    if (orderId) {
+        const { allIds } = await resolveOrderIds(orderId);
+        query.orderId = { $in: allIds };
+    }
 
     // Aggregate: total count + per-order breakdown
     const [totalCount, perOrder] = await Promise.all([
@@ -104,11 +111,31 @@ const getTotalUnread = asyncHandler(async (req, res) => {
         ]),
     ]);
 
+    // Expand per-order breakdown so both numeric and MongoDB IDs are available to clients
+    const expandedByOrder = [];
+    const seenOrderKeys = new Set();
+
+    for (const item of perOrder) {
+        if (!seenOrderKeys.has(item.orderId)) {
+            expandedByOrder.push(item);
+            seenOrderKeys.add(item.orderId);
+        }
+        try {
+            const { allIds } = await resolveOrderIds(item.orderId);
+            for (const altId of allIds) {
+                if (!seenOrderKeys.has(altId)) {
+                    expandedByOrder.push({ orderId: altId, count: item.count });
+                    seenOrderKeys.add(altId);
+                }
+            }
+        } catch (_) {}
+    }
+
     res.json({
         success: true,
         data: {
             totalUnread: totalCount,
-            byOrder: perOrder, // [{ orderId, count }, ...]
+            byOrder: expandedByOrder, // [{ orderId, count }, ...]
         },
     });
 });

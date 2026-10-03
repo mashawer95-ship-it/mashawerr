@@ -14,12 +14,12 @@ const { redisGet, redisSet } = require('../config/redis');
  */
 async function resolveOrderIds(rawInput) {
     if (rawInput == null) {
-        return { rawId: '', mongoId: null, numericId: null, allIds: [] };
+        return { rawId: '', mongoId: null, numericId: null, allIds: [], canonicalId: '' };
     }
 
     const rawId = String(rawInput).trim();
     if (!rawId) {
-        return { rawId: '', mongoId: null, numericId: null, allIds: [] };
+        return { rawId: '', mongoId: null, numericId: null, allIds: [], canonicalId: '' };
     }
 
     // 1. Check Redis cache first
@@ -41,24 +41,39 @@ async function resolveOrderIds(rawInput) {
     const isNum = !isNaN(num) && num > 0;
 
     try {
-        const Order = mongoose.models.Order || require('../models/Order');
-        if (isValidObjId) {
-            mongoId = rawId;
-            const ord = await Order.findById(rawId).select('orderId').lean();
-            if (ord && ord.orderId) {
-                numericId = String(ord.orderId);
-            }
-        } else if (isNum) {
-            numericId = String(num);
-            const ord = await Order.findOne({ orderId: num }).select('_id').lean();
-            if (ord && ord._id) {
-                mongoId = String(ord._id);
+        let Order = mongoose.models.Order;
+        if (!Order) {
+            try {
+                Order = require('../middlewares/Order').Order;
+            } catch (_) {}
+        }
+        if (Order) {
+            if (isValidObjId) {
+                mongoId = rawId;
+                const ord = await Order.findById(rawId).select('orderId').lean();
+                if (ord && ord.orderId) {
+                    numericId = String(ord.orderId);
+                }
+            } else if (isNum) {
+                numericId = String(num);
+                const ord = await Order.findOne({ orderId: num }).select('_id').lean();
+                if (ord && ord._id) {
+                    mongoId = String(ord._id);
+                }
+            } else {
+                // Try finding by string orderId
+                const ord = await Order.findOne({ orderId: rawId }).select('_id orderId').lean();
+                if (ord) {
+                    if (ord._id) mongoId = String(ord._id);
+                    if (ord.orderId) numericId = String(ord.orderId);
+                }
             }
         }
     } catch (_) {}
 
     const allIds = Array.from(new Set([rawId, mongoId, numericId].filter(Boolean)));
-    const result = { rawId, mongoId, numericId, allIds };
+    const canonicalId = numericId || mongoId || rawId;
+    const result = { rawId, mongoId, numericId, allIds, canonicalId };
 
     // Cache in Redis for 24 hours
     try {
