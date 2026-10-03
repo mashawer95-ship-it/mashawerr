@@ -174,7 +174,7 @@ class DeliveryEventBus {
         });
     }
 
-    static async emitPickupApproved(io, session, trackData = null, traceId = null) {
+    static async emitPickupApproved(io, session, trackData = null, traceId = null, attempt = null, completedStopIndex = null) {
         const orderId = session.orderId;
         const allPickupsDone = trackData?.allPickupsDone ?? true;
         const currentStop = trackData?.currentStop;
@@ -205,7 +205,11 @@ class DeliveryEventBus {
             action: 'PICKUP_APPROVED',
             payload: {
                 orderId: session.orderId,
+                attemptId: attempt?.attemptId,
                 isApproved: true,
+                isPickup: true,
+                completedPhase: 'PICKUP',
+                completedStopIndex: completedStopIndex != null ? Number(completedStopIndex) : undefined,
                 subState: session.subState,
                 phase: phase,
                 allPickupsCompleted: allPickupsDone,
@@ -220,6 +224,8 @@ class DeliveryEventBus {
                 rooms: Array.from(roomsSet),
                 eventNames: [
                     'pickup_session:approved',
+                    'order:pickup_approved',
+                    'order:pod_approved',
                     'order:track_updated',
                 ],
             },
@@ -254,7 +260,7 @@ class DeliveryEventBus {
         });
     }
 
-    static async emitDeliveryApproved(io, session, attempt, orderId, allTasksCompleted = false, extraRooms = [], trackData = null, traceId = null) {
+    static async emitDeliveryApproved(io, session, attempt, orderId, allTasksCompleted = false, extraRooms = [], trackData = null, traceId = null, completedStopIndex = null) {
         const roomsSet = new Set([
             `user:${session.driverId}`,
             `order:${session.orderId}`,
@@ -283,6 +289,9 @@ class DeliveryEventBus {
                 orderId: session.orderId || orderId,
                 attemptId: attempt?.attemptId,
                 isApproved: true,
+                isPickup: false,
+                completedPhase: 'DELIVERY',
+                completedStopIndex: completedStopIndex != null ? Number(completedStopIndex) : undefined,
                 allTasksCompleted: allTasksCompleted,
                 subState: session.subState,
                 phase: trackData?.phase || (allTasksCompleted ? 'COMPLETED' : 'DELIVERY'),
@@ -297,6 +306,8 @@ class DeliveryEventBus {
                 rooms: Array.from(roomsSet),
                 eventNames: [
                     'delivery_session:approved',
+                    'order:delivery_approved',
+                    'order:pod_approved',
                     'order:track_updated',
                 ],
             },

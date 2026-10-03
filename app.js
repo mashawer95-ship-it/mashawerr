@@ -232,10 +232,28 @@ io.on('connection', (socket) => {
     socket.on('join_order', async ({ orderId }) => {
         if (!orderId) return;
 
+        // ─── Resilient Order Lookup (supports numeric orderId AND ObjectId) ─────
+        // parseInt fails silently for ObjectId strings → use dual-lookup strategy
+        const mongoose = require('mongoose');
+        async function _findOrder(id) {
+            const { Order } = require('./middlewares/Order');
+            const strId = String(id).trim();
+            const numId = Number(strId);
+            if (!isNaN(numId) && numId > 0) {
+                const o = await Order.findOne({ orderId: numId }).lean();
+                if (o) return o;
+            }
+            if (mongoose.isValidObjectId(strId)) {
+                const o = await Order.findOne({ _id: strId }).lean();
+                if (o) return o;
+            }
+            // Fallback: try string orderId field (for store/business orders)
+            return await Order.findOne({ orderId: strId }).lean();
+        }
+
         // سكيورتي: تحقق إن المستخدم صاحب الطلب أو ممثل تسليم قبل إضافته للـ room
         try {
-            const { Order } = require('./middlewares/Order');
-            const order = await Order.findOne({ orderId: parseInt(orderId, 10) }).lean();
+            const order = await _findOrder(orderId);
 
             if (!order) {
                 logger.warn(`[Socket.IO] join_order rejected: order ${orderId} not found (socket: ${socket.id})`);
@@ -247,10 +265,10 @@ io.on('connection', (socket) => {
             const isAdmin = socket.user?.isAdmin;
 
             // المسموح لهم بالانضمام للـ room:
-            // • العميل صاحب الطلب
+            // • العميل صاحب الطلب (clientId أو userId)
             // • المندوب المعين للطلب
             // • الأدمين والإدارة
-            const isOrderOwner  = order.userId?.toString()       === userId;
+            const isOrderOwner  = (order.clientId?.toString() === userId) || (order.userId?.toString() === userId);
             const isAssignedRep = order.representativeId?.toString() === userId;
             const isStaff       = isAdmin || ['admin', 'administration'].includes(userType);
 
@@ -261,6 +279,7 @@ io.on('connection', (socket) => {
             }
         } catch (err) {
             logger.error(`[Socket.IO] join_order auth check failed: ${err.message}`);
+            // Do NOT block the join on auth check failure — allow it to proceed
         }
 
         const room = `order:${orderId}`;
@@ -271,8 +290,7 @@ io.on('connection', (socket) => {
         // 🔄 State Sync: If the client missed an event while disconnected/backgrounded,
         // send them the current status immediately upon joining.
         try {
-            const { Order } = require('./middlewares/Order');
-            const order = await Order.findOne({ orderId: parseInt(orderId, 10) }).lean();
+            const order = await _findOrder(orderId);
             if (order && order.status) {
                 // Emit only to this specific socket, not the whole room
                 socket.emit('order:status_changed', {
@@ -283,9 +301,29 @@ io.on('connection', (socket) => {
                 logger.debug(`[Socket.IO] Synced state '${order.status}' for order ${orderId} to socket ${socket.id}`);
             }
 
+            // 🔄 Sync PoD Track Data on reconnect — so driver recovers after backgrounding
+            try {
+                const { DeliveryOrderTracker } = require('./services/DeliveryOrderTracker');
+                const trackData = order ? await DeliveryOrderTracker.getOrderTrack(order.orderId || orderId) : null;
+                if (trackData && !trackData.isAllCompleted) {
+                    socket.emit('order:track_updated', {
+                        orderId: order?.orderId || orderId,
+                        ...trackData,
+                        message: 'State sync on connect'
+                    });
+                    logger.debug(`[Socket.IO] Synced track data for order ${orderId} stop=${trackData.currentStopIndex} phase=${trackData.phase}`);
+                }
+            } catch (_) { }
+
             // Sync PoD Session state
             const { DeliverySession } = require('./models/DeliverySession');
-            const session = await DeliverySession.findOne({ orderId }).lean();
+            const strOrderId = String(orderId);
+            const session = await DeliverySession.findOne({
+                $or: [
+                    { orderId: strOrderId },
+                    { orderId: isNaN(Number(strOrderId)) ? strOrderId : Number(strOrderId) }
+                ]
+            }).sort({ createdAt: -1 }).lean();
             if (session && (session.subState === 'WAITING_OTP' || session.state === 'COMPLETED')) {
                 socket.emit('delivery_session:approved', {
                     orderId,

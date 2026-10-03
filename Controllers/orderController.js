@@ -2082,6 +2082,60 @@ function extractTaskPickupCoords(task) {
     return null;
 }
 
+/**
+ * Resilient pickup-coords extractor for an entire Order document.
+ * Tries: tasks[0] → allLocationsInOrder (first PICKUP stop) → root order fields.
+ * This ensures multi-destination orders (which may lack tasks lat/lng) still
+ * appear in the representative's dashboard radius filter.
+ */
+function extractOrderPickupCoords(order) {
+    if (!order) return null;
+    // 1. Try task-based coords
+    const firstTask = order.tasks && order.tasks[0];
+    const fromTask = extractTaskPickupCoords(firstTask);
+    if (fromTask) return fromTask;
+
+    // 2. Try allLocationsInOrder — first stop with isFrom === true
+    if (Array.isArray(order.allLocationsInOrder)) {
+        const pickupLoc = order.allLocationsInOrder.find(l => l && l.isFrom === true);
+        if (pickupLoc) {
+            let lat = pickupLoc.lat ?? pickupLoc.latitude ?? pickupLoc.fromLatitude;
+            let lng = pickupLoc.lng ?? pickupLoc.longitude ?? pickupLoc.fromLongitude;
+            if (lat == null && pickupLoc.latLng) {
+                lat = pickupLoc.latLng.lat ?? pickupLoc.latLng.latitude;
+                lng = pickupLoc.latLng.lng ?? pickupLoc.latLng.longitude;
+            }
+            if (lat == null && pickupLoc.location) {
+                lat = pickupLoc.location.lat ?? pickupLoc.location.latitude;
+                lng = pickupLoc.location.lng ?? pickupLoc.location.longitude;
+                if (Array.isArray(pickupLoc.location.coordinates) && pickupLoc.location.coordinates.length >= 2) {
+                    lng = pickupLoc.location.coordinates[0];
+                    lat = pickupLoc.location.coordinates[1];
+                }
+            }
+            if (lat != null && lng != null) {
+                const pLat = parseFloat(lat);
+                const pLng = parseFloat(lng);
+                if (!isNaN(pLat) && !isNaN(pLng) && Math.abs(pLat) > 1.0 && Math.abs(pLng) > 1.0) {
+                    return { lat: pLat, lng: pLng };
+                }
+            }
+        }
+    }
+
+    // 3. Root-level order fields (single-stop fallback)
+    const rootLat = order.fromLatitude ?? order.pickupLocation?.lat ?? order.pickupLocation?.latitude ?? order.latitude;
+    const rootLng = order.fromLongitude ?? order.pickupLocation?.lng ?? order.pickupLocation?.longitude ?? order.longitude;
+    if (rootLat != null && rootLng != null) {
+        const pLat = parseFloat(rootLat);
+        const pLng = parseFloat(rootLng);
+        if (!isNaN(pLat) && !isNaN(pLng) && Math.abs(pLat) > 1.0 && Math.abs(pLng) > 1.0) {
+            return { lat: pLat, lng: pLng };
+        }
+    }
+    return null;
+}
+
 function extractTaskDeliveryCoords(task) {
     if (!task) return null;
     let lat = task.toLatitude ?? task.deliveryLocation?.lat ?? task.deliveryLocation?.latitude;
@@ -2254,8 +2308,7 @@ const listWaitingOrders = asyncHandler(async (req, res) => {
             // Proximity check: إذا كان المندوب جمب مكان استلام الطلب (أقل من أو يساوي 15 كم)، فهو مؤهل جغرافياً
             let isNearby = false;
             if (hasDriverCoords) {
-                const firstTask = o.tasks && o.tasks[0];
-                const pickup = extractTaskPickupCoords(firstTask);
+                const pickup = extractOrderPickupCoords(o);
                 if (pickup) {
                     const dist = getDistanceFromLatLonInKm(userLat, userLng, pickup.lat, pickup.lng);
                     if (dist != null && dist <= 15) {
@@ -2303,10 +2356,9 @@ const listWaitingOrders = asyncHandler(async (req, res) => {
         const userLat = parseFloat(lat);
         const userLng = parseFloat(lng);
 
-        // Calculate distance for each order based on the first task's pickup location using Haversine
+        // Calculate distance for each order based on first pickup location (tasks → allLocationsInOrder → root)
         const ordersWithDistance = orders.map(order => {
-            const firstTask = order.tasks && order.tasks[0];
-            const pickup = extractTaskPickupCoords(firstTask);
+            const pickup = extractOrderPickupCoords(order);
             let distanceToPickup = null;
             if (pickup && !isNaN(userLat) && !isNaN(userLng)) {
                 distanceToPickup = getDistanceFromLatLonInKm(userLat, userLng, pickup.lat, pickup.lng);
@@ -2325,8 +2377,16 @@ const listWaitingOrders = asyncHandler(async (req, res) => {
             }
         }
 
+        // ─── Fallback: If NO orders have parseable coords, show all remaining orders ───
+        // This prevents invisibility for orders created without coordinates (edge case).
+        if (filteredOrders.length === 0 && ordersWithDistance.some(o => o.distanceToPickup === null)) {
+            const ordersWithNoCoords = ordersWithDistance.filter(o => o.distanceToPickup === null);
+            logger.warn(`[listWaitingOrders] ${ordersWithNoCoords.length} order(s) have no pickup coords — showing as fallback`);
+            filteredOrders = ordersWithNoCoords;
+        }
+
         if (filteredOrders.length > 0) {
-            filteredOrders.sort((a, b) => (a.distanceToPickup || 9999) - (b.distanceToPickup || 9999));
+            filteredOrders.sort((a, b) => (a.distanceToPickup ?? 9999) - (b.distanceToPickup ?? 9999));
             orders = filteredOrders;
         } else {
             // لا تظهر أي طلبات خارج نطاق الـ 15 كم

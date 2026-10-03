@@ -380,8 +380,18 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
     const photoUrl = attempt?.photo?.cdnUrl || attempt?.photo?.url || attempt?.photo?.secure_url || (attempt?.photo?.objectKey ? `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME || 'dvhjawii0'}/image/upload/${attempt.photo.objectKey}` : null);
     let resolvedGroupId = null;
 
+    // ─── Helper: Save with explicit error logging (replaces silent catches) ───
+    const safeSave = async (doc, label) => {
+        try {
+            await doc.save();
+        } catch (err) {
+            logger.error(`[PoD] ${label} save error [${traceId}]:`, err.message);
+        }
+    };
+
     if (isPickup) {
         let allPickedUp = true;
+        let completedStopIndex = attempt?.stopIndex ?? req.body?.stopIndex ?? req.query?.stopIndex;
 
         if (parentOrder) {
             const photoUrl = attempt?.photo?.cdnUrl || attempt?.photo?.url || attempt?.photo?.secure_url || (attempt?.photo?.objectKey ? `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME || 'dvhjawii0'}/image/upload/${attempt.photo.objectKey}` : null);
@@ -389,13 +399,15 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
             const hasLocations = Array.isArray(parentOrder.allLocationsInOrder) && parentOrder.allLocationsInOrder.length > 0;
 
             if (hasLocations) {
-                const reqStopIndex = attempt?.stopIndex ?? req.body?.stopIndex ?? req.query?.stopIndex;
                 let targetStop = null;
-                if (reqStopIndex !== undefined && reqStopIndex !== null && parentOrder.allLocationsInOrder[parseInt(reqStopIndex, 10)]) {
-                    targetStop = parentOrder.allLocationsInOrder[parseInt(reqStopIndex, 10)];
+                if (completedStopIndex !== undefined && completedStopIndex !== null && parentOrder.allLocationsInOrder[parseInt(completedStopIndex, 10)]) {
+                    targetStop = parentOrder.allLocationsInOrder[parseInt(completedStopIndex, 10)];
                 }
                 if (!targetStop) {
-                    targetStop = parentOrder.allLocationsInOrder.find(l => l.isFrom === true && !l.isCompleted);
+                    targetStop = parentOrder.allLocationsInOrder.find(l => (l.isFrom === true || l.isFrom === 'true') && !l.isCompleted);
+                    if (targetStop) {
+                        completedStopIndex = parentOrder.allLocationsInOrder.indexOf(targetStop);
+                    }
                 }
                 if (targetStop) {
                     targetStop.isCompleted = true;
@@ -422,12 +434,13 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
                         targetTask.pickupPhoto = photoUrl;
                     }
                 }
+                parentOrder.markModified('tasks');
             }
 
             let allStopsCompleted = false;
             if (hasLocations) {
                 allPickedUp = parentOrder.allLocationsInOrder
-                    .filter(l => l.isFrom === true)
+                    .filter(l => l.isFrom === true || l.isFrom === 'true')
                     .every(l => l.isCompleted === true);
                 allStopsCompleted = parentOrder.allLocationsInOrder.every(l => l.isCompleted === true);
             } else if (Array.isArray(parentOrder.tasks) && parentOrder.tasks.length > 0) {
@@ -448,10 +461,10 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
             } else {
                 parentOrder.status = 'processing';
             }
-            await parentOrder.save().catch(() => {});
+            await safeSave(parentOrder, 'parentOrder [pickup]');
         }
 
-        const trackData = await DeliveryOrderTracker.getOrderTrack(orderId).catch(() => null);
+        const trackData = await DeliveryOrderTracker.getOrderTrack(parentOrder || orderId).catch(() => null);
 
         if (trackData) {
             allPickedUp = trackData.allPickupsDone;
@@ -476,11 +489,11 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
             }
             session.subState = 'NONE';
             session.version = (session.version || 0) + 1;
-            await session.save().catch(() => {});
+            await safeSave(session, 'session [pickup]');
         }
 
         try {
-            await DeliveryEventBus.emitPickupApproved(io, session, trackData, traceId);
+            await DeliveryEventBus.emitPickupApproved(io, session, trackData, traceId, attempt, completedStopIndex);
         } catch (_) {}
 
         return {
@@ -489,6 +502,7 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
             isPickup: true,
             allPickupsCompleted: allPickedUp,
             isCompleted: false,
+            completedStopIndex: completedStopIndex != null ? Number(completedStopIndex) : 0,
             phase: session?.phase || 'DELIVERY',
             track: trackData,
             currentStopIndex: trackData?.currentStopIndex ?? 0,
@@ -501,6 +515,7 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
 
     // Delivery Phase handling (Multi-task & Multi-stop aware)
     let allDone = true;
+    let completedStopIndex = attempt?.stopIndex ?? req.body?.stopIndex ?? req.query?.stopIndex;
 
     if (parentOrder) {
         const photoUrl = attempt?.photo?.cdnUrl || attempt?.photo?.url || attempt?.photo?.secure_url || (attempt?.photo?.objectKey ? `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME || 'dvhjawii0'}/image/upload/${attempt.photo.objectKey}` : null);
@@ -508,13 +523,15 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
         const hasLocations = Array.isArray(parentOrder.allLocationsInOrder) && parentOrder.allLocationsInOrder.length > 0;
 
         if (hasLocations) {
-            const reqStopIndex = attempt?.stopIndex ?? req.body?.stopIndex ?? req.query?.stopIndex;
             let targetStop = null;
-            if (reqStopIndex !== undefined && reqStopIndex !== null && parentOrder.allLocationsInOrder[parseInt(reqStopIndex, 10)]) {
-                targetStop = parentOrder.allLocationsInOrder[parseInt(reqStopIndex, 10)];
+            if (completedStopIndex !== undefined && completedStopIndex !== null && parentOrder.allLocationsInOrder[parseInt(completedStopIndex, 10)]) {
+                targetStop = parentOrder.allLocationsInOrder[parseInt(completedStopIndex, 10)];
             }
             if (!targetStop) {
-                targetStop = parentOrder.allLocationsInOrder.find(l => l.isFrom === false && !l.isCompleted);
+                targetStop = parentOrder.allLocationsInOrder.find(l => (l.isFrom === false || l.isFrom === 'false') && !l.isCompleted);
+                if (targetStop) {
+                    completedStopIndex = parentOrder.allLocationsInOrder.indexOf(targetStop);
+                }
             }
             if (targetStop) {
                 targetStop.isCompleted = true;
@@ -541,6 +558,7 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
                     targetTask.deliveryPhoto = photoUrl;
                 }
             }
+            parentOrder.markModified('tasks');
         }
 
         if (hasLocations) {
@@ -564,10 +582,10 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
         } else {
             parentOrder.status = isReturn ? 'return_delivering' : 'delivering';
         }
-        await parentOrder.save().catch(() => {});
+        await safeSave(parentOrder, 'parentOrder [delivery-status]');
     }
 
-    const trackData = await DeliveryOrderTracker.getOrderTrack(orderId).catch(() => null);
+    const trackData = await DeliveryOrderTracker.getOrderTrack(parentOrder || orderId).catch(() => null);
 
     if (trackData) {
         allDone = trackData.isAllCompleted;
@@ -580,7 +598,7 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
             session.state = 'COMPLETED';
             session.subState = 'NONE';
             session.version = (session.version || 0) + 1;
-            await session.save().catch(() => {});
+            await safeSave(session, 'session [completed]');
         }
 
         if (parentOrder) {
@@ -593,7 +611,7 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
                         if (photoUrl) {
                             parentOrder.deliveryPhoto = photoUrl;
                             parentOrder.itemPhotoAfter = photoUrl;
-                            await parentOrder.save().catch(() => { });
+                            await safeSave(parentOrder, 'parentOrder [delivery-photo]');
                         }
                     }
                 } catch (_) { }
@@ -615,7 +633,7 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
 
         try {
             await DeliveryEventBus.emitDeliveryCompleted(io, session, orderId, traceId);
-            await DeliveryEventBus.emitDeliveryApproved(io, session, attempt, orderId, true, extraRooms, trackData, traceId);
+            await DeliveryEventBus.emitDeliveryApproved(io, session, attempt, orderId, true, extraRooms, trackData, traceId, completedStopIndex);
         } catch (_) {}
 
         return {
@@ -623,6 +641,7 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
             isApproved: true,
             isPickup: false,
             isCompleted: true,
+            completedStopIndex: completedStopIndex != null ? Number(completedStopIndex) : undefined,
             phase: 'COMPLETED',
             track: trackData,
             currentStopIndex: trackData?.currentStopIndex ?? 0,
@@ -635,7 +654,7 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
             session.subState = 'NONE';
             session.phase = trackData?.phase || 'DELIVERY';
             session.version = (session.version || 0) + 1;
-            await session.save().catch(() => {});
+            await safeSave(session, 'session [partial-delivery]');
         }
 
         const custId = parentOrder?.clientId || parentOrder?.userId || session?.customerId;
@@ -649,7 +668,7 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
         }
 
         try {
-            await DeliveryEventBus.emitDeliveryApproved(io, session, attempt, orderId, false, extraRooms, trackData, traceId);
+            await DeliveryEventBus.emitDeliveryApproved(io, session, attempt, orderId, false, extraRooms, trackData, traceId, completedStopIndex);
         } catch (_) {}
 
         return {
@@ -657,6 +676,7 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
             isApproved: true,
             isPickup: false,
             isCompleted: false,
+            completedStopIndex: completedStopIndex != null ? Number(completedStopIndex) : undefined,
             phase: session?.phase || 'DELIVERY',
             track: trackData,
             currentStopIndex: trackData?.currentStopIndex ?? 0,
@@ -730,9 +750,9 @@ exports.reviewAttempt = async (req, res) => {
                     subState: 'NONE',
                     expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000)
                 });
-                await session.save().catch(() => {});
+                try { await session.save(); } catch(e) { logger.error(`[PoD] new session save error [${traceId}]:`, e.message); }
                 parentOrder.activeDeliverySessionId = newSessionId;
-                await parentOrder.save().catch(() => {});
+                try { await parentOrder.save(); } catch(e) { logger.error(`[PoD] parentOrder activeSession save error [${traceId}]:`, e.message); }
             }
         }
 
@@ -745,13 +765,13 @@ exports.reviewAttempt = async (req, res) => {
             if (attempt) {
                 attempt.state = 'REJECTED';
                 attempt.rejectionReason = 'OTHER';
-                await attempt.save().catch(() => {});
+                try { await attempt.save(); } catch(e) { logger.error(`[PoD] attempt reject save error [${traceId}]:`, e.message); }
             }
 
             if (session) {
                 session.subState = 'WAITING_DRIVER_UPLOAD';
                 session.version = (session.version || 0) + 1;
-                await session.save().catch(() => {});
+                try { await session.save(); } catch(e) { logger.error(`[PoD] session rejection save error [${traceId}]:`, e.message); }
             }
 
             // Update order status to 'review'
@@ -770,7 +790,7 @@ exports.reviewAttempt = async (req, res) => {
         if (decision === 'YES' || !decision) {
             if (attempt) {
                 attempt.state = 'APPROVED';
-                await attempt.save().catch(() => {});
+                try { await attempt.save(); } catch(e) { logger.error(`[PoD] attempt approval save error [${traceId}]:`, e.message); }
             }
 
             let result = null;
@@ -1071,6 +1091,7 @@ exports.getSessionStatus = async (req, res) => {
             attempt: latestAttempt ? {
                 attemptId: latestAttempt.attemptId,
                 attemptNumber: latestAttempt.attemptNumber,
+                stopIndex: latestAttempt.stopIndex,
                 phase: latestAttemptPhase,
                 state: latestAttemptState,
                 photoUrl: latestAttempt.photo?.cdnUrl || (latestAttempt.photo?.objectKey ? `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME || 'dvhjawii0'}/image/upload/${latestAttempt.photo.objectKey}` : null),
