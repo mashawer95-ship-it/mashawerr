@@ -191,12 +191,13 @@ class DeliveryEventBus {
 
         const roomsSet = new Set([
             `user:${session.driverId}`,
+            session.customerId ? `user:${session.customerId}` : null,
             `order:${session.orderId}`,
             `order:${orderId}`,
             `trip:${session.orderId}`,
             `trip:${orderId}`,
             ...(trackData?.extraRooms || [])
-        ]);
+        ].filter(Boolean));
 
         return this._dispatch({
             sessionId: session.sessionId,
@@ -208,6 +209,7 @@ class DeliveryEventBus {
                 attemptId: attempt?.attemptId,
                 isApproved: true,
                 isPickup: true,
+                status: allPickupsDone ? 'delivering' : 'processing',
                 completedPhase: 'PICKUP',
                 completedStopIndex: completedStopIndex != null ? Number(completedStopIndex) : undefined,
                 subState: session.subState,
@@ -227,6 +229,7 @@ class DeliveryEventBus {
                     'order:pickup_approved',
                     'order:pod_approved',
                     'order:track_updated',
+                    'order:status_changed',
                 ],
             },
             fcmConfig: {
@@ -263,12 +266,13 @@ class DeliveryEventBus {
     static async emitDeliveryApproved(io, session, attempt, orderId, allTasksCompleted = false, extraRooms = [], trackData = null, traceId = null, completedStopIndex = null) {
         const roomsSet = new Set([
             `user:${session.driverId}`,
+            session.customerId ? `user:${session.customerId}` : null,
             `order:${session.orderId}`,
             `order:${orderId}`,
             `trip:${session.orderId}`,
             `trip:${orderId}`,
             ...extraRooms.filter(Boolean)
-        ]);
+        ].filter(Boolean));
 
         const currentStop = trackData?.currentStop;
         const currentStopIndex = trackData?.currentStopIndex ?? (allTasksCompleted ? (trackData?.totalStops ? trackData.totalStops - 1 : 0) : 0);
@@ -290,6 +294,7 @@ class DeliveryEventBus {
                 attemptId: attempt?.attemptId,
                 isApproved: true,
                 isPickup: false,
+                status: allTasksCompleted ? 'completed' : 'delivering',
                 completedPhase: 'DELIVERY',
                 completedStopIndex: completedStopIndex != null ? Number(completedStopIndex) : undefined,
                 allTasksCompleted: allTasksCompleted,
@@ -309,6 +314,7 @@ class DeliveryEventBus {
                     'order:delivery_approved',
                     'order:pod_approved',
                     'order:track_updated',
+                    'order:status_changed',
                 ],
             },
             fcmConfig: {
