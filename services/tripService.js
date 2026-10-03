@@ -68,16 +68,18 @@ async function startTrip(tripId, driverId, origin, destination, options = {}) {
     }
 
     if (lockAcquired !== 'OK') {
-        await sleep(300);
-        let cached = null;
-        for (const tid of allTripIds) {
-            cached = await redisGet(`active_route:${tid}`);
-            if (cached) break;
-        }
-        if (cached) {
-            metrics.increment('duplicate_requests_prevented');
-            const data = typeof cached === 'string' ? JSON.parse(cached) : cached;
-            return { ...data, tripId: primaryTripId, driverId, fromCache: true };
+        for (let attempt = 0; attempt < 5; attempt++) {
+            await sleep(300);
+            let cached = null;
+            for (const tid of allTripIds) {
+                cached = await redisGet(`active_route:${tid}`);
+                if (cached) break;
+            }
+            if (cached) {
+                metrics.increment('duplicate_requests_prevented');
+                const data = typeof cached === 'string' ? JSON.parse(cached) : cached;
+                return { ...data, tripId: primaryTripId, driverId, fromCache: true };
+            }
         }
         throw new Error('Trip start in progress — retry in 1s');
     }
@@ -108,7 +110,7 @@ async function startTrip(tripId, driverId, origin, destination, options = {}) {
                     { lat: activeDest.lat, lng: activeDest.lng }
                 );
 
-                const ORIGIN_CACHE_MAX_M = parseInt(process.env.ORIGIN_DRIFT_CACHE_MAX_M || '5', 10);
+                const ORIGIN_CACHE_MAX_M = parseInt(process.env.ORIGIN_DRIFT_CACHE_MAX_M || '25', 10);
 
                 if (originDrift < ORIGIN_CACHE_MAX_M && destDrift < 15) {
                     logger.info(`[Trip] Active Route Cache HIT for tripId=${primaryTripId} (originDrift=${originDrift.toFixed(1)}m, destDrift=${destDrift.toFixed(1)}m)`);
@@ -318,7 +320,9 @@ async function processLocationUpdate(tripId, driverId, location, heading, io, op
     await markRerouted(primaryTripId);
 
     try {
-        const dest = trip.destination || { lat: driverLat, lng: driverLng };
+        const dest = (options && options.destination && options.destination.lat != null && options.destination.lng != null)
+            ? options.destination
+            : (trip.destination || { lat: driverLat, lng: driverLng });
         const params = buildRouteParams({ lat: driverLat, lng: driverLng }, dest, { heading, speed });
         const cacheKey = buildRouteCacheKey(params);
 
@@ -379,6 +383,7 @@ async function processLocationUpdate(tripId, driverId, location, heading, io, op
                 legs:            newRoute.legs,
                 lastRerouteAt:   new Date(),
                 routeVersion:    newVersion,
+                destination:     dest,
             });
         }
 
@@ -388,6 +393,7 @@ async function processLocationUpdate(tripId, driverId, location, heading, io, op
         trip.distanceMeters  = newRoute.distanceMeters;
         trip.durationSeconds = newRoute.durationSeconds;
         trip.routeVersion    = newVersion;
+        trip.destination     = dest;
 
         for (const tid of allTripIds) {
             await redisSet(`trip:${tid}`, trip, activeTtl);

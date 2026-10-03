@@ -113,8 +113,11 @@ const updateDriverLocation = asyncHandler(async (req, res) => {
         }).exec();
     } catch (_) {}
 
+    const destination = req.body.destination || (req.body.destinationLat != null && req.body.destinationLng != null ? { lat: Number(req.body.destinationLat), lng: Number(req.body.destinationLng) } : null);
+
     const result = await processLocationUpdate(tripId, driverId, location, heading, io, {
         forceReroute: forceReroute === true || forceReroute === 'true',
+        destination,
     });
 
     res.status(200).json({

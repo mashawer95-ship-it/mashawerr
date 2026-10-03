@@ -168,6 +168,7 @@ function registerTrackingSocket(io) {
                 // If client requested forceReroute or reported off-route, recalculate route immediately
                 if (payload.forceReroute === true || payload.isOffRoute === true) {
                     try {
+                        const destination = payload.destination || (payload.destinationLat != null && payload.destinationLng != null ? { lat: Number(payload.destinationLat), lng: Number(payload.destinationLng) } : null);
                         const { processLocationUpdate: tripReroute } = require('../services/tripService');
                         tripReroute(
                             payload.tripId,
@@ -179,7 +180,7 @@ function registerTrackingSocket(io) {
                             },
                             payload.heading != null ? Number(payload.heading) : null,
                             io,
-                            { forceReroute: true }
+                            { forceReroute: true, destination }
                         ).catch(err => logger.error(`[Tracking] Socket forceReroute error: ${err.message}`));
                     } catch (rerouteErr) {
                         logger.error(`[Tracking] Error triggering reroute from socket: ${rerouteErr.message}`);
@@ -209,6 +210,7 @@ function registerTrackingSocket(io) {
                 return;
             }
             try {
+                const destination = payload.destination || (payload.destinationLat != null && payload.destinationLng != null ? { lat: Number(payload.destinationLat), lng: Number(payload.destinationLng) } : null);
                 const { processLocationUpdate: tripReroute } = require('../services/tripService');
                 const result = await tripReroute(
                     payload.tripId,
@@ -220,7 +222,7 @@ function registerTrackingSocket(io) {
                     },
                     payload.heading != null ? Number(payload.heading) : null,
                     io,
-                    { forceReroute: true }
+                    { forceReroute: true, destination }
                 );
                 socket.emit('rerouteResult', { success: true, rerouted: result.rerouted, data: result });
             } catch (err) {
