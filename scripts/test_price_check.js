@@ -17,7 +17,7 @@ const mockOrder = {
 
 const html = getDeliveryOrderCompletionEmailHtml(mockOrder, { firstName: 'مبتكر' });
 console.log('Price test check:');
-console.log('Includes 2.500 د.ك:', html.includes('2.500 د.ك'));
-console.log('Includes 2.000 د.ك (Total):', html.includes('2.000 د.ك'));
+console.log('Includes 2.50 ج.م:', html.includes('2.50 ج.م'));
+console.log('Includes 2.00 ج.م (Total):', html.includes('2.00 ج.م'));
 console.log('Includes #C19418:', html.includes('#C19418'));
 console.log('Includes Emoji 🎉:', html.includes('🎉'));

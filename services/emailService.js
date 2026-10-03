@@ -376,25 +376,28 @@ const sendVerificationLinkEmail = async (to, token, userName) => {
 };
 
 /**
- * Helper to normalize any numeric price (in Fils or KD) to KD (KWD) with 3 decimals
+ * Helper to normalize any numeric price (in Fils or EGP) to standard currency amount (EGP)
+ * In database / controllers:
+ * - Values in fils (e.g. 5000, 10000, 25000) are >= 500 (minimum delivery fare is 5000 fils) -> divide by 1000.
+ * - Values already in EGP/major unit (e.g. 5, 10, 25.5, 120) are < 500 -> keep as is.
  */
 const normalizeToKD = (val) => {
     if (val == null || isNaN(val)) return 0;
     let num = Number(val);
     if (num <= 0) return 0;
-    // Values in fils: divide by 1000. If already in KD (e.g. < 50 with fractional decimal), keep as KD
-    if (num < 50 && num !== Math.round(num)) {
-        return Number(num.toFixed(3));
+    // Values in fils (>= 500): divide by 1000. Values already in EGP/KD (< 500): keep as is
+    if (num >= 500) {
+        return Number((num / 1000).toFixed(3));
     }
-    return Number((num / 1000).toFixed(3));
+    return Number(num.toFixed(3));
 };
 
 /**
- * Format currency nicely for emails (KD or Fils) with thousands separators and 3 decimals (identical to CurrencyFormatter.formatFils)
+ * Format currency nicely for emails (EGP/ج.م) with thousands separators and 2 decimals
  */
 const formatKD = (val, unit = 'ج.م') => {
-    const kd = normalizeToKD(val);
-    const str = kd.toFixed(2);
+    const amount = normalizeToKD(val);
+    const str = amount.toFixed(2);
     const parts = str.split('.');
     const intPart = parts[0].replace(/(\d{1,3})(?=(\d{3})+(?!\d))/g, '$1,');
     return `${intPart}.${parts[1]} ${unit}`;
