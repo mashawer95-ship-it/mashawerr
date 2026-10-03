@@ -43,6 +43,8 @@ const {
     cleanupTrip,
 } = require('../redis/trackingRedis');
 
+const { resolveOrderIds } = require('../utils/orderIdResolver');
+const { redisGet } = require('../config/redis');
 const logger = require('../utils/logger');
 
 /** Minimum movement in metres before we broadcast an update. */
@@ -216,12 +218,18 @@ async function processLocationUpdate(socket, nsp, payload) {
         return { broadcasted: false, reason: shouldBroadcast ? 'throttled' : 'below_threshold' };
     }
 
-    // ── Step 5: Broadcast to trip room ────────────────────────────────────────
+    const idInfo = await resolveOrderIds(tripId);
+    const primaryTripId = idInfo.rawId || String(tripId).trim();
+    const allTripIds = idInfo.allIds.length > 0 ? idInfo.allIds : [primaryTripId];
+
+    // ── Step 5: Broadcast to trip rooms across all resolved IDs ─────────────────
     const minPayload = buildMinimalPayload({ driverId, ...newLoc });
     const fullLocationPayload = {
         driverId: driverId,
-        orderId: tripId,
-        tripId: tripId,
+        orderId: primaryTripId,
+        tripId: primaryTripId,
+        numericOrderId: idInfo.numericId ? Number(idInfo.numericId) : null,
+        mongoOrderId: idInfo.mongoId || null,
         location: {
             lat: newLoc.lat,
             lng: newLoc.lng,
@@ -240,24 +248,30 @@ async function processLocationUpdate(socket, nsp, payload) {
         timestamp: newLoc.timestamp
     };
 
-    // Emit to all customers in this trip's room (excluding the driver socket itself)
-    nsp.to(tripRoom(tripId)).emit('driverLocationUpdated', fullLocationPayload);
-    nsp.to(tripRoom(tripId)).emit('trip.driver.location', fullLocationPayload);
-    nsp.to(tripRoom(tripId)).emit('updateDriverLocation', fullLocationPayload);
-
-    // Broadcast to customer app via default namespace order room
+    // Emit to all customers in this trip's rooms
     const globalIo = nsp.server || socket.server || socket.client?.conn?.server;
-    if (globalIo) {
-        globalIo.to(`order:${tripId}`).emit('driverLocationUpdated', fullLocationPayload);
-        globalIo.to(`order:${tripId}`).emit('driver:location:updated', fullLocationPayload);
-        globalIo.to(`order:${tripId}`).emit('trip.driver.location', fullLocationPayload);
-        globalIo.to(`trip:${tripId}`).emit('driverLocationUpdated', fullLocationPayload);
-        globalIo.of('/tracking').to(tripRoom(tripId)).emit('driverLocationUpdated', fullLocationPayload);
+    for (const tid of allTripIds) {
+        nsp.to(tripRoom(tid)).emit('driverLocationUpdated', fullLocationPayload);
+        nsp.to(tripRoom(tid)).emit('trip.driver.location', fullLocationPayload);
+        nsp.to(tripRoom(tid)).emit('updateDriverLocation', fullLocationPayload);
+        nsp.to(`trip:${tid}`).emit('driverLocationUpdated', fullLocationPayload);
+        nsp.to(`order:${tid}`).emit('driverLocationUpdated', fullLocationPayload);
+
+        if (globalIo) {
+            globalIo.to(`order:${tid}`).emit('driverLocationUpdated', fullLocationPayload);
+            globalIo.to(`order:${tid}`).emit('driver:location:updated', fullLocationPayload);
+            globalIo.to(`order:${tid}`).emit('trip.driver.location', fullLocationPayload);
+            globalIo.to(`trip:${tid}`).emit('driverLocationUpdated', fullLocationPayload);
+            if (globalIo.of) {
+                globalIo.of('/tracking').to(tripRoom(tid)).emit('driverLocationUpdated', fullLocationPayload);
+                globalIo.of('/tracking').to(`order:${tid}`).emit('driverLocationUpdated', fullLocationPayload);
+            }
+        }
     }
 
     markBroadcast(driverId);
 
-    logger.debug(`[Tracking] Driver ${driverId} → trip ${tripId}: broadcast lat=${newLoc.lat}, lng=${newLoc.lng}`);
+    logger.debug(`[Tracking] Driver ${driverId} → trip ${primaryTripId}: broadcast lat=${newLoc.lat}, lng=${newLoc.lng}`);
 
     return { broadcasted: true };
 }
@@ -331,7 +345,15 @@ async function driverEndTrip(socket, nsp, tripId) {
  * @param {string} driverId
  */
 async function customerSubscribeToTrip(socket, tripId, driverId) {
-    socket.join(tripRoom(tripId));
+    const idInfo = await resolveOrderIds(tripId);
+    const primaryTripId = idInfo.rawId || String(tripId).trim();
+    const allTripIds = idInfo.allIds.length > 0 ? idInfo.allIds : [primaryTripId];
+
+    for (const tid of allTripIds) {
+        socket.join(tripRoom(tid));
+        socket.join(`trip:${tid}`);
+        socket.join(`order:${tid}`);
+    }
 
     // Send current driver location snapshot immediately
     let lastLoc = await getDriverLocation(driverId);
@@ -354,8 +376,10 @@ async function customerSubscribeToTrip(socket, tripId, driverId) {
     if (lastLoc && lastLoc.lat != null && lastLoc.lng != null) {
         const payload = {
             driverId,
-            tripId,
-            orderId: tripId,
+            tripId: primaryTripId,
+            orderId: primaryTripId,
+            numericOrderId: idInfo.numericId ? Number(idInfo.numericId) : null,
+            mongoOrderId: idInfo.mongoId || null,
             location: {
                 lat: lastLoc.lat,
                 lng: lastLoc.lng,
@@ -377,12 +401,36 @@ async function customerSubscribeToTrip(socket, tripId, driverId) {
         socket.emit('trip.driver.location', payload);
     }
 
-    logger.debug(`[Tracking] Customer ${socket.user?.id} subscribed to trip ${tripId}`);
+    logger.debug(`[Tracking] Customer ${socket.user?.id} subscribed to trip ${primaryTripId}`);
 
-    // Send the current route immediately if available
+    // Send the current active route immediately if available across allTripIds
     try {
         const { getTrip } = require('./tripService');
-        const trip = await getTrip(tripId);
+        let trip = null;
+        for (const tid of allTripIds) {
+            trip = await getTrip(tid);
+            if (trip && trip.encodedPolyline) break;
+        }
+
+        if (!trip || !trip.encodedPolyline) {
+            for (const tid of allTripIds) {
+                const activeRaw = await redisGet(`active_route:${tid}`);
+                if (activeRaw) {
+                    const parsed = typeof activeRaw === 'string' ? JSON.parse(activeRaw) : activeRaw;
+                    if (parsed && parsed.encodedPolyline) {
+                        trip = {
+                            tripId: primaryTripId,
+                            encodedPolyline: parsed.encodedPolyline,
+                            distanceMeters: parsed.distanceMeters,
+                            durationSeconds: parsed.durationSeconds,
+                            routeVersion: parsed.routeVersion,
+                            destination: parsed.destination,
+                        };
+                        break;
+                    }
+                }
+            }
+        }
         
         if (trip && trip.encodedPolyline) {
             const routePayload = {
@@ -391,24 +439,28 @@ async function customerSubscribeToTrip(socket, tripId, driverId) {
                 checksum: trip.routeChecksum || '',
                 generatedAt: Date.now(),
                 source: trip.routeSource || 'CACHE',
-                reason: 'initial_sync',
-                tripId: trip.tripId,
+                reason: 'subscription_snapshot',
+                tripId: primaryTripId,
+                numericOrderId: idInfo.numericId ? Number(idInfo.numericId) : null,
+                mongoOrderId: idInfo.mongoId || null,
                 encodedPolyline: trip.encodedPolyline,
                 distanceMeters: trip.distanceMeters || 0,
                 durationSeconds: trip.durationSeconds || 0,
+                destination: trip.destination || null,
                 trafficSegments: trip.trafficSegments || [],
                 trafficDataVersion: trip.trafficDataVersion || 1,
+                isLiveDriverRoute: true,
             };
             socket.emit('trip.route.updated', routePayload);
             socket.emit('routeUpdated', routePayload);
             socket.emit('route_updated', routePayload);
-            logger.debug(`[Tracking] Sent route snapshot to customer ${socket.user?.id} for trip ${tripId}`);
+            logger.debug(`[Tracking] Sent active route snapshot to customer ${socket.user?.id} for trip ${primaryTripId}`);
         }
     } catch (err) {
         logger.error(`[Tracking] Error fetching trip route for subscription: ${err.message}`);
     }
 
-    socket.emit('subscribed', { tripId, driverId, hasLocation: !!lastLoc });
+    socket.emit('subscribed', { tripId: primaryTripId, driverId, hasLocation: !!lastLoc });
 }
 
 /**

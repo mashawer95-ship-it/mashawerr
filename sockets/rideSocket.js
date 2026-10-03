@@ -26,6 +26,7 @@
 
 const logger = require('../utils/logger');
 const { getTrip, getDriverLocation } = require('../services/tripService');
+const { resolveOrderIds } = require('../utils/orderIdResolver');
 const { socketAuthMiddleware } = require('../middlewares/socketAuth');
 
 /**
@@ -49,14 +50,20 @@ function registerRideSocket(io) {
                 return;
             }
 
-            const room = `trip:${tripId}`;
-            socket.join(room);
+            const idInfo = await resolveOrderIds(tripId);
+            const primaryTripId = idInfo.rawId || String(tripId).trim();
+            const allTripIds = idInfo.allIds.length > 0 ? idInfo.allIds : [primaryTripId];
 
-            logger.info(`[RideSocket] ${socket.id} (role=${role}) joined room: ${room}`);
+            for (const tid of allTripIds) {
+                socket.join(`trip:${tid}`);
+                socket.join(`order:${tid}`);
+            }
+
+            logger.info(`[RideSocket] ${socket.id} (role=${role}) joined rooms: ${allTripIds.map(t => 'trip:' + t).join(', ')}`);
 
             // Send acknowledgement with current trip state (for reconnect scenarios)
             try {
-                const trip = await getTrip(tripId);
+                const trip = await getTrip(primaryTripId);
                 let driverLocation = null;
                 if (trip && trip.driverId) {
                     driverLocation = await getDriverLocation(trip.driverId);

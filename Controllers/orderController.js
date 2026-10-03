@@ -24,6 +24,7 @@ const { getOrCreatePricing, kdToFils } = require('../middlewares/Pricing');
 const { redisGet, redisSet } = require('../config/redis');
 const logger = require('../utils/logger');
 const metrics = require('../utils/metrics');
+const { resolveOrderIds } = require('../utils/orderIdResolver');
 const crypto = require('crypto');
 const Redis = require('ioredis');
 const zlib = require('zlib');
@@ -1329,79 +1330,67 @@ const createOrder = asyncHandler(async (req, res) => {
  * @access Private (Client, Representative, or Admin)
  */
 const getOrderRoute = asyncHandler(async (req, res) => {
-    const rawId = String(req.params.id || '').trim();
-    const numId = !isNaN(Number(rawId)) ? Number(rawId) : -1;
-    const isValidObjId = mongoose.isValidObjectId(rawId);
+    const rawInput = req.params.id;
+    const idInfo = await resolveOrderIds(rawInput);
+    const allIds = idInfo.allIds;
 
-    if (numId <= 0 && !isValidObjId) {
+    if (!allIds || allIds.length === 0) {
         return res.status(400).json({ message: 'orderId must be a positive integer or valid ObjectId' });
     }
 
-    let id = numId > 0 ? numId : null;
-    if (!id && isValidObjId) {
-        const o = await Order.findById(rawId).select('orderId').lean();
-        if (o) id = o.orderId;
-    }
-    if (!id) {
-        return res.status(404).json({ message: 'Order not found' });
-    }
-
-    // 🚀 Check active live trip route from Redis or Mongo Trip first
+    // 🚀 1. Check active live trip route from Redis or Mongo Trip first across allIds
     try {
-        const activeRouteRaw = await redisGet(`active_route:${id}`);
-        if (activeRouteRaw) {
-            const active = typeof activeRouteRaw === 'string' ? JSON.parse(activeRouteRaw) : activeRouteRaw;
-            if (active && active.encodedPolyline) {
-                return res.status(200).json({
-                    schemaVersion: 1,
-                    encodedPolyline: active.encodedPolyline,
-                    distanceMeters: active.distanceMeters || 0,
-                    durationSeconds: active.durationSeconds || 0,
-                    routeVersion: active.routeVersion || 1,
-                    compression: 'none'
-                });
+        for (const tid of allIds) {
+            const activeRouteRaw = await redisGet(`active_route:${tid}`);
+            if (activeRouteRaw) {
+                const active = typeof activeRouteRaw === 'string' ? JSON.parse(activeRouteRaw) : activeRouteRaw;
+                if (active && active.encodedPolyline) {
+                    return res.status(200).json({
+                        schemaVersion: 1,
+                        encodedPolyline: active.encodedPolyline,
+                        distanceMeters: active.distanceMeters || 0,
+                        durationSeconds: active.durationSeconds || 0,
+                        routeVersion: active.routeVersion || 1,
+                        compression: 'none',
+                        isLiveDriverRoute: true,
+                        destination: active.destination || null,
+                    });
+                }
             }
         }
 
         const { Trip } = require('../models/Trip');
-        const activeTrip = await Trip.findById(String(id)).lean();
-        if (activeTrip && activeTrip.encodedPolyline) {
-            return res.status(200).json({
-                schemaVersion: 1,
-                encodedPolyline: activeTrip.encodedPolyline,
-                distanceMeters: activeTrip.distanceMeters || 0,
-                durationSeconds: activeTrip.durationSeconds || 0,
-                routeVersion: activeTrip.routeVersion || 1,
-                compression: 'none'
-            });
+        for (const tid of allIds) {
+            const activeTrip = await Trip.findById(tid).lean();
+            if (activeTrip && activeTrip.encodedPolyline) {
+                return res.status(200).json({
+                    schemaVersion: 1,
+                    encodedPolyline: activeTrip.encodedPolyline,
+                    distanceMeters: activeTrip.distanceMeters || 0,
+                    durationSeconds: activeTrip.durationSeconds || 0,
+                    routeVersion: activeTrip.routeVersion || 1,
+                    compression: 'none',
+                    isLiveDriverRoute: true,
+                    destination: activeTrip.destination || null,
+                });
+            }
         }
     } catch (activeErr) {
         logger.error(`[OrderController] Active route lookup error: ${activeErr.message}`);
     }
 
-    // Check Redis Shared Cache first
-    const cacheKey = `order_route:${id}`;
-    let cachedRoute = null;
-    try {
-        cachedRoute = await redisGet(cacheKey);
-    } catch (err) { }
-
-    let routeSnapshot;
-
-    if (cachedRoute) {
-        // Assume security check is needed even if cached, so we must fetch order to verify owner.
-        // Wait, if we fetch order for security, we hit Mongo anyway.
-        // Actually, if we just store clientId and representativeId in the cache payload, we can verify it without Mongo!
+    // 2. Fetch Order document for ownership & fallback
+    let order = null;
+    if (idInfo.numericId) {
+        order = await Order.findOne({ orderId: Number(idInfo.numericId) })
+            .select('clientId representativeId routeSnapshot routeStatus status')
+            .lean();
     }
-
-    // So let's fetch the order directly, it's fast enough. Or we can just include security info in cache.
-    // Let's do a fast lean query for security:
-    const numericId = Number(id);
-    if (isNaN(numericId)) {
-        return res.status(404).json({ message: 'Order not found' });
+    if (!order && idInfo.mongoId) {
+        order = await Order.findById(idInfo.mongoId)
+            .select('clientId representativeId routeSnapshot routeStatus status')
+            .lean();
     }
-
-    const order = await Order.findOne({ orderId: numericId }).select('clientId representativeId routeSnapshot routeStatus').lean();
     if (!order) {
         return res.status(404).json({ message: 'Order not found' });
     }
@@ -1416,6 +1405,30 @@ const getOrderRoute = asyncHandler(async (req, res) => {
         return res.status(403).json({ message: 'Forbidden: You do not have access to this route' });
     }
 
+    // 🛑 If driver is assigned to the order, do NOT serve the static multi-stop customer route to final dropoff!
+    if (order.representativeId) {
+        return res.status(200).json({
+            schemaVersion: 1,
+            encodedPolyline: '',
+            distanceMeters: 0,
+            durationSeconds: 0,
+            routeVersion: 1,
+            compression: 'none',
+            isLiveDriverRoute: false,
+            pendingDriverRoute: true,
+            message: 'Driver route is being established'
+        });
+    }
+
+    // 3. Fallback for unaccepted orders (waiting for driver)
+    const effectiveOrderId = idInfo.numericId || idInfo.mongoId || idInfo.rawId;
+    const cacheKey = `order_route:${effectiveOrderId}`;
+    let cachedRoute = null;
+    try {
+        cachedRoute = await redisGet(cacheKey);
+    } catch (err) { }
+
+    let routeSnapshot;
     if (!order.routeSnapshot || !order.routeSnapshot.encodedPolyline || order.routeStatus === 'FAILED') {
         return res.status(404).json({ message: 'No route available for this order' });
     }

@@ -14,6 +14,7 @@ const { broadcastRoute } = require('./BroadcastService');
 const logger = require('../utils/logger');
 const metrics = require('../utils/metrics');
 const { Trip } = require('../models/Trip');
+const { resolveOrderIds } = require('../utils/orderIdResolver');
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -51,9 +52,12 @@ function buildRouteParams(origin, destination, options = {}) {
  */
 async function startTrip(tripId, driverId, origin, destination, options = {}) {
     const redis = getRedisClient();
+    const idInfo = await resolveOrderIds(tripId);
+    const primaryTripId = idInfo.rawId || String(tripId).trim();
+    const allTripIds = idInfo.allIds.length > 0 ? idInfo.allIds : [primaryTripId];
 
     // ── Step 1: Distributed Lock (SETNX) ───────────────────────────────────────
-    const lockKey = `trip:start:${tripId}`;
+    const lockKey = `trip:start:${primaryTripId}`;
     const lockTtl = parseInt(process.env.TRIP_START_LOCK_TTL_SEC || '10', 10);
     let lockAcquired = null;
 
@@ -65,23 +69,27 @@ async function startTrip(tripId, driverId, origin, destination, options = {}) {
 
     if (lockAcquired !== 'OK') {
         await sleep(300);
-        const cached = await redisGet(`active_route:${tripId}`);
+        let cached = null;
+        for (const tid of allTripIds) {
+            cached = await redisGet(`active_route:${tid}`);
+            if (cached) break;
+        }
         if (cached) {
             metrics.increment('duplicate_requests_prevented');
             const data = typeof cached === 'string' ? JSON.parse(cached) : cached;
-            return { ...data, tripId, driverId, fromCache: true };
+            return { ...data, tripId: primaryTripId, driverId, fromCache: true };
         }
         throw new Error('Trip start in progress — retry in 1s');
     }
 
     try {
         // ── Step 2: Active Route Cache & Drift Check ────────────────────────────
-        // ORIGIN_DRIFT_CACHE_MAX_M is intentionally kept very tight (5 m default).
-        // The old 20 m threshold was causing stale routes to be served when the
-        // driver had moved far enough for the road geometry to differ. Only serve
-        // from cache when the driver is virtually stationary (e.g., refreshing UI
-        // on the same spot) AND the destination hasn't changed.
-        const activeRaw = await redisGet(`active_route:${tripId}`);
+        let activeRaw = null;
+        for (const tid of allTripIds) {
+            activeRaw = await redisGet(`active_route:${tid}`);
+            if (activeRaw) break;
+        }
+
         if (activeRaw && !options.forceRefresh && !options.forceReroute) {
             const active = typeof activeRaw === 'string' ? JSON.parse(activeRaw) : activeRaw;
 
@@ -100,16 +108,13 @@ async function startTrip(tripId, driverId, origin, destination, options = {}) {
                     { lat: activeDest.lat, lng: activeDest.lng }
                 );
 
-                // Tight threshold: only serve cached route if driver has barely moved
-                // (< 5 m) AND destination is identical (< 15 m). This prevents the
-                // "loop" bug where a stale origin causes Google to plan a detour.
                 const ORIGIN_CACHE_MAX_M = parseInt(process.env.ORIGIN_DRIFT_CACHE_MAX_M || '5', 10);
 
                 if (originDrift < ORIGIN_CACHE_MAX_M && destDrift < 15) {
-                    logger.info(`[Trip] Active Route Cache HIT for tripId=${tripId} (originDrift=${originDrift.toFixed(1)}m, destDrift=${destDrift.toFixed(1)}m)`);
+                    logger.info(`[Trip] Active Route Cache HIT for tripId=${primaryTripId} (originDrift=${originDrift.toFixed(1)}m, destDrift=${destDrift.toFixed(1)}m)`);
                     metrics.increment('active_route_cache_hit');
                     return {
-                        tripId,
+                        tripId: primaryTripId,
                         driverId,
                         encodedPolyline: active.encodedPolyline,
                         distanceMeters:  active.distanceMeters,
@@ -123,7 +128,7 @@ async function startTrip(tripId, driverId, origin, destination, options = {}) {
                     };
                 }
 
-                logger.info(`[Trip] Route drifted (originDrift=${originDrift.toFixed(1)}m, destDrift=${destDrift.toFixed(1)}m) for tripId=${tripId} — recalculating route`);
+                logger.info(`[Trip] Route drifted (originDrift=${originDrift.toFixed(1)}m, destDrift=${destDrift.toFixed(1)}m) for tripId=${primaryTripId} — recalculating route`);
                 metrics.increment('origin_drift_reroute');
             }
         }
@@ -134,7 +139,11 @@ async function startTrip(tripId, driverId, origin, destination, options = {}) {
         const routeData = await getRouteFromAllLayers(cacheKey, () => callGoogleRoutesAPI(params));
 
         // ── Step 4: Save Active Route Cache ─────────────────────────────────────
-        const existingTrip = await Trip.findById(tripId).select('routeVersion startedAt').lean();
+        let existingTrip = null;
+        for (const tid of allTripIds) {
+            existingTrip = await Trip.findById(tid).select('routeVersion startedAt').lean();
+            if (existingTrip) break;
+        }
         const newVersion   = (existingTrip?.routeVersion || 0) + 1;
         const activeTtl    = parseInt(process.env.ACTIVE_ROUTE_CACHE_TTL_SEC || '7200', 10);
 
@@ -151,26 +160,30 @@ async function startTrip(tripId, driverId, origin, destination, options = {}) {
             savedAt:         Date.now(),
         };
 
-        await redisSet(`active_route:${tripId}`, activePayload, activeTtl);
+        for (const tid of allTripIds) {
+            await redisSet(`active_route:${tid}`, activePayload, activeTtl);
+        }
 
         // ── Step 5: Save MongoDB & Redis Trip document ───────────────────────────
-        await Trip.findByIdAndUpdate(tripId, {
-            _id:              tripId,
-            driverId,
-            status:           'active',
-            encodedPolyline:  routeData.encodedPolyline,
-            distanceMeters:   routeData.distanceMeters,
-            durationSeconds:  routeData.durationSeconds,
-            routeToken:       routeData.routeToken || null,
-            legs:             routeData.legs       || [],
-            origin,
-            destination,
-            startedAt:        existingTrip?.startedAt || new Date(),
-            routeVersion:     newVersion,
-        }, { upsert: true, new: true });
+        for (const tid of allTripIds) {
+            await Trip.findByIdAndUpdate(tid, {
+                _id:              tid,
+                driverId,
+                status:           'active',
+                encodedPolyline:  routeData.encodedPolyline,
+                distanceMeters:   routeData.distanceMeters,
+                durationSeconds:  routeData.durationSeconds,
+                routeToken:       routeData.routeToken || null,
+                legs:             routeData.legs       || [],
+                origin,
+                destination,
+                startedAt:        existingTrip?.startedAt || new Date(),
+                routeVersion:     newVersion,
+            }, { upsert: true, new: true });
+        }
 
         const tripData = {
-            tripId,
+            tripId: primaryTripId,
             driverId,
             encodedPolyline:  routeData.encodedPolyline,
             decodedPolyline:  routeData.polylinePoints || decodePolyline(routeData.encodedPolyline),
@@ -187,7 +200,9 @@ async function startTrip(tripId, driverId, origin, destination, options = {}) {
             cacheLayer:       routeData.cacheLayer,
         };
 
-        await redisSet(`trip:${tripId}`, tripData, activeTtl);
+        for (const tid of allTripIds) {
+            await redisSet(`trip:${tid}`, tripData, activeTtl);
+        }
 
         // 🚀 Broadcast route update via Socket.IO to customer & driver rooms
         const io = options.io || (options.req && options.req.app ? options.req.app.get('io') : null);
@@ -195,7 +210,9 @@ async function startTrip(tripId, driverId, origin, destination, options = {}) {
             try {
                 broadcastRoute(tripData, options.reason || 'start_trip', io);
                 const socketPayload = {
-                    tripId,
+                    tripId: primaryTripId,
+                    numericOrderId: idInfo.numericId ? Number(idInfo.numericId) : null,
+                    mongoOrderId: idInfo.mongoId || null,
                     encodedPolyline:  routeData.encodedPolyline,
                     distanceMeters:   routeData.distanceMeters,
                     durationSeconds:  routeData.durationSeconds,
@@ -210,10 +227,16 @@ async function startTrip(tripId, driverId, origin, destination, options = {}) {
                     distanceChanged:  true,
                     fromCache:        routeData.fromCache,
                 };
-                io.to(`trip:${tripId}`).emit('routeUpdated', socketPayload);
-                io.to(`order:${tripId}`).emit('routeUpdated', socketPayload);
-                io.of('/ride').to(`trip:${tripId}`).emit('routeUpdated', socketPayload);
-                io.of('/tracking').to(`trip:${tripId}`).emit('routeUpdated', socketPayload);
+
+                for (const tid of allTripIds) {
+                    io.to(`trip:${tid}`).emit('routeUpdated', socketPayload);
+                    io.to(`order:${tid}`).emit('routeUpdated', socketPayload);
+                    if (io.of) {
+                        io.of('/ride').to(`trip:${tid}`).emit('routeUpdated', socketPayload);
+                        io.of('/tracking').to(`trip:${tid}`).emit('routeUpdated', socketPayload);
+                        io.of('/tracking').to(`order:${tid}`).emit('routeUpdated', socketPayload);
+                    }
+                }
             } catch (broadcastErr) {
                 logger.error(`[Trip] Broadcast error in startTrip: ${broadcastErr.message}`);
             }
@@ -231,26 +254,39 @@ async function startTrip(tripId, driverId, origin, destination, options = {}) {
 /**
  * Handle location update and trigger rerouting if off route.
  * @param {string} tripId
- * @param {number} driverLat
- * @param {number} driverLng
+ * @param {string} driverId
+ * @param {object} location
+ * @param {number} [heading]
  * @param {object} [io]
- * @param {object} [context]
+ * @param {object} [options]
  */
 async function processLocationUpdate(tripId, driverId, location, heading, io, options = {}) {
+    const idInfo = await resolveOrderIds(tripId);
+    const primaryTripId = idInfo.rawId || String(tripId).trim();
+    const allTripIds = idInfo.allIds.length > 0 ? idInfo.allIds : [primaryTripId];
+
     const driverLat = location.lat;
     const driverLng = location.lng;
     const speed = location.speed != null ? Number(location.speed) : null;
     const forceReroute = options.forceReroute === true;
 
-    let trip = await redisGet(`trip:${tripId}`);
+    let trip = null;
+    for (const tid of allTripIds) {
+        trip = await redisGet(`trip:${tid}`);
+        if (trip) break;
+    }
+
     if (!trip) {
-        const mongoTrip = await Trip.findById(tripId).lean();
-        if (mongoTrip) {
-            trip = {
-                ...mongoTrip,
-                tripId: mongoTrip._id,
-                decodedPolyline: mongoTrip.encodedPolyline ? decodePolyline(mongoTrip.encodedPolyline) : [],
-            };
+        for (const tid of allTripIds) {
+            const mongoTrip = await Trip.findById(tid).lean();
+            if (mongoTrip) {
+                trip = {
+                    ...mongoTrip,
+                    tripId: mongoTrip._id,
+                    decodedPolyline: mongoTrip.encodedPolyline ? decodePolyline(mongoTrip.encodedPolyline) : [],
+                };
+                break;
+            }
         }
     }
 
@@ -262,38 +298,35 @@ async function processLocationUpdate(tripId, driverId, location, heading, io, op
         ? trip.decodedPolyline
         : decodePolyline(trip.encodedPolyline);
 
-    const { isOffRoute, isImmediate, distanceFromRoute } = checkOffRoute(tripId, { lat: driverLat, lng: driverLng, heading, speed }, routePoints);
+    const { isOffRoute, isImmediate, distanceFromRoute } = checkOffRoute(primaryTripId, { lat: driverLat, lng: driverLng, heading, speed }, routePoints);
 
     const OFF_ROUTE_M = parseInt(process.env.OFF_ROUTE_THRESHOLD_M || '35', 10);
 
-    // FIX: Only return early if NEITHER forceReroute NOR isOffRoute (wrong direction / opposite heading) is true!
     if (!forceReroute && !isOffRoute && distanceFromRoute < OFF_ROUTE_M) {
         return { isOffRoute: false, rerouted: false, distanceFromRoute };
     }
 
-    const cooldownActive = await isCooldownActive(tripId);
+    const cooldownActive = await isCooldownActive(primaryTripId);
 
     if (!forceReroute && cooldownActive && !isImmediate) {
         metrics.increment('reroute_cooldown_blocked');
-        logger.info(`[Reroute] ${tripId} blocked by cooldown — ${distanceFromRoute.toFixed(0)}m off route (wrongDirection=${isOffRoute})`);
+        logger.info(`[Reroute] ${primaryTripId} blocked by cooldown — ${distanceFromRoute.toFixed(0)}m off route (wrongDirection=${isOffRoute})`);
         return { isOffRoute: true, rerouted: false, distanceFromRoute, cooldownBlocked: true };
     }
 
     // Set cooldown before calling API
-    await markRerouted(tripId);
+    await markRerouted(primaryTripId);
 
     try {
         const dest = trip.destination || { lat: driverLat, lng: driverLng };
         const params = buildRouteParams({ lat: driverLat, lng: driverLng }, dest, { heading, speed });
         const cacheKey = buildRouteCacheKey(params);
 
-        // For off-route rerouting, call Google directly to ensure exact road geometry from current driver coordinate
         let newRoute;
         try {
             newRoute = await callGoogleRoutesAPI(params);
             newRoute.fromCache = false;
             newRoute.cacheLayer = 'google';
-            // Warm cache with fresh route
             const ttl = parseInt(process.env.ROUTE_CACHE_GEOMETRY_TTL_SEC || '3600', 10);
             redisSet(cacheKey, newRoute, ttl).catch(() => {});
             memoryRouteCache.set(cacheKey, newRoute);
@@ -302,23 +335,24 @@ async function processLocationUpdate(tripId, driverId, location, heading, io, op
             newRoute = await getRouteFromAllLayers(cacheKey, () => callGoogleRoutesAPI(params));
         }
 
-        // Guarantee a strictly-increasing routeVersion even when the trip record
-        // already has a high version (e.g. after many reroutes). Flutter's version
-        // guard uses `event.routeVersion < _currentRouteVersion` to reject old
-        // packets — if we don't bump the version the new route gets silently dropped.
-        const existingRerouteTrip = await Trip.findById(tripId).select('routeVersion').lean();
+        let existingRerouteTrip = null;
+        for (const tid of allTripIds) {
+            existingRerouteTrip = await Trip.findById(tid).select('routeVersion').lean();
+            if (existingRerouteTrip) break;
+        }
+
         const baseVersion = Math.max(
             trip.routeVersion || 0,
             existingRerouteTrip?.routeVersion || 0
         );
         const newVersion = baseVersion + 1;
         newRoute.routeVersion = newVersion;
-        newRoute.tripId = tripId;
+        newRoute.tripId = primaryTripId;
         newRoute.reason = forceReroute ? 'off_route_forced' : (isImmediate ? 'off_route_immediate' : 'off_route');
 
-        // Update Active Route Cache
+        // Update Active Route Cache across all IDs
         const activeTtl = parseInt(process.env.ACTIVE_ROUTE_CACHE_TTL_SEC || '7200', 10);
-        await redisSet(`active_route:${tripId}`, {
+        const activePayload = {
             encodedPolyline: newRoute.encodedPolyline,
             distanceMeters:  newRoute.distanceMeters,
             durationSeconds: newRoute.durationSeconds,
@@ -329,33 +363,44 @@ async function processLocationUpdate(tripId, driverId, location, heading, io, op
             lastOriginLat:   driverLat,
             lastOriginLng:   driverLng,
             savedAt:         Date.now(),
-        }, activeTtl);
+        };
 
-        // Update MongoDB
-        await Trip.findByIdAndUpdate(tripId, {
-            encodedPolyline: newRoute.encodedPolyline,
-            distanceMeters:  newRoute.distanceMeters,
-            durationSeconds: newRoute.durationSeconds,
-            routeToken:      newRoute.routeToken,
-            legs:            newRoute.legs,
-            lastRerouteAt:   new Date(),
-            routeVersion:    newVersion,
-        });
+        for (const tid of allTripIds) {
+            await redisSet(`active_route:${tid}`, activePayload, activeTtl);
+        }
 
-        // Update Redis Trip cache
+        // Update MongoDB across all IDs
+        for (const tid of allTripIds) {
+            await Trip.findByIdAndUpdate(tid, {
+                encodedPolyline: newRoute.encodedPolyline,
+                distanceMeters:  newRoute.distanceMeters,
+                durationSeconds: newRoute.durationSeconds,
+                routeToken:      newRoute.routeToken,
+                legs:            newRoute.legs,
+                lastRerouteAt:   new Date(),
+                routeVersion:    newVersion,
+            });
+        }
+
+        // Update Redis Trip cache across all IDs
         trip.encodedPolyline = newRoute.encodedPolyline;
         trip.decodedPolyline = newRoute.polylinePoints || decodePolyline(newRoute.encodedPolyline);
         trip.distanceMeters  = newRoute.distanceMeters;
         trip.durationSeconds = newRoute.durationSeconds;
         trip.routeVersion    = newVersion;
-        await redisSet(`trip:${tripId}`, trip, activeTtl);
+
+        for (const tid of allTripIds) {
+            await redisSet(`trip:${tid}`, trip, activeTtl);
+        }
 
         metrics.increment('reroute_count');
         if (isImmediate) metrics.increment('reroute_immediate');
 
         if (io) {
             const socketPayload = {
-                tripId,
+                tripId: primaryTripId,
+                numericOrderId: idInfo.numericId ? Number(idInfo.numericId) : null,
+                mongoOrderId: idInfo.mongoId || null,
                 encodedPolyline:  newRoute.encodedPolyline,
                 distanceMeters:   newRoute.distanceMeters,
                 durationSeconds:  newRoute.durationSeconds,
@@ -370,12 +415,15 @@ async function processLocationUpdate(tripId, driverId, location, heading, io, op
             };
 
             try {
-                broadcastRoute({ ...trip, tripId }, socketPayload.reason, io);
-                io.to(`trip:${tripId}`).emit('routeUpdated', socketPayload);
-                io.to(`order:${tripId}`).emit('routeUpdated', socketPayload);
-                if (io.of) {
-                    io.of('/ride').to(`trip:${tripId}`).emit('routeUpdated', socketPayload);
-                    io.of('/tracking').to(`trip:${tripId}`).emit('routeUpdated', socketPayload);
+                broadcastRoute({ ...trip, tripId: primaryTripId }, socketPayload.reason, io);
+                for (const tid of allTripIds) {
+                    io.to(`trip:${tid}`).emit('routeUpdated', socketPayload);
+                    io.to(`order:${tid}`).emit('routeUpdated', socketPayload);
+                    if (io.of) {
+                        io.of('/ride').to(`trip:${tid}`).emit('routeUpdated', socketPayload);
+                        io.of('/tracking').to(`trip:${tid}`).emit('routeUpdated', socketPayload);
+                        io.of('/tracking').to(`order:${tid}`).emit('routeUpdated', socketPayload);
+                    }
                 }
             } catch (broadcastErr) {
                 logger.error(`[Trip] Reroute broadcast error: ${broadcastErr.message}`);
@@ -392,7 +440,7 @@ async function processLocationUpdate(tripId, driverId, location, heading, io, op
         };
 
     } catch (err) {
-        logger.error(`[Reroute] Failed for ${tripId}: ${err.message}`);
+        logger.error(`[Reroute] Failed for ${primaryTripId}: ${err.message}`);
         return { isOffRoute: true, rerouted: false, error: err.message };
     }
 }
@@ -406,30 +454,48 @@ async function processLocationUpdate(tripId, driverId, location, heading, io, op
  * @param {object} [io]
  */
 async function endTrip(tripId, driverId, io) {
-    await Trip.findByIdAndUpdate(tripId, { status: 'completed', completedAt: new Date() });
-    await redisDel(`active_route:${tripId}`);
-    await redisDel(`trip:${tripId}`);
-    await clearTripState(tripId);
+    const idInfo = await resolveOrderIds(tripId);
+    const primaryTripId = idInfo.rawId || String(tripId).trim();
+    const allTripIds = idInfo.allIds.length > 0 ? idInfo.allIds : [primaryTripId];
 
     const completedAt = new Date().toISOString();
-    if (io) {
-        io.to(`trip:${tripId}`).emit('tripCompleted', { tripId, completedAt });
-        io.to(`order:${tripId}`).emit('tripCompleted', { tripId, completedAt });
+    for (const tid of allTripIds) {
+        await Trip.findByIdAndUpdate(tid, { status: 'completed', completedAt: new Date() });
+        await redisDel(`active_route:${tid}`);
+        await redisDel(`trip:${tid}`);
+        await clearTripState(tid);
+        if (io) {
+            io.to(`trip:${tid}`).emit('tripCompleted', { tripId: tid, completedAt });
+            io.to(`order:${tid}`).emit('tripCompleted', { tripId: tid, completedAt });
+            if (io.of) {
+                io.of('/ride').to(`trip:${tid}`).emit('tripCompleted', { tripId: tid, completedAt });
+                io.of('/tracking').to(`trip:${tid}`).emit('tripCompleted', { tripId: tid, completedAt });
+            }
+        }
     }
 
-    return { tripId, status: 'completed', completedAt };
+    return { tripId: primaryTripId, status: 'completed', completedAt };
 }
 
 async function getTrip(tripId) {
-    const cached = await redisGet(`trip:${tripId}`);
-    if (cached) return cached;
-    const mongoTrip = await Trip.findById(tripId).lean();
-    if (!mongoTrip) return null;
-    return {
-        ...mongoTrip,
-        tripId: mongoTrip._id,
-        decodedPolyline: mongoTrip.encodedPolyline ? decodePolyline(mongoTrip.encodedPolyline) : [],
-    };
+    const idInfo = await resolveOrderIds(tripId);
+    const allTripIds = idInfo.allIds.length > 0 ? idInfo.allIds : [String(tripId).trim()];
+
+    for (const tid of allTripIds) {
+        const cached = await redisGet(`trip:${tid}`);
+        if (cached) return cached;
+    }
+    for (const tid of allTripIds) {
+        const mongoTrip = await Trip.findById(tid).lean();
+        if (mongoTrip) {
+            return {
+                ...mongoTrip,
+                tripId: mongoTrip._id,
+                decodedPolyline: mongoTrip.encodedPolyline ? decodePolyline(mongoTrip.encodedPolyline) : [],
+            };
+        }
+    }
+    return null;
 }
 
 async function getDriverLocation(driverId) {
