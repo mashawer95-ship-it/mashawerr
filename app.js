@@ -291,6 +291,8 @@ io.on('connection', (socket) => {
         // send them the current status immediately upon joining.
         try {
             const order = await _findOrder(orderId);
+            const isCompletedOrder = order && ['delivered', 'completed', 'returned', 'finished'].includes(order.status?.toLowerCase());
+
             if (order && order.status) {
                 // Emit only to this specific socket, not the whole room
                 socket.emit('order:status_changed', {
@@ -299,6 +301,17 @@ io.on('connection', (socket) => {
                     message: 'State sync on connect'
                 });
                 logger.debug(`[Socket.IO] Synced state '${order.status}' for order ${orderId} to socket ${socket.id}`);
+
+                if (isCompletedOrder) {
+                    socket.emit('order:completed', {
+                        orderId: order.orderId,
+                        status: order.status,
+                        isCompleted: true,
+                        allTasksCompleted: true,
+                        message: 'State sync on connect (completed)'
+                    });
+                    logger.debug(`[Socket.IO] Synced order:completed for order ${orderId} to socket ${socket.id}`);
+                }
             }
 
             // 🔄 Sync PoD Track Data on reconnect — so driver recovers after backgrounding
@@ -324,19 +337,21 @@ io.on('connection', (socket) => {
                     { orderId: isNaN(Number(strOrderId)) ? strOrderId : Number(strOrderId) }
                 ]
             }).sort({ createdAt: -1 }).lean();
-            if (session && (session.subState === 'WAITING_OTP' || session.state === 'COMPLETED')) {
+            if (isCompletedOrder || (session && (session.subState === 'WAITING_OTP' || session.state === 'COMPLETED'))) {
                 socket.emit('delivery_session:approved', {
                     orderId,
-                    sessionId: session.sessionId,
+                    sessionId: session?.sessionId || 'completed',
                     isApproved: true,
-                    subState: session.subState,
-                    otpVersion: session.otpVersion,
+                    allTasksCompleted: isCompletedOrder || session?.state === 'COMPLETED',
+                    subState: session?.subState || 'NONE',
+                    otpVersion: session?.otpVersion,
                     message: 'PoD State sync on connect'
                 });
                 socket.emit('order:pod_approved', {
                     orderId,
-                    sessionId: session.sessionId,
+                    sessionId: session?.sessionId || 'completed',
                     isApproved: true,
+                    allTasksCompleted: isCompletedOrder || session?.state === 'COMPLETED',
                 });
                 logger.debug(`[Socket.IO] Synced PoD approved state for order ${orderId} to socket ${socket.id}`);
             }

@@ -1034,10 +1034,20 @@ exports.getSessionStatus = async (req, res) => {
         }
 
         if (!session) {
+            const isOrderDone = ['delivered', 'completed', 'returned', 'finished'].includes(order?.status?.toLowerCase());
             return res.json({
                 success: true,
                 hasSession: false,
-                message: 'No delivery session active for this order',
+                isCompleted: isOrderDone,
+                orderStatus: order?.status,
+                state: isOrderDone ? 'COMPLETED' : 'NONE',
+                status: isOrderDone ? 'COMPLETED' : 'NONE',
+                sessionState: isOrderDone ? 'COMPLETED' : 'NONE',
+                attemptState: isOrderDone ? 'APPROVED' : null,
+                isDeliveryApproved: isOrderDone,
+                isApproved: isOrderDone,
+                allTasksCompleted: isOrderDone,
+                message: isOrderDone ? 'Order is already completed' : 'No delivery session active for this order',
             });
         }
 
@@ -1050,12 +1060,14 @@ exports.getSessionStatus = async (req, res) => {
         const latestAttemptState = latestAttemptForPhase?.state || null;
         const latestAttemptPhase = latestAttemptForPhase?.phase || currentPhase;
 
-        // Strictly evaluate approval for current active phase attempt: MUST be explicitly APPROVED
-        const isApproved = latestAttemptForPhase?.state === 'APPROVED';
-        const isPickupApproved = isApproved && (latestAttemptPhase === 'PICKUP');
-        const isDeliveryApproved = (session.state === 'COMPLETED' || (isApproved && latestAttemptPhase === 'DELIVERY')) && latestAttemptState !== 'WAITING_CUSTOMER_REVIEW' && latestAttemptState !== 'AI_VALIDATION';
+        const isOrderDone = ['delivered', 'completed', 'returned', 'finished'].includes(order?.status?.toLowerCase()) || session.state === 'COMPLETED';
 
-        const isRejected = latestAttemptState === 'REJECTED' || latestAttemptState === 'AI_REJECTED';
+        // Strictly evaluate approval for current active phase attempt: MUST be explicitly APPROVED or order already completed
+        const isApproved = latestAttemptForPhase?.state === 'APPROVED' || isOrderDone;
+        const isPickupApproved = isApproved && (latestAttemptPhase === 'PICKUP');
+        const isDeliveryApproved = (session.state === 'COMPLETED' || isOrderDone || (isApproved && latestAttemptPhase === 'DELIVERY')) && latestAttemptState !== 'WAITING_CUSTOMER_REVIEW' && latestAttemptState !== 'AI_VALIDATION';
+
+        const isRejected = !isOrderDone && (latestAttemptState === 'REJECTED' || latestAttemptState === 'AI_REJECTED');
 
         let otpCode = session.activeOtpCode;
         if (!otpCode && session.otpVersion > 0) {
@@ -1065,8 +1077,8 @@ exports.getSessionStatus = async (req, res) => {
         const orderRef = order?._id || order?.orderId || session.orderId || id;
         let trackData = null;
         try {
-        trackData = await DeliveryOrderTracker.getOrderTrack(orderRef);
-} catch (_) { }
+            trackData = await DeliveryOrderTracker.getOrderTrack(orderRef);
+        } catch (_) { }
 
         res.json({
             success: true,
@@ -1077,12 +1089,17 @@ exports.getSessionStatus = async (req, res) => {
             customerId: session.customerId,
             phase: currentPhase,
             latestAttemptPhase: latestAttemptPhase,
+            state: session.state,
+            status: session.state,
             sessionState: session.state,
             sessionSubState: session.subState,
-            attemptState: latestAttemptState,
+            attemptState: isOrderDone && latestAttemptState !== 'APPROVED' ? 'APPROVED' : latestAttemptState,
             isApproved,
             isPickupApproved,
             isDeliveryApproved,
+            isCompleted: isOrderDone,
+            orderStatus: order?.status,
+            allTasksCompleted: isOrderDone || trackData?.isAllCompleted === true,
             isRejected,
             rejectionReason: latestAttempt?.rejectionReason || null,
             track: trackData,
@@ -1093,7 +1110,7 @@ exports.getSessionStatus = async (req, res) => {
                 attemptNumber: latestAttempt.attemptNumber,
                 stopIndex: latestAttempt.stopIndex,
                 phase: latestAttemptPhase,
-                state: latestAttemptState,
+                state: isOrderDone && latestAttemptState !== 'APPROVED' ? 'APPROVED' : latestAttemptState,
                 photoUrl: latestAttempt.photo?.cdnUrl || (latestAttempt.photo?.objectKey ? `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME || 'dvhjawii0'}/image/upload/${latestAttempt.photo.objectKey}` : null),
                 uploadedAt: latestAttempt.createdAt,
             } : null,

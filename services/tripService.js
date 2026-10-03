@@ -57,8 +57,10 @@ async function startTrip(tripId, driverId, origin, destination, options = {}) {
     const allTripIds = idInfo.allIds.length > 0 ? idInfo.allIds : [primaryTripId];
 
     // ── Step 1: Distributed Lock (SETNX) ───────────────────────────────────────
-    const lockKey = `trip:start:${primaryTripId}`;
-    const lockTtl = parseInt(process.env.TRIP_START_LOCK_TTL_SEC || '10', 10);
+    const destLatKey = (destination && destination.lat != null) ? Number(destination.lat).toFixed(4) : '0';
+    const destLngKey = (destination && destination.lng != null) ? Number(destination.lng).toFixed(4) : '0';
+    const lockKey = `trip:start:${primaryTripId}:${destLatKey}_${destLngKey}`;
+    const lockTtl = parseInt(process.env.TRIP_START_LOCK_TTL_SEC || '4', 10);
     let lockAcquired = null;
 
     if (redis) {
@@ -76,9 +78,18 @@ async function startTrip(tripId, driverId, origin, destination, options = {}) {
                 if (cached) break;
             }
             if (cached) {
-                metrics.increment('duplicate_requests_prevented');
                 const data = typeof cached === 'string' ? JSON.parse(cached) : cached;
-                return { ...data, tripId: primaryTripId, driverId, fromCache: true };
+                const cachedDest = data.destination || {};
+                if (cachedDest.lat != null && destination.lat != null) {
+                    const dDiff = haversineDistance(
+                        { lat: destination.lat, lng: destination.lng },
+                        { lat: cachedDest.lat, lng: cachedDest.lng }
+                    );
+                    if (dDiff < 80) {
+                        metrics.increment('duplicate_requests_prevented');
+                        return { ...data, tripId: primaryTripId, driverId, fromCache: true };
+                    }
+                }
             }
         }
         throw new Error('Trip start in progress — retry in 1s');
@@ -128,6 +139,13 @@ async function startTrip(tripId, driverId, origin, destination, options = {}) {
                         destination:     active.destination || destination,
                         fromCache:       true,
                     };
+                }
+
+                // If destination changed significantly, purge old active route immediately so pollers don't get stale destination
+                if (destDrift >= 20) {
+                    for (const tid of allTripIds) {
+                        redisDel(`active_route:${tid}`).catch(() => {});
+                    }
                 }
 
                 logger.info(`[Trip] Route drifted (originDrift=${originDrift.toFixed(1)}m, destDrift=${destDrift.toFixed(1)}m) for tripId=${primaryTripId} — recalculating route`);

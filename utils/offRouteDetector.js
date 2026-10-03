@@ -13,7 +13,7 @@ const logger = require('./logger');
 const { redisSet, redisGet, redisDel } = require('../config/redis');
 
 const OFF_ROUTE_THRESHOLD_M = parseInt(process.env.OFF_ROUTE_THRESHOLD_M || '35', 10);
-const OFF_ROUTE_IMMEDIATE_M = parseInt(process.env.OFF_ROUTE_IMMEDIATE_M || '100', 10);
+const OFF_ROUTE_IMMEDIATE_M = parseInt(process.env.OFF_ROUTE_IMMEDIATE_M || '50', 10);
 const REROUTE_COOLDOWN_SEC = parseInt(process.env.REROUTE_COOLDOWN_SEC || '15', 10);
 
 const cooldownKey = (tripId) => `reroute_cooldown:${tripId}`;
