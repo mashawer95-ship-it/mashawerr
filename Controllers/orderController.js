@@ -949,13 +949,16 @@ const createOrder = asyncHandler(async (req, res) => {
         });
     }
 
-    // ─── منع إنشاء طلبات الشراء بدون جلسة دفع مسبقة ─────────────────────────
-    if (!isAdmin && (value.orderCategory === 'purchase' || value.orderType === 'purchase')) {
-        return res.status(400).json({
-            code: 'CHECKOUT_SESSION_REQUIRED',
-            message: 'طلبات الشراء تتطلب إنشاء جلسة دفع مسبقة وتأكيد الدفع أولاً عبر /api/checkout/session',
-            hint: 'Purchase orders require a secure server-side checkout session before order creation.',
-        });
+    // ─── التحقق من صحة مبلغ الشراء لطلبات الشراء النقدية ───────────────────
+    const isPurchaseOrder = value.orderCategory === 'purchase' || value.orderType === 'purchase';
+    if (isPurchaseOrder) {
+        const repAmountVal = Number(value.representativePaymentAmount) || 0;
+        if (repAmountVal <= 0 || repAmountVal > 50000) {
+            return res.status(400).json({
+                code: 'INVALID_PURCHASE_AMOUNT',
+                message: 'مبلغ الشراء يجب أن يكون أكبر من 0 وأقل من 50,000 ج.م'
+            });
+        }
     }
 
     // ─── فحص محفظة العميل: يمنع الإنشاء إذا كان الرصيد أقل من الحد الأدنى المسموح به ───────────
