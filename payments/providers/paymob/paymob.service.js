@@ -222,17 +222,78 @@ function assertValidHmac(transaction, receivedHmac, requestId) {
 }
 
 /**
- * Request a refund via the Paymob client.
+ * Request a refund or void via the Paymob client.
+ * For immediate full-amount order cancellations, VOID is executed first:
+ * it cancels the card authorization hold in real-time without requiring settled merchant balance.
+ * If transaction was already settled, it automatically falls back to standard refund.
  *
  * @param {object} params
  * @param {string} params.providerTransactionId
  * @param {number} params.amountPiastres
  * @param {string} params.requestId
+ * @param {boolean} [params.isFullRefund=true]
  */
-async function requestRefund({ providerTransactionId, amountPiastres, requestId }) {
-    return paymobClient.refundTransaction({
+async function requestRefund({ providerTransactionId, amountPiastres, requestId, isFullRefund = true }) {
+    if (isFullRefund) {
+        try {
+            logger.info('[PaymobService] Attempting instant VOID for transaction...', {
+                requestId,
+                transactionId: providerTransactionId,
+            });
+            const voidRes = await paymobClient.voidTransaction({
+                transactionId: providerTransactionId,
+                requestId,
+            });
+            return { ...voidRes, method: 'VOID' };
+        } catch (voidErr) {
+            logger.warn(`[PaymobService] Void not applicable or failed (${voidErr.message}), falling back to refund...`, {
+                requestId,
+                transactionId: providerTransactionId,
+            });
+        }
+    }
+
+    try {
+        const refundRes = await paymobClient.refundTransaction({
+            transactionId: providerTransactionId,
+            amountPiastres,
+            requestId,
+        });
+        return { ...refundRes, method: 'REFUND' };
+    } catch (refundErr) {
+        const msg = String(refundErr.message || '').toLowerCase();
+        const detail = JSON.stringify(refundErr.details || {}).toLowerCase();
+        const isNotSettled = msg.includes('settled') ||
+                             msg.includes('void') ||
+                             msg.includes('455') ||
+                             msg.includes('balance') ||
+                             detail.includes('settled') ||
+                             detail.includes('void') ||
+                             detail.includes('455') ||
+                             detail.includes('balance');
+
+        if (isNotSettled) {
+            logger.info('[PaymobService] Refund failed (unsettled/insufficient balance), attempting VOID fallback...', {
+                requestId,
+                transactionId: providerTransactionId,
+            });
+            const voidRes = await paymobClient.voidTransaction({
+                transactionId: providerTransactionId,
+                requestId,
+            });
+            return { ...voidRes, method: 'VOID' };
+        }
+
+        throw refundErr;
+    }
+}
+
+/**
+ * Execute void directly on an unsettled Paymob transaction.
+ */
+async function voidTransaction({ providerTransactionId, requestId }) {
+    return paymobClient.voidTransaction({
         transactionId: providerTransactionId,
-        amountPiastres,
         requestId,
     });
 }
@@ -284,5 +345,6 @@ module.exports = {
     assertValidHmac,
     verifyTransactionResponseHmac,
     requestRefund,
+    voidTransaction,
     getTransaction,
 };

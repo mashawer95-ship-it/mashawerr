@@ -1980,6 +1980,16 @@ describe('Secure Purchase Flow Invariants', () => {
         assert.throws(() => validatePurchaseAmount(50001), /PURCHASE_AMOUNT_EXCEEDED/);
         assert.strictEqual(validatePurchaseAmount(500), 500);
     });
+
+    test('PAYMOB_ENDPOINTS contains VOID endpoint for instant card cancellation', () => {
+        const { PAYMOB_ENDPOINTS } = require('../constants/paymentConstants');
+        assert.strictEqual(PAYMOB_ENDPOINTS.VOID, '/api/acceptance/void_refund/void');
+    });
+
+    test('paymobService exports voidTransaction function', () => {
+        const paymobService = require('../providers/paymob/paymob.service');
+        assert.strictEqual(typeof paymobService.voidTransaction, 'function');
+    });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -215,6 +215,39 @@ async function refundTransaction({ transactionId, amountPiastres, requestId }) {
 }
 
 /**
+ * Request a void for an unsettled Paymob transaction.
+ * Cancels authorization hold in real-time without requiring settled merchant balance.
+ *
+ * Paymob void endpoint:
+ *   POST /api/acceptance/void_refund/void
+ *   { transaction_id }
+ *
+ * @param {object} params
+ * @param {string|number} params.transactionId - Paymob transaction ID to void
+ * @param {string} params.requestId - Correlation ID
+ * @returns {Promise<object>} Paymob void response
+ */
+async function voidTransaction({ transactionId, requestId }) {
+    const http = buildPaymobAxios();
+    try {
+        const response = await http.post(PAYMOB_ENDPOINTS.VOID, {
+            transaction_id: Number(transactionId),
+        });
+
+        logger.info('[PaymobClient] Void request accepted', {
+            requestId,
+            transactionId,
+            is_voided: response.data?.is_voided,
+        });
+
+        return response.data;
+    } catch (err) {
+        if (err instanceof ApiError) throw err;
+        throw mapPaymobError(err, 'voidTransaction', requestId);
+    }
+}
+
+/**
  * Query transaction status from Paymob Acceptance API.
  * GET /api/acceptance/transactions/{id}
  *
@@ -243,5 +276,6 @@ async function getTransaction({ transactionId, requestId }) {
 module.exports = {
     createIntention,
     refundTransaction,
+    voidTransaction,
     getTransaction,
 };

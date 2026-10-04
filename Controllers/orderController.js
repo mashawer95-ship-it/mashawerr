@@ -1993,7 +1993,7 @@ const cancelOrder = asyncHandler(async (req, res) => {
 
                         refundDestination = refundResult.metadata?.refundMethod || refundPref;
                         refundMessage = (refundDestination === 'ORIGINAL_PAYMENT' || refundDestination === 'CARD_GATEWAY')
-                            ? 'تم قبول طلب الاسترداد لوسيلة الدفع الأصلية، وسيصل لحسابك خلال 24–72 ساعة أو حسب البنك.'
+                            ? 'تم إلغاء العملية بنجاح وفك حجز المبلغ على بطاقتك البنكية في وقتها.'
                             : 'تم استرداد كامل المبلغ إلى محفظتك بالتطبيق فوراً.';
                     } catch (refundOpErr) {
                         if (refundOpErr.statusCode === 504 || refundOpErr.errorCode === 'REFUND_STATUS_UNCERTAIN') {
@@ -2002,9 +2002,22 @@ const cancelOrder = asyncHandler(async (req, res) => {
                                 code: 'REFUND_STATUS_UNCERTAIN',
                             });
                         }
-                        logger.error(`[cancelOrder] Refund execution error: ${refundOpErr.message}`);
-                        refundDestination = 'FAILED';
-                        refundMessage = 'تعذر استرداد المبلغ تلقائياً، يرجى التواصل مع الدعم الفني.';
+                        logger.error(`[cancelOrder] Card refund execution error: ${refundOpErr.message}. Attempting safe fallback to App Wallet...`);
+                        try {
+                            const fallbackResult = await paymentService.refundPayment({
+                                paymentId:        payment._id,
+                                amountPiastres:   remainingPiastres,
+                                requestedBy:      order.clientId,
+                                requestId:        req.id,
+                                refundPreference: 'APP_WALLET',
+                            });
+                            refundDestination = 'APP_WALLET';
+                            refundMessage = 'تعذر إلغاء العملية مباشرة من البنك، وتم إيداع كامل المبلغ في محفظتك بالتطبيق فوراً.';
+                        } catch (walletFallbackErr) {
+                            logger.error(`[cancelOrder] Wallet fallback also failed: ${walletFallbackErr.message}`);
+                            refundDestination = 'FAILED';
+                            refundMessage = 'تعذر استرداد المبلغ تلقائياً، يرجى التواصل مع الدعم الفني.';
+                        }
                     }
                 }
             }

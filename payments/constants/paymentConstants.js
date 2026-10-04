@@ -35,6 +35,7 @@ const CURRENCY = Object.freeze({
 const PAYMOB_ENDPOINTS = Object.freeze({
     INTENTION: '/v1/intention/',
     REFUND:    '/api/acceptance/void_refund/refund',
+    VOID:      '/api/acceptance/void_refund/void',
     AUTH:      '/api/auth/tokens',  // Legacy auth — needed for refund API
 });
 
