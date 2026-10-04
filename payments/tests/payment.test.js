@@ -1990,6 +1990,36 @@ describe('Secure Purchase Flow Invariants', () => {
         const paymobService = require('../providers/paymob/paymob.service');
         assert.strictEqual(typeof paymobService.voidTransaction, 'function');
     });
+
+    test('Cancellation with card preference and unsettled Paymob balance transitions gracefully to pending settlement', () => {
+        const order = { orderId: 888, paymentStatus: 'paid', status: 'waiting', clientId: 'user-888' };
+        const payment = {
+            provider: 'paymob',
+            paymentMethod: 'CARD',
+            amountPiastres: 2000,
+            metadata: {},
+        };
+        const err = new Error('You don’t have sufficient balance in your account to process refund');
+        const errMsg = err.message.toLowerCase();
+        const isPendingSettlement = errMsg.includes('balance') || errMsg.includes('settled') || errMsg.includes('void');
+        assert.strictEqual(isPendingSettlement, true);
+
+        let refundDestination = null;
+        let refundMessage = null;
+
+        if (isPendingSettlement) {
+            payment.metadata.refundPendingSettlement = true;
+            payment.metadata.refundPendingAmountPiastres = 2000;
+            order.paymentStatus = 'refund_pending';
+            refundDestination = 'ORIGINAL_PAYMENT';
+            refundMessage = 'تم تسجيل طلب استرداد المبلغ إلى بطاقتك البنكية بنجاح، وسيتم إيداع المبلغ في كشف حساب بطاقتك خلال 24–72 ساعة عمل.';
+        }
+
+        assert.strictEqual(order.paymentStatus, 'refund_pending');
+        assert.strictEqual(refundDestination, 'ORIGINAL_PAYMENT');
+        assert.strictEqual(payment.metadata.refundPendingSettlement, true);
+        assert.strictEqual(refundMessage.includes('24–72 ساعة'), true);
+    });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

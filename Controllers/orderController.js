@@ -1995,6 +1995,8 @@ const cancelOrder = asyncHandler(async (req, res) => {
                         refundMessage = (refundDestination === 'ORIGINAL_PAYMENT' || refundDestination === 'CARD_GATEWAY')
                             ? 'تم إلغاء العملية بنجاح وفك حجز المبلغ على بطاقتك البنكية في وقتها.'
                             : 'تم استرداد كامل المبلغ إلى محفظتك بالتطبيق فوراً.';
+                        order.paymentStatus = 'refunded';
+                        await Order.findByIdAndUpdate(order._id, { paymentStatus: 'refunded' }).catch(() => {});
                     } catch (refundOpErr) {
                         if (refundOpErr.statusCode === 504 || refundOpErr.errorCode === 'REFUND_STATUS_UNCERTAIN') {
                             return res.status(504).json({
@@ -2002,21 +2004,49 @@ const cancelOrder = asyncHandler(async (req, res) => {
                                 code: 'REFUND_STATUS_UNCERTAIN',
                             });
                         }
-                        logger.error(`[cancelOrder] Card refund execution error: ${refundOpErr.message}. Attempting safe fallback to App Wallet...`);
-                        try {
-                            const fallbackResult = await paymentService.refundPayment({
-                                paymentId:        payment._id,
-                                amountPiastres:   remainingPiastres,
-                                requestedBy:      order.clientId,
-                                requestId:        req.id,
-                                refundPreference: 'APP_WALLET',
-                            });
-                            refundDestination = 'APP_WALLET';
-                            refundMessage = 'تعذر إلغاء العملية مباشرة من البنك، وتم إيداع كامل المبلغ في محفظتك بالتطبيق فوراً.';
-                        } catch (walletFallbackErr) {
-                            logger.error(`[cancelOrder] Wallet fallback also failed: ${walletFallbackErr.message}`);
-                            refundDestination = 'FAILED';
-                            refundMessage = 'تعذر استرداد المبلغ تلقائياً، يرجى التواصل مع الدعم الفني.';
+
+                        const errMsg = String(refundOpErr.message || '').toLowerCase();
+                        const isPendingSettlement = errMsg.includes('balance') ||
+                                                     errMsg.includes('settled') ||
+                                                     errMsg.includes('void') ||
+                                                     errMsg.includes('455');
+
+                        if (isOriginalPayment && isPendingSettlement) {
+                            // Paymob requires settled merchant balance for card refund.
+                            // The transaction is still pending settlement (T+1 / T+2).
+                            // Record refund as pending settlement, order as refund_pending, and reassure the customer.
+                            logger.info(`[cancelOrder] Card refund pending settlement for order ${order.orderId}: ${refundOpErr.message}`);
+                            await Payment.findByIdAndUpdate(payment._id, {
+                                $set: {
+                                    'metadata.refundPendingSettlement': true,
+                                    'metadata.refundPendingAmountPiastres': remainingPiastres,
+                                    'metadata.refundRequestedAt': new Date(),
+                                    'metadata.refundDestination': 'ORIGINAL_PAYMENT',
+                                },
+                            }).catch(() => {});
+                            order.paymentStatus = 'refund_pending';
+                            await Order.findByIdAndUpdate(order._id, { paymentStatus: 'refund_pending' }).catch(() => {});
+                            refundDestination = 'ORIGINAL_PAYMENT';
+                            refundMessage = 'تم تسجيل طلب استرداد المبلغ إلى بطاقتك البنكية بنجاح، وسيتم إيداع المبلغ في كشف حساب بطاقتك خلال 24–72 ساعة عمل.';
+                        } else {
+                            logger.error(`[cancelOrder] Card refund execution error: ${refundOpErr.message}. Attempting safe fallback to App Wallet...`);
+                            try {
+                                const fallbackResult = await paymentService.refundPayment({
+                                    paymentId:        payment._id,
+                                    amountPiastres:   remainingPiastres,
+                                    requestedBy:      order.clientId,
+                                    requestId:        req.id,
+                                    refundPreference: 'APP_WALLET',
+                                });
+                                refundDestination = 'APP_WALLET';
+                                refundMessage = 'تعذر إلغاء العملية مباشرة من البنك، وتم إيداع كامل المبلغ في محفظتك بالتطبيق فوراً.';
+                                order.paymentStatus = 'refunded';
+                                await Order.findByIdAndUpdate(order._id, { paymentStatus: 'refunded' }).catch(() => {});
+                            } catch (walletFallbackErr) {
+                                logger.error(`[cancelOrder] Wallet fallback also failed: ${walletFallbackErr.message}`);
+                                refundDestination = 'FAILED';
+                                refundMessage = 'تعذر استرداد المبلغ تلقائياً، يرجى التواصل مع الدعم الفني.';
+                            }
                         }
                     }
                 }
@@ -2052,10 +2082,10 @@ const cancelOrder = asyncHandler(async (req, res) => {
 
     // ─── إشعار العميل بالإلغاء ──────────────────────────────────────────────
     let refundNote = '';
-    if (order.paymentStatus === 'refunded') {
+    if (order.paymentStatus === 'refunded' || order.paymentStatus === 'refund_pending' || refundDestination) {
         if (refundDestination === 'ORIGINAL_PAYMENT' || refundDestination === 'CARD_GATEWAY' || refundDestination === 'card') {
-            refundNote = ' وسيتم إرجاع المبلغ لوسيلة الدفع الأصلية خلال 24–72 ساعة أو حسب بنكك.';
-        } else {
+            refundNote = ' وسيتم إرجاع المبلغ لبطاقتك البنكية خلال 24–72 ساعة عمل.';
+        } else if (refundDestination === 'APP_WALLET') {
             refundNote = ' وتم استرداد المبلغ بالكامل إلى محفظتك بالتطبيق فوراً.';
         }
     }
