@@ -314,7 +314,9 @@ async function payOrderFromWallet({ checkoutSessionId, userId, requestId }) {
         throw new ApiError(422, 'هذه الجلسة ليست لدفع من المحفظة', PAYMENT_ERROR_CODES.PAYMENT_METHOD_UNAVAILABLE);
     }
 
-    const amountFils = session.totalDeliveryPriceFils;
+    const amountFils = (session.totalAmountFils && session.totalAmountFils > 0)
+        ? session.totalAmountFils
+        : session.totalDeliveryPriceFils;
 
     if (!isValidFils(amountFils)) {
         throw new ApiError(422, 'المبلغ غير صالح', PAYMENT_ERROR_CODES.ORDER_NOT_PAYABLE);
@@ -1119,7 +1121,9 @@ async function _createOrderFromSnapshot({ session, paymentId, paymentMethod, req
         discountCode:              session.discountCode || null,
         discountType:              session.discountType || null,
         discountPercentage:        session.discountPercentage || null,
-        totalPrice:                snapshot.totalPrice || session.totalDeliveryPriceFils,
+        totalPrice:                (session.totalAmountFils && session.totalAmountFils > 0)
+            ? Number((session.totalAmountFils / 1000).toFixed(3))
+            : (snapshot.totalPrice || (session.totalDeliveryPriceFils ? Number((session.totalDeliveryPriceFils / 1000).toFixed(3)) : 0)),
         totalDistanceKm:           snapshot.totalDistanceKm || 0,
         vehicleTypeId:             session.vehicleTypeId || snapshot.vehicleTypeId || null,
         vehicleName:               snapshot.vehicleName || null,
@@ -1130,8 +1134,10 @@ async function _createOrderFromSnapshot({ session, paymentId, paymentMethod, req
         governorate:               session.governorate || snapshot.governorate || (tasks[0] ? detectGovernorateFromText(tasks[0].googleMapAddressFrom) : null) || null,
         paymentMethod:             paymentMethod || 'wallet',
         paymentStatus:             (paymentMethod === 'cash') ? 'unpaid' : 'paid',
-        representativeWillPay:     snapshot.representativeWillPay || false,
-        representativePaymentAmount: snapshot.representativePaymentAmount || 0,
+        representativeWillPay:     session.purchaseAmountFils > 0 ? true : (snapshot.representativeWillPay || false),
+        representativePaymentAmount: session.purchaseAmountFils > 0
+            ? Number((session.purchaseAmountFils / 1000).toFixed(3))
+            : (snapshot.representativePaymentAmount || 0),
         purchaseDetails:           snapshot.purchaseDetails || '',
         tasks,
         status:                    'waiting',

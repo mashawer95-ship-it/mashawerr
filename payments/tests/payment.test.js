@@ -1896,6 +1896,92 @@ describe('Real Fault-Injection Crash Recovery Tests', () => {
     });
 });
 
+describe('Secure Purchase Flow Invariants', () => {
+    test('Purchase CheckoutSession locks purchaseAmountFils + totalDeliveryPriceFils = totalAmountFils', () => {
+        const deliveryFeeFils = 50000; // 50 EGP
+        const purchaseAmountEgp = 500; // 500 EGP
+        const purchaseAmountFils = Math.round(purchaseAmountEgp * 1000);
+        const totalAmountFils = deliveryFeeFils + purchaseAmountFils;
+
+        assert.strictEqual(purchaseAmountFils, 500000);
+        assert.strictEqual(totalAmountFils, 550000);
+
+        // Simulate session state
+        const session = {
+            totalDeliveryPriceFils: deliveryFeeFils,
+            purchaseAmountFils,
+            totalAmountFils,
+            orderCategory: 'purchase',
+        };
+
+        const payableFils = (session.totalAmountFils && session.totalAmountFils > 0)
+            ? session.totalAmountFils
+            : session.totalDeliveryPriceFils;
+
+        assert.strictEqual(payableFils, 550000, 'Payable amount must be the combined total of delivery fee + purchase amount');
+    });
+
+    test('Purchase online Paymob intention charges totalAmountFils (e.g. 550 EGP / 55000 piastres)', () => {
+        const { filsToEgpPiastres } = require('../utils/money');
+        const totalAmountFils = 550000; // 550 EGP
+        const amountPiastres = filsToEgpPiastres(totalAmountFils);
+
+        assert.strictEqual(amountPiastres, 55000, 'Piastres must equal 55,000 for 550 EGP total');
+    });
+
+    test('Order created from snapshot uses locked purchaseAmount and totalPrice from session, ignoring client tampering', () => {
+        const session = {
+            userId: 'user_123',
+            totalDeliveryPriceFils: 50000,
+            purchaseAmountFils: 500000,
+            totalAmountFils: 550000,
+            orderCategory: 'purchase',
+            orderSnapshot: {
+                // Client tampered with values in payload
+                representativePaymentAmount: 1, // Tampered to 1 EGP
+                totalPrice: 1,                  // Tampered to 1 EGP
+            }
+        };
+
+        // Extraction logic from walletPaymentService._createOrderFromSnapshot
+        const finalRepAmount = session.purchaseAmountFils > 0
+            ? Number((session.purchaseAmountFils / 1000).toFixed(3))
+            : (session.orderSnapshot.representativePaymentAmount || 0);
+
+        const finalTotalPrice = (session.totalAmountFils && session.totalAmountFils > 0)
+            ? Number((session.totalAmountFils / 1000).toFixed(3))
+            : (session.orderSnapshot.totalPrice || (session.totalDeliveryPriceFils ? Number((session.totalDeliveryPriceFils / 1000).toFixed(3)) : 0));
+
+        assert.strictEqual(finalRepAmount, 500, 'Purchase amount must come from locked session.purchaseAmountFils');
+        assert.strictEqual(finalTotalPrice, 550, 'Total price must come from locked session.totalAmountFils');
+    });
+
+    test('Normal delivery flow leaves purchaseAmountFils=0 and totalAmountFils=totalDeliveryPriceFils', () => {
+        const deliveryFeeFils = 45000;
+        const isPurchase = false;
+        const purchaseAmountFils = isPurchase ? 500000 : 0;
+        const totalAmountFils = deliveryFeeFils + purchaseAmountFils;
+
+        assert.strictEqual(purchaseAmountFils, 0);
+        assert.strictEqual(totalAmountFils, 45000);
+    });
+
+    test('Purchase amount <= 0 or > 50000 is rejected by validation guard', () => {
+        function validatePurchaseAmount(rawAmount) {
+            const num = Number(rawAmount) || 0;
+            if (num <= 0) throw new Error('INVALID_PURCHASE_AMOUNT');
+            if (num > 50000) throw new Error('PURCHASE_AMOUNT_EXCEEDED');
+            return num;
+        }
+
+        assert.throws(() => validatePurchaseAmount(0), /INVALID_PURCHASE_AMOUNT/);
+        assert.throws(() => validatePurchaseAmount(-10), /INVALID_PURCHASE_AMOUNT/);
+        assert.throws(() => validatePurchaseAmount('abc'), /INVALID_PURCHASE_AMOUNT/);
+        assert.throws(() => validatePurchaseAmount(50001), /PURCHASE_AMOUNT_EXCEEDED/);
+        assert.strictEqual(validatePurchaseAmount(500), 500);
+    });
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // REPORT
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -293,13 +293,54 @@ async function createCheckoutSession({ userId, orderPayload, requestId }) {
         sessionPaymentMethod = 'CASH';
     }
 
-    // ── 8. Freeze Commercial Snapshot in CheckoutSession ─────────────────────
+    // ── 8. Purchase Flow Validation & Financial Locking ───────────────────────
+    const isPurchase = (value.orderCategory === 'purchase') ||
+                       (value.orderType === 'purchase') ||
+                       (Boolean(value.representativeWillPay) && Number(value.representativePaymentAmount) > 0);
+
+    let rawPurchaseAmountEgp = 0;
+    if (isPurchase) {
+        rawPurchaseAmountEgp = Number(value.representativePaymentAmount) || 0;
+        if (rawPurchaseAmountEgp <= 0 && Array.isArray(value.tasks)) {
+            for (const t of value.tasks) {
+                if (t.representativePaymentAmount && Number(t.representativePaymentAmount) > 0) {
+                    rawPurchaseAmountEgp += Number(t.representativePaymentAmount);
+                }
+            }
+        }
+
+        // Validate purchase amount
+        if (rawPurchaseAmountEgp <= 0) {
+            throw new ApiError(
+                400,
+                'يرجى إدخال مبلغ صحيح للمشتريات أكبر من صفر',
+                'INVALID_PURCHASE_AMOUNT'
+            );
+        }
+
+        const MAX_PURCHASE_AMOUNT_EGP = 50000;
+        if (rawPurchaseAmountEgp > MAX_PURCHASE_AMOUNT_EGP) {
+            throw new ApiError(
+                400,
+                `مبلغ المشتريات يتجاوز الحد الأقصى المسموح به (${MAX_PURCHASE_AMOUNT_EGP} ج.م)`,
+                'PURCHASE_AMOUNT_EXCEEDED'
+            );
+        }
+    }
+
+    const purchaseAmountFils = isPurchase ? Math.round(rawPurchaseAmountEgp * 1000) : 0;
+    const totalAmountFils = totalDeliveryPriceFils + purchaseAmountFils;
+
+    // ── 9. Freeze Commercial Snapshot in CheckoutSession ─────────────────────
     const orderSnapshot = {
         ...value,
         totalDeliveryPrice: totalDeliveryPriceFils,
         originalDeliveryPrice: computedOriginalPriceFils,
         discountAmount: discountAmountFils,
-        totalPrice: totalDeliveryPriceFils,
+        representativeWillPay: isPurchase ? true : Boolean(value.representativeWillPay),
+        representativePaymentAmount: isPurchase ? rawPurchaseAmountEgp : (Number(value.representativePaymentAmount) || 0),
+        totalPrice: Number((totalAmountFils / 1000).toFixed(3)),
+        totalPriceFils: totalAmountFils,
         totalDistanceKm: (distanceMeters / 1000).toFixed(2),
         routeStatus,
         routeSnapshot,
@@ -323,6 +364,8 @@ async function createCheckoutSession({ userId, orderPayload, requestId }) {
         status:                   'PENDING',
         paymentMethod:            sessionPaymentMethod,
         totalDeliveryPriceFils,
+        purchaseAmountFils,
+        totalAmountFils,
         originalDeliveryPriceFils: computedOriginalPriceFils,
         discountAmountFils,
         discountCode:             value.discountCode || null,
@@ -342,6 +385,8 @@ async function createCheckoutSession({ userId, orderPayload, requestId }) {
         sessionId: session._id,
         userId: userIdStr,
         totalDeliveryPriceFils,
+        purchaseAmountFils,
+        totalAmountFils,
         paymentMethod: sessionPaymentMethod,
     });
 
@@ -351,6 +396,10 @@ async function createCheckoutSession({ userId, orderPayload, requestId }) {
         paymentMethod:             session.paymentMethod,
         totalDeliveryPriceFils:    session.totalDeliveryPriceFils,
         totalDeliveryPriceEgp:     filsToEgp(session.totalDeliveryPriceFils),
+        purchaseAmountFils:        session.purchaseAmountFils,
+        purchaseAmountEgp:         filsToEgp(session.purchaseAmountFils),
+        totalAmountFils:           session.totalAmountFils,
+        totalAmountEgp:            filsToEgp(session.totalAmountFils),
         originalDeliveryPriceFils: session.originalDeliveryPriceFils,
         originalDeliveryPriceEgp:  filsToEgp(session.originalDeliveryPriceFils),
         discountAmountFils:        session.discountAmountFils,
@@ -406,6 +455,10 @@ async function getCheckoutSession({ sessionId, userId }) {
                     paymentMethod:             refreshed.paymentMethod,
                     totalDeliveryPriceFils:    refreshed.totalDeliveryPriceFils,
                     totalDeliveryPriceEgp:     filsToEgp(refreshed.totalDeliveryPriceFils),
+                    purchaseAmountFils:        refreshed.purchaseAmountFils || 0,
+                    purchaseAmountEgp:         filsToEgp(refreshed.purchaseAmountFils || 0),
+                    totalAmountFils:           refreshed.totalAmountFils || refreshed.totalDeliveryPriceFils,
+                    totalAmountEgp:            filsToEgp(refreshed.totalAmountFils || refreshed.totalDeliveryPriceFils),
                     originalDeliveryPriceFils: refreshed.originalDeliveryPriceFils,
                     originalDeliveryPriceEgp:  filsToEgp(refreshed.originalDeliveryPriceFils),
                     discountAmountFils:        refreshed.discountAmountFils,
@@ -428,6 +481,10 @@ async function getCheckoutSession({ sessionId, userId }) {
         paymentMethod:             session.paymentMethod,
         totalDeliveryPriceFils:    session.totalDeliveryPriceFils,
         totalDeliveryPriceEgp:     filsToEgp(session.totalDeliveryPriceFils),
+        purchaseAmountFils:        session.purchaseAmountFils || 0,
+        purchaseAmountEgp:         filsToEgp(session.purchaseAmountFils || 0),
+        totalAmountFils:           session.totalAmountFils || session.totalDeliveryPriceFils,
+        totalAmountEgp:            filsToEgp(session.totalAmountFils || session.totalDeliveryPriceFils),
         originalDeliveryPriceFils: session.originalDeliveryPriceFils,
         originalDeliveryPriceEgp:  filsToEgp(session.originalDeliveryPriceFils),
         discountAmountFils:        session.discountAmountFils,
@@ -495,7 +552,11 @@ async function payCheckoutSessionOnline({ sessionId, userId, paymentMethod = 'CA
         throw new ApiError(404, 'المستخدم غير موجود', PAYMENT_ERROR_CODES.PAYMENT_UNAUTHORIZED);
     }
 
-    if (session.totalDeliveryPriceFils < ORDER_MIN_PAYMENT_FILS) {
+    const payableFils = (session.totalAmountFils && session.totalAmountFils > 0)
+        ? session.totalAmountFils
+        : session.totalDeliveryPriceFils;
+
+    if (payableFils < ORDER_MIN_PAYMENT_FILS) {
         throw new ApiError(
             422,
             `الحد الأدنى لدفع الطلب هو ${filsToEgp(ORDER_MIN_PAYMENT_FILS)} ج.م`,
@@ -503,7 +564,7 @@ async function payCheckoutSessionOnline({ sessionId, userId, paymentMethod = 'CA
         );
     }
 
-    const amountPiastres = filsToEgpPiastres(session.totalDeliveryPriceFils);
+    const amountPiastres = filsToEgpPiastres(payableFils);
 
     // Idempotency: Reuse existing PENDING payment if session is in PAYMENT_PENDING and still valid
     if (session.status === 'PAYMENT_PENDING' && session.paymentId) {
@@ -751,6 +812,8 @@ async function confirmCashCheckoutSession({ sessionId, userId, requestId }) {
             orderNumericId: finalOrder.orderId,
             status:         'COMPLETED',
             totalDeliveryPriceFils: session.totalDeliveryPriceFils,
+            purchaseAmountFils:     session.purchaseAmountFils || 0,
+            totalAmountFils:        session.totalAmountFils || session.totalDeliveryPriceFils,
         };
     } catch (err) {
         logger.error('[CheckoutService] Cash order creation failed — restoring session', {

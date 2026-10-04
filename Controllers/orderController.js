@@ -949,6 +949,15 @@ const createOrder = asyncHandler(async (req, res) => {
         });
     }
 
+    // ─── منع إنشاء طلبات الشراء بدون جلسة دفع مسبقة ─────────────────────────
+    if (!isAdmin && (value.orderCategory === 'purchase' || value.orderType === 'purchase')) {
+        return res.status(400).json({
+            code: 'CHECKOUT_SESSION_REQUIRED',
+            message: 'طلبات الشراء تتطلب إنشاء جلسة دفع مسبقة وتأكيد الدفع أولاً عبر /api/checkout/session',
+            hint: 'Purchase orders require a secure server-side checkout session before order creation.',
+        });
+    }
+
     // ─── فحص محفظة العميل: يمنع الإنشاء إذا كان الرصيد أقل من الحد الأدنى المسموح به ───────────
     try {
         const { checkWalletCanOrder } = require('../middlewares/Wallet');
@@ -1249,10 +1258,13 @@ const createOrder = asyncHandler(async (req, res) => {
         ? Math.round((value.totalDeliveryPrice || 0) * 1000)
         : (value.totalDeliveryPrice || 0);
     const deliveryDiffFils = backendDeliveryPriceFils - clientDeliveryPriceFils;
+    const repAmount = Number(value.representativePaymentAmount) || 0;
     const clientTotalPriceKd = (value.totalPrice || 0) > 100
         ? (value.totalPrice || 0) / 1000
         : (value.totalPrice || 0);
-    const adjustedTotalPriceKd = Math.max(0, clientTotalPriceKd + (deliveryDiffFils / 1000));
+    const adjustedTotalPriceKd = repAmount > 0
+        ? Number(((backendDeliveryPriceFils / 1000) + repAmount).toFixed(3))
+        : Math.max(0, clientTotalPriceKd + (deliveryDiffFils / 1000));
     const finalTotalPriceKd = Number(adjustedTotalPriceKd.toFixed(3));
 
     let resolvedVehicleName = value.vehicleName || value.vehicleTypeName || null;

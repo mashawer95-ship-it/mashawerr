@@ -79,12 +79,33 @@ const CheckoutSessionSchema = new mongoose.Schema(
 
         /**
          * Delivery fee in fils (integer) AFTER discounts.
-         * This is the authoritative amount sent to Paymob or debited from wallet.
          * Server-validated — never trusted from client.
          */
         totalDeliveryPriceFils: {
             type: Number,
             required: true,
+            min: 0,
+        },
+
+        /**
+         * Purchase / Items amount in fils (integer).
+         * For purchase orders, this is the validated item cost.
+         * 0 for normal delivery orders.
+         */
+        purchaseAmountFils: {
+            type: Number,
+            default: 0,
+            min: 0,
+        },
+
+        /**
+         * Total amount in fils (integer) = totalDeliveryPriceFils + purchaseAmountFils.
+         * Authoritative total financial value locked on the server.
+         * Used for Paymob payment and wallet debit.
+         */
+        totalAmountFils: {
+            type: Number,
+            default: 0,
             min: 0,
         },
 
