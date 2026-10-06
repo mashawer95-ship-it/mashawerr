@@ -28,6 +28,8 @@ async function connectToDB() {
             if (autoFixVehicleCategories) await autoFixVehicleCategories();
             const { fixPaymentIndexes } = require('../middlewares/Payment');
             if (fixPaymentIndexes) await fixPaymentIndexes();
+            const { fixGoogleIdIndex } = require('../middlewares/User');
+            if (fixGoogleIdIndex) await fixGoogleIdIndex();
         } catch (migrationErr) {
             console.warn('⚠️  Migration/Index fix skipped:', migrationErr.message);
         }

@@ -128,6 +128,23 @@ app.use('/api', async (req, res, next) => {
     });
 });
 
+// ── Maintenance route: clean googleId null & ensure sparse index ────────────
+app.get('/api/maintenance/fix-google-index', async (req, res) => {
+    try {
+        const { fixGoogleIdIndex } = require('./middlewares/User');
+        await fixGoogleIdIndex();
+        const mongoose = require('mongoose');
+        const usersCol = mongoose.connection.collection('users');
+        return res.json({
+            ok: true,
+            message: 'googleId null cleaned and sparse index verified in Mashawerr DB.',
+            indexes: await usersCol.indexes(),
+        });
+    } catch (e) {
+        return res.status(500).json({ ok: false, error: e.message });
+    }
+});
+
 // Register routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/users', require('./routes/users'));

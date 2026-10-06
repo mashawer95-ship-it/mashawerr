@@ -42,7 +42,6 @@ const UserSchema = new mongoose.Schema({
 },
  googleId:{
         type:String,
-        default:null,
         unique:true,
         sparse:true,
 },
@@ -276,8 +275,42 @@ function validateUpdateUser(object){
     }).unknown(true);
     return schema.validate(object);
 }
+// Function to clean up null googleId values and ensure sparse unique index
+async function fixGoogleIdIndex() {
+    try {
+        const mongoose = require('mongoose');
+        if (mongoose.connection.readyState !== 1) return;
+        const usersCol = mongoose.connection.collection('users');
+        
+        // 1. Unset null or empty googleId from all users so sparse index ignores them
+        const unsetRes = await usersCol.updateMany(
+            { $or: [{ googleId: null }, { googleId: '' }] },
+            { $unset: { googleId: '' } }
+        );
+        if (unsetRes && unsetRes.modifiedCount > 0) {
+            console.log(`✅ Unset null/empty googleId from ${unsetRes.modifiedCount} users in Mashawerr DB.`);
+        }
+
+        // 2. Drop any existing non-sparse index or broken index on googleId
+        const indexes = await usersCol.indexes();
+        const googleIdIdx = indexes.find(i => i.key && i.key.googleId !== undefined);
+        if (googleIdIdx && !googleIdIdx.sparse) {
+            console.log(`🔄 Dropping non-sparse googleId index: ${googleIdIdx.name}`);
+            await usersCol.dropIndex(googleIdIdx.name);
+            await usersCol.createIndex({ googleId: 1 }, { unique: true, sparse: true });
+            console.log('✅ Created sparse unique index on googleId in Mashawerr DB');
+        } else if (!googleIdIdx) {
+            await usersCol.createIndex({ googleId: 1 }, { unique: true, sparse: true });
+            console.log('✅ Created sparse unique index on googleId in Mashawerr DB');
+        }
+    } catch (e) {
+        console.warn('⚠️ fixGoogleIdIndex notice:', e.message);
+    }
+}
+
 module.exports = {
     User,
+    fixGoogleIdIndex,
     validateRegisterUser,
     validateLoginUser,
     validateUpdateUser,
