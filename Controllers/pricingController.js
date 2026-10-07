@@ -8,11 +8,37 @@ const {
     filsToArabicName,
 } = require('../middlewares/Pricing');
 
+/**
+ * دالة مساعدة ذكية لتوحيد وتصحيح المبالغ المالية بالفلس.
+ * إذا أدخل الأدمن أو أرسل التطبيق المبلغ بوحدة الجنيه/الدينار (مثلاً 5 أو 10 أو 15 أو 50 ج.م)،
+ * يتم ضربها في 1000 لتحويلها إلى فلس تلقائياً منعاً لخصم فلسات ضئيلة (0.01 ج.م).
+ * إذا كان المبلغ بالفعل بالفلس (مثلاً 5000 أو 10000 أو 15000 فلس)، يُحفظ كما هو.
+ */
+function normalizeFeeToFils(val) {
+    if (val === undefined || val === null) return undefined;
+    const num = Math.abs(Number(val));
+    if (isNaN(num)) return 0;
+    if (num === 0) return 0;
+    // أي قيمة أقل من 500 تُعتبر حتماً بالجنيه/الدينار (لأنه لا توجد رسوم أقل من نصف جنيه/دينار)
+    if (num < 500) {
+        return Math.round(num * 1000);
+    }
+    return Math.round(num);
+}
+
 function pricingToFilsResponse(pricing) {
     const baseFare = kdToFils(pricing.baseFare);
     const pricePerMeter = kdToFils(pricing.pricePerMeter);
     const minFare = kdToFils(pricing.minFare);
-    const maxNegativeBalanceFils = pricing.maxNegativeBalanceFils !== undefined ? pricing.maxNegativeBalanceFils : 5000;
+    
+    const cancellationFeeForClient = normalizeFeeToFils(pricing.cancellationFeeForClient) || 0;
+    const cancellationRewardForDriver = normalizeFeeToFils(pricing.cancellationRewardForDriver) || 0;
+    const cancellationFeeForDriver = normalizeFeeToFils(pricing.cancellationFeeForDriver) || 0;
+    const cancellationRewardForClient = normalizeFeeToFils(pricing.cancellationRewardForClient) || 0;
+    const delayFeeForClient = normalizeFeeToFils(pricing.delayFeeForClient) || 0;
+    const delayRewardForDriver = normalizeFeeToFils(pricing.delayRewardForDriver) || 0;
+    const maxNegativeBalanceFils = normalizeFeeToFils(pricing.maxNegativeBalanceFils !== undefined ? pricing.maxNegativeBalanceFils : 5000) || 5000;
+
     return {
         baseFare,
         baseFare_name_ar: filsToArabicName(baseFare),
@@ -23,12 +49,21 @@ function pricingToFilsResponse(pricing) {
         surgeMultiplier: pricing.surgeMultiplier,
         arrivalTimerMinutes: pricing.arrivalTimerMinutes || 10,
         clientCancellationTimerMinutes: pricing.clientCancellationTimerMinutes ?? 10,
-        cancellationFeeForClient: pricing.cancellationFeeForClient || 0,
-        cancellationRewardForDriver: pricing.cancellationRewardForDriver || 0,
-        delayFeeForClient: pricing.delayFeeForClient || 0,
-        delayRewardForDriver: pricing.delayRewardForDriver || 0,
+        cancellationFeeForClient,
+        cancellationFeeForClient_kd: Number((cancellationFeeForClient / 1000).toFixed(3)),
+        cancellationRewardForDriver,
+        cancellationRewardForDriver_kd: Number((cancellationRewardForDriver / 1000).toFixed(3)),
+        cancellationFeeForDriver,
+        cancellationFeeForDriver_kd: Number((cancellationFeeForDriver / 1000).toFixed(3)),
+        cancellationRewardForClient,
+        cancellationRewardForClient_kd: Number((cancellationRewardForClient / 1000).toFixed(3)),
+        delayFeeForClient,
+        delayFeeForClient_kd: Number((delayFeeForClient / 1000).toFixed(3)),
+        delayRewardForDriver,
+        delayRewardForDriver_kd: Number((delayRewardForDriver / 1000).toFixed(3)),
         maxNegativeBalanceFils,
         maxNegativeBalance_name_ar: filsToArabicName(maxNegativeBalanceFils),
+        maxNegativeBalance_kd: Number((maxNegativeBalanceFils / 1000).toFixed(3)),
         updatedAt: pricing.updatedAt,
     };
 }
@@ -81,6 +116,8 @@ const updatePricing = asyncHandler(async (req, res) => {
         clientCancellationTimerMinutes,
         cancellationFeeForClient,
         cancellationRewardForDriver,
+        cancellationFeeForDriver,
+        cancellationRewardForClient,
         delayFeeForClient,
         delayRewardForDriver,
         maxNegativeBalanceFils,
@@ -94,16 +131,14 @@ const updatePricing = asyncHandler(async (req, res) => {
     if (surgeMultiplier !== undefined) pricing.surgeMultiplier = surgeMultiplier;
     if (arrivalTimerMinutes !== undefined) pricing.arrivalTimerMinutes = arrivalTimerMinutes;
     if (clientCancellationTimerMinutes !== undefined) pricing.clientCancellationTimerMinutes = clientCancellationTimerMinutes;
-    if (cancellationFeeForClient !== undefined) pricing.cancellationFeeForClient = cancellationFeeForClient;
-    if (cancellationRewardForDriver !== undefined) pricing.cancellationRewardForDriver = cancellationRewardForDriver;
-    if (delayFeeForClient !== undefined) pricing.delayFeeForClient = delayFeeForClient;
-    if (delayRewardForDriver !== undefined) pricing.delayRewardForDriver = delayRewardForDriver;
+    if (cancellationFeeForClient !== undefined) pricing.cancellationFeeForClient = normalizeFeeToFils(cancellationFeeForClient);
+    if (cancellationRewardForDriver !== undefined) pricing.cancellationRewardForDriver = normalizeFeeToFils(cancellationRewardForDriver);
+    if (cancellationFeeForDriver !== undefined) pricing.cancellationFeeForDriver = normalizeFeeToFils(cancellationFeeForDriver);
+    if (cancellationRewardForClient !== undefined) pricing.cancellationRewardForClient = normalizeFeeToFils(cancellationRewardForClient);
+    if (delayFeeForClient !== undefined) pricing.delayFeeForClient = normalizeFeeToFils(delayFeeForClient);
+    if (delayRewardForDriver !== undefined) pricing.delayRewardForDriver = normalizeFeeToFils(delayRewardForDriver);
     if (maxNegativeBalanceFils !== undefined) {
-        let val = Math.abs(Number(maxNegativeBalanceFils));
-        if (val > 0 && val <= 50) {
-            val = Math.round(val * 1000); // 5 KD -> 5000 fils
-        }
-        pricing.maxNegativeBalanceFils = val;
+        pricing.maxNegativeBalanceFils = normalizeFeeToFils(maxNegativeBalanceFils);
     }
 
     pricing.updatedAt = new Date();

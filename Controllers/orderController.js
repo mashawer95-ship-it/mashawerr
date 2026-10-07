@@ -1907,6 +1907,8 @@ const cancelOrder = asyncHandler(async (req, res) => {
 
     // ─── خصم رسوم الإلغاء إذا مضى وقت أكثر من التايمر على قبول المندوب (فقط للطلب الفائز بالـ atomic lock) ───
     let cancellationFeeApplied = false;
+    let cancellationFeeFils = 0;
+    let cancellationRewardFils = 0;
     if (
         ['accepted', 'delivering', 'confirmed', 'processing'].includes(st) &&
         order.acceptedAt &&
@@ -1918,7 +1920,14 @@ const cancelOrder = asyncHandler(async (req, res) => {
             const timerMs = cancelMinutes * 60 * 1000;
             const elapsedMs = Date.now() - new Date(order.acceptedAt).getTime();
 
-            if (elapsedMs >= timerMs && pricing.cancellationFeeForClient > 0) {
+            // تصحيح وتوحيد المبالغ تلقائياً منعاً لخصم 0.01 ج.م
+            let clientFeeFils = Math.abs(Number(pricing.cancellationFeeForClient || 0));
+            if (clientFeeFils > 0 && clientFeeFils < 500) clientFeeFils = Math.round(clientFeeFils * 1000);
+
+            let driverRewardFils = Math.abs(Number(pricing.cancellationRewardForDriver || 0));
+            if (driverRewardFils > 0 && driverRewardFils < 500) driverRewardFils = Math.round(driverRewardFils * 1000);
+
+            if (elapsedMs >= timerMs && clientFeeFils > 0) {
                 const { debitWalletAllowNegative, creditWallet } = require('../middlewares/Wallet');
                 const feeRefId = `ORDER_CANCEL_FEE_${order.orderId}`;
                 const rewardRefId = `ORDER_CANCEL_REWARD_${order.orderId}`;
@@ -1927,28 +1936,32 @@ const cancelOrder = asyncHandler(async (req, res) => {
                 try {
                     await debitWalletAllowNegative({
                         userId: order.clientId,
-                        amountFils: pricing.cancellationFeeForClient,
+                        amountFils: clientFeeFils,
                         type: 'cancellation_fee',
-                        description: `رسوم إلغاء الأوردر #${order.orderId}`,
+                        description: `رسوم إلغاء الأوردر #${order.orderId} بعد تجاوز مهلة ${cancelMinutes} دقيقة`,
                         refId: feeRefId,
                         performedBy: 'system',
                     });
                     cancellationFeeApplied = true;
+                    cancellationFeeFils = clientFeeFils;
+                    logger.info(`[cancelOrder] تم خصم رسوم إلغاء (${clientFeeFils} فلس = ${(clientFeeFils / 1000).toFixed(2)} ج.م) من العميل ${order.clientId} للأوردر #${order.orderId}`);
                 } catch (walletErr) {
                     logger.error(`[cancelOrder] فشل خصم رسوم الإلغاء من العميل: ${walletErr.message}`);
                 }
 
-                // إضافة مكافأة للمندوب
-                if (pricing.cancellationRewardForDriver > 0) {
+                // إضافة مكافأة تعويض للمندوب
+                if (driverRewardFils > 0) {
                     try {
                         await creditWallet({
                             userId: order.representativeId,
-                            amountFils: pricing.cancellationRewardForDriver,
+                            amountFils: driverRewardFils,
                             type: 'cancellation_reward',
-                            description: `مكافأة إلغاء العميل — أوردر #${order.orderId}`,
+                            description: `مكافأة تعويض إلغاء العميل — أوردر #${order.orderId}`,
                             refId: rewardRefId,
                             performedBy: 'system',
                         });
+                        cancellationRewardFils = driverRewardFils;
+                        logger.info(`[cancelOrder] تم إيداع مكافأة إلغاء (${driverRewardFils} فلس = ${(driverRewardFils / 1000).toFixed(2)} ج.م) للمندوب ${order.representativeId} للأوردر #${order.orderId}`);
                     } catch (driverWalletErr) {
                         logger.error(`[cancelOrder] فشل إضافة مكافأة المندوب: ${driverWalletErr.message}`);
                     }
@@ -2090,16 +2103,43 @@ const cancelOrder = asyncHandler(async (req, res) => {
         }
     }
 
+    const cancelFeeNotice = cancellationFeeApplied
+        ? ` (تم خصم ${(cancellationFeeFils / 1000).toFixed(2)} ج.م رسوم إلغاء لتجاوز المهلة)`
+        : '';
+
     notifyClient(
         order.clientId,
         '❌ تم إلغاء الطلب',
-        `طلبك تم إلغاؤه.${refundNote} السبب: ${value.reason || 'غير محدد'}`,
-        { type: 'order_cancelled', orderId: String(order.orderId) },
+        `طلبك تم إلغاؤه.${cancelFeeNotice}${refundNote} السبب: ${value.reason || 'غير محدد'}`,
+        {
+            type: 'order_cancelled',
+            orderId: String(order.orderId),
+            cancellationFeeApplied: String(cancellationFeeApplied),
+            cancellationFeeFils: String(cancellationFeeFils),
+        },
     ).catch(() => { });
+
+    if (order.representativeId && cancellationRewardFils > 0) {
+        notifyClient(
+            order.representativeId,
+            '🎁 تعويض إلغاء الطلب',
+            `قام العميل بإلغاء الطلب #${order.orderId}. تم إيداع ${(cancellationRewardFils / 1000).toFixed(2)} ج.م في محفظتك كتعويض.`,
+            {
+                type: 'cancellation_reward',
+                orderId: String(order.orderId),
+                rewardFils: String(cancellationRewardFils),
+            },
+        ).catch(() => { });
+    }
 
     return res.status(200).json({
         message: 'Order cancelled successfully',
         cancellationFeeApplied,
+        cancellationFeeFils,
+        cancellationFeeAmountFils: cancellationFeeFils,
+        cancellationFeeKD: cancellationFeeFils / 1000,
+        cancellationRewardFils,
+        cancellationRewardKD: cancellationRewardFils / 1000,
         refundDestination,
         refundMessage,
         ...formatOrder(req, order),
@@ -2907,34 +2947,42 @@ const markClientDelayed = asyncHandler(async (req, res) => {
     let clientFeeApplied = false;
     let driverRewardApplied = false;
 
-    if (pricing.delayFeeForClient > 0 && clientId) {
+    let clientFeeFils = Math.abs(Number(pricing.delayFeeForClient || 0));
+    if (clientFeeFils > 0 && clientFeeFils < 500) clientFeeFils = Math.round(clientFeeFils * 1000);
+
+    let driverRewardFils = Math.abs(Number(pricing.delayRewardForDriver || 0));
+    if (driverRewardFils > 0 && driverRewardFils < 500) driverRewardFils = Math.round(driverRewardFils * 1000);
+
+    if (clientFeeFils > 0 && clientId) {
         try {
             await debitWalletAllowNegative({
                 userId: clientId,
-                amountFils: pricing.delayFeeForClient,
+                amountFils: clientFeeFils,
                 type: 'delay_fee',
                 description: `رسوم تأخير الاستلام — أوردر #${refId}`,
                 refId,
                 performedBy: 'system',
             });
             clientFeeApplied = true;
+            logger.info(`[markClientDelayed] تم خصم رسوم تأخير (${clientFeeFils} فلس = ${(clientFeeFils / 1000).toFixed(2)} ج.م) من العميل ${clientId} للأوردر #${refId}`);
         } catch (err) {
             logger.error(`[markClientDelayed] فشل خصم رسوم التأخير من العميل: ${err.message}`);
         }
     }
 
     const repUser = order.representativeId || req.user?.id;
-    if (pricing.delayRewardForDriver > 0 && repUser) {
+    if (driverRewardFils > 0 && repUser) {
         try {
             await creditWallet({
                 userId: repUser,
-                amountFils: pricing.delayRewardForDriver,
+                amountFils: driverRewardFils,
                 type: 'delay_reward',
-                description: `مكافأة تأخر العميل — أوردر #${refId}`,
+                description: `مكافأة انتظار تأخر العميل — أوردر #${refId}`,
                 refId,
                 performedBy: 'system',
             });
             driverRewardApplied = true;
+            logger.info(`[markClientDelayed] تم إيداع مكافأة انتظار (${driverRewardFils} فلس = ${(driverRewardFils / 1000).toFixed(2)} ج.م) للمندوب ${repUser} للأوردر #${refId}`);
         } catch (err) {
             logger.error(`[markClientDelayed] فشل إضافة مكافأة المندوب: ${err.message}`);
         }
@@ -3032,6 +3080,7 @@ const releaseOrder = asyncHandler(async (req, res) => {
     // ─── فحص مهلة الإلغاء وخصم الرسوم من محفظة المندوب إذا ألغى بعد انقضاء المهلة ───
     let cancellationFeeApplied = false;
     let cancellationFeeFils = 0;
+    let cancellationRewardFils = 0;
     const acceptedAtTime = order.acceptedAt;
 
     if (acceptedAtTime && oldRepId) {
@@ -3041,23 +3090,50 @@ const releaseOrder = asyncHandler(async (req, res) => {
             const timerMs = cancelMinutes * 60 * 1000;
             const elapsedMs = Date.now() - new Date(acceptedAtTime).getTime();
 
-            if (elapsedMs >= timerMs && pricing.cancellationFeeForClient > 0) {
-                const { debitWalletAllowNegative } = require('../middlewares/Wallet');
+            // رسوم إلغاء المندوب (إذا كانت محددة، وإلا ترجع لرسوم الإلغاء العامة)
+            let repCancelFeeFils = Math.abs(Number((pricing.cancellationFeeForDriver > 0 ? pricing.cancellationFeeForDriver : pricing.cancellationFeeForClient) || 0));
+            if (repCancelFeeFils > 0 && repCancelFeeFils < 500) repCancelFeeFils = Math.round(repCancelFeeFils * 1000);
+
+            // مكافأة تعويض العميل عند اعتذار المندوب بعد المهلة
+            let clientRewardFils = Math.abs(Number(pricing.cancellationRewardForClient || 0));
+            if (clientRewardFils > 0 && clientRewardFils < 500) clientRewardFils = Math.round(clientRewardFils * 1000);
+
+            if (elapsedMs >= timerMs && repCancelFeeFils > 0) {
+                const { debitWalletAllowNegative, creditWallet } = require('../middlewares/Wallet');
                 const refId = String(order.orderId || req.params.id);
                 try {
                     await debitWalletAllowNegative({
                         userId: oldRepId,
-                        amountFils: pricing.cancellationFeeForClient,
+                        amountFils: repCancelFeeFils,
                         type: 'cancellation_fee',
                         description: `رسوم إلغاء قبول الأوردر #${refId} بعد تجاوز مهلة ${cancelMinutes} دقيقة`,
                         refId,
                         performedBy: 'system',
                     });
                     cancellationFeeApplied = true;
-                    cancellationFeeFils = pricing.cancellationFeeForClient;
-                    logger.info(`[releaseOrder] تم خصم رسوم إلغاء (${cancellationFeeFils} فلس) من المندوب ${oldRepId} لتجاوز المهلة للأوردر #${refId}`);
+                    cancellationFeeFils = repCancelFeeFils;
+                    logger.info(`[releaseOrder] تم خصم رسوم إلغاء (${cancellationFeeFils} فلس = ${(cancellationFeeFils / 1000).toFixed(2)} ج.م) من المندوب ${oldRepId} لتجاوز المهلة للأوردر #${refId}`);
                 } catch (walletErr) {
                     logger.error(`[releaseOrder] فشل خصم رسوم الإلغاء من محفظة المندوب: ${walletErr.message}`);
+                }
+
+                // تعويض العميل إذا تم تحديده
+                const clientId = order.clientId || order.userId;
+                if (clientRewardFils > 0 && clientId) {
+                    try {
+                        await creditWallet({
+                            userId: clientId,
+                            amountFils: clientRewardFils,
+                            type: 'cancellation_reward',
+                            description: `تعويض اعتذار المندوب عن الطلب #${refId}`,
+                            refId: `ORDER_REP_CANCEL_REWARD_${refId}`,
+                            performedBy: 'system',
+                        });
+                        cancellationRewardFils = clientRewardFils;
+                        logger.info(`[releaseOrder] تم إيداع تعويض (${clientRewardFils} فلس = ${(clientRewardFils / 1000).toFixed(2)} ج.م) للعميل ${clientId} للأوردر #${refId}`);
+                    } catch (clientRewardErr) {
+                        logger.error(`[releaseOrder] فشل إضافة تعويض العميل: ${clientRewardErr.message}`);
+                    }
                 }
             }
         } catch (pricingErr) {
@@ -3128,10 +3204,13 @@ const releaseOrder = asyncHandler(async (req, res) => {
 
     const clientId = order.clientId || order.userId;
     if (clientId) {
+        const rewardNotice = cancellationRewardFils > 0
+            ? ` وتم إيداع ${(cancellationRewardFils / 1000).toFixed(2)} ج.م في محفظتك كتعويض.`
+            : '';
         notifyClient(
             clientId,
             '⏳ طلبك يبحث عن مندوب جديد',
-            'المندوب اعتذر عن الطلب — جاري البحث عن مندوب آخر لك فوراً',
+            `المندوب اعتذر عن الطلب — جاري البحث عن مندوب آخر لك فوراً.${rewardNotice}`,
             { type: 'order_released', orderId: refId },
         ).catch(() => { });
     }
@@ -3156,6 +3235,8 @@ const releaseOrder = asyncHandler(async (req, res) => {
         cancellationFeeApplied,
         cancellationFeeFils,
         cancellationFeeKD: cancellationFeeFils / 1000,
+        cancellationRewardFils,
+        cancellationRewardKD: cancellationRewardFils / 1000,
         ...formatted,
     });
 });

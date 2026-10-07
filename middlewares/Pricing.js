@@ -43,6 +43,8 @@ const DEFAULT_PRICING = {
     clientCancellationTimerMinutes: 10, // مدة مهلة إلغاء الطلب للعميل بعد قبول المندوب (بالدقائق)
     cancellationFeeForClient: 0,        // رسوم الإلغاء على العميل (بالفلس)
     cancellationRewardForDriver: 0,     // مكافأة المندوب عند إلغاء العميل (بالفلس)
+    cancellationFeeForDriver: 0,        // رسوم الإلغاء على المندوب عند الاعتذار بعد المهلة (بالفلس)
+    cancellationRewardForClient: 0,     // مكافأة تعويض العميل عند إلغاء المندوب بعد المهلة (بالفلس)
     delayFeeForClient: 0,               // رسوم التأخير على العميل (بالفلس)
     delayRewardForDriver: 0,            // مكافأة المندوب عند تأخر العميل (بالفلس)
     maxNegativeBalanceFils: 5000,       // الحد الأقصى للرصيد السالب المسموح به في المحفظة (بالفلس) - 5000 فلس = 5 د.ك
@@ -94,6 +96,16 @@ const PricingSchema = new mongoose.Schema(
             type: Number,
             min: 0,
             default: DEFAULT_PRICING.cancellationRewardForDriver,
+        },
+        cancellationFeeForDriver: {
+            type: Number,
+            min: 0,
+            default: 0,
+        },
+        cancellationRewardForClient: {
+            type: Number,
+            min: 0,
+            default: 0,
         },
         delayFeeForClient: {
             type: Number,
@@ -172,6 +184,8 @@ function validateUpdatePricing(object) {
         }),
         cancellationFeeForClient: filsField('cancellationFeeForClient'),
         cancellationRewardForDriver: filsField('cancellationRewardForDriver'),
+        cancellationFeeForDriver: filsField('cancellationFeeForDriver'),
+        cancellationRewardForClient: filsField('cancellationRewardForClient'),
         delayFeeForClient: filsField('delayFeeForClient'),
         delayRewardForDriver: filsField('delayRewardForDriver'),
         maxNegativeBalanceFils: joi.number().max(1e12).allow(null).messages({

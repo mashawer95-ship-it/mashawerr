@@ -16,8 +16,8 @@ async function getMinWalletBalanceFils() {
         if (isNaN(maxNegFils) || maxNegFils === 0) {
             maxNegFils = 5000;
         }
-        // إذا قام الأدمن بإدخال القيمة بالدينار (مثل 5 دينار بدلاً من 5000 فلس)
-        if (maxNegFils > 0 && maxNegFils <= 50) {
+        // إذا قام الأدمن بإدخال القيمة بالدينار/الجنيه (مثل 5 أو 50 أو 100 ج.م بدلاً من فلس)
+        if (maxNegFils > 0 && maxNegFils < 500) {
             maxNegFils = Math.round(maxNegFils * 1000);
         }
         return -maxNegFils;
