@@ -376,7 +376,7 @@ function formatOrder(req, order, commissionCfg) {
         orderCategory: order.orderCategory || 'delivery',
         governorate: order.governorate || null,
         clientGovernorate: order.governorate || null,
-        paymentMethod: order.paymentMethod || 'cash',
+        paymentMethod: order.paymentMethod || (tasksWithIds[0] ? tasksWithIds[0].paymentMethod : null) || 'cash',
         paymentStatus: order.paymentStatus || 'unpaid',
         representativeWillPay: Boolean(order.representativeWillPay),
         representativePaymentAmount: order.representativePaymentAmount || 0,
