@@ -872,9 +872,14 @@ const _swaggerPaths = {
                                     type: 'object',
                                     required: ['userId', 'phone', 'password', 'confirmPassword'],
                                     properties: {
+                                        registrationToken: {
+                                            type: 'string',
+                                            description: 'Temporary registration token returned from /google-signin when user is new',
+                                            example: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
+                                        },
                                         userId: {
                                             type: 'string',
-                                            description: 'MongoDB _id of the Google user (from google-signin response _id)',
+                                            description: 'MongoDB _id of the Google user (optional if registrationToken is provided)',
                                             example: '507f1f77bcf86cd799439011',
                                         },
                                         phone: {
@@ -882,7 +887,18 @@ const _swaggerPaths = {
                                             description: 'Phone number with country code (e.g. +201012345678)',
                                             example: '+201012345678',
                                             minLength: 7,
-                                            maxLength: 20,
+                                            maxLength: 25,
+                                        },
+                                        governorate: {
+                                            type: 'string',
+                                            description: 'Selected governorate (e.g. Cairo)',
+                                            example: 'القاهرة',
+                                        },
+                                        gender: {
+                                            type: 'string',
+                                            enum: ['male', 'female'],
+                                            description: 'Gender of user',
+                                            example: 'male',
                                         },
                                         password: {
                                             type: 'string',

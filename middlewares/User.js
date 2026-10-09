@@ -30,7 +30,7 @@ const UserSchema = new mongoose.Schema({
         required:false,
         trim:true,
         minlength:7,
-        maxlength:15,
+        maxlength:25,
         default: null,
 },
  password:{
@@ -269,7 +269,7 @@ function validateUpdateUser(object){
     const schema=joi.object({
         firstName: joi.string().trim().min(2).max(100),
         lastName: joi.string().trim().min(2).max(100),
-        phone: joi.string().trim().min(7).max(15),
+        phone: joi.string().trim().min(7).max(25),
         governorate: joi.string().trim().allow('', null).optional(),
         gender: joi.string().valid('male', 'female', 'ذكر', 'أنثى').allow('', null).optional(),
     }).unknown(true);

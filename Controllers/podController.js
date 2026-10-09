@@ -462,6 +462,19 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
                 parentOrder.status = 'processing';
             }
             await safeSave(parentOrder, 'parentOrder [pickup]');
+            await Order.updateOne(
+                { _id: parentOrder._id },
+                {
+                    $set: {
+                        allLocationsInOrder: parentOrder.allLocationsInOrder,
+                        tasks: parentOrder.tasks,
+                        status: parentOrder.status,
+                        pickupPhoto: parentOrder.pickupPhoto,
+                        pickupPhotoUrl: parentOrder.pickupPhotoUrl,
+                        itemPhotoBefore: parentOrder.itemPhotoBefore,
+                    }
+                }
+            ).catch(err => logger.error(`[PoD] Order.updateOne pickup error [${traceId}]: ${err.message}`));
         }
 
         const trackData = await DeliveryOrderTracker.getOrderTrack(parentOrder || orderId).catch(() => null);
@@ -583,6 +596,21 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
             parentOrder.status = isReturn ? 'return_delivering' : 'delivering';
         }
         await safeSave(parentOrder, 'parentOrder [delivery-status]');
+        await Order.updateOne(
+            { _id: parentOrder._id },
+            {
+                $set: {
+                    allLocationsInOrder: parentOrder.allLocationsInOrder,
+                    tasks: parentOrder.tasks,
+                    status: parentOrder.status,
+                    deliveryPhoto: parentOrder.deliveryPhoto,
+                    deliveryPhotoUrl: parentOrder.deliveryPhotoUrl,
+                    itemPhotoAfter: parentOrder.itemPhotoAfter,
+                    deliveredAt: parentOrder.deliveredAt,
+                    returnedAt: parentOrder.returnedAt,
+                }
+            }
+        ).catch(err => logger.error(`[PoD] Order.updateOne delivery error [${traceId}]: ${err.message}`));
     }
 
     const trackData = await DeliveryOrderTracker.getOrderTrack(parentOrder || orderId).catch(() => null);
@@ -1060,11 +1088,12 @@ exports.getSessionStatus = async (req, res) => {
         const latestAttemptState = latestAttemptForPhase?.state || null;
         const latestAttemptPhase = latestAttemptForPhase?.phase || currentPhase;
 
+        const pickupAttempt = attempts.find(a => a.phase === 'PICKUP');
         const isOrderDone = ['delivered', 'completed', 'returned', 'finished'].includes(order?.status?.toLowerCase()) || session.state === 'COMPLETED';
 
         // Strictly evaluate approval for current active phase attempt: MUST be explicitly APPROVED or order already completed
-        const isApproved = latestAttemptForPhase?.state === 'APPROVED' || isOrderDone;
-        const isPickupApproved = isApproved && (latestAttemptPhase === 'PICKUP');
+        const isApproved = latestAttemptForPhase?.state === 'APPROVED' || (pickupAttempt?.state === 'APPROVED') || isOrderDone;
+        const isPickupApproved = isOrderDone || (pickupAttempt?.state === 'APPROVED') || (isApproved && latestAttemptPhase === 'PICKUP');
         const isDeliveryApproved = (session.state === 'COMPLETED' || isOrderDone || (isApproved && latestAttemptPhase === 'DELIVERY')) && latestAttemptState !== 'WAITING_CUSTOMER_REVIEW' && latestAttemptState !== 'AI_VALIDATION';
 
         const isRejected = !isOrderDone && (latestAttemptState === 'REJECTED' || latestAttemptState === 'AI_REJECTED');

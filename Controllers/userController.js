@@ -798,15 +798,19 @@ const updateOnlineLocation = asyncHandler(async (req, res) => {
 const getOnlineRepresentatives = asyncHandler(async (req, res) => {
     const { lat, lng, radius, governorate } = req.query;
 
-    // مهلة حداثة الموقع (20 دقيقة): لمنع ظهور مناديب غير نشطين أو في أماكن قديمة
-    const maxAgeMinutes = 20;
+    // مهلة حداثة الموقع (120 دقيقة): لمنع ظهور مناديب غير نشطين مع إبقاء المتاحين
+    const maxAgeMinutes = 120;
     const cutoffDate = new Date(Date.now() - maxAgeMinutes * 60 * 1000);
 
     const filter = {
         userType: { $regex: /^(representative|driver)$/i },
         isAvailable: true,
         'lastLocation.lat': { $exists: true, $ne: null },
-        'lastLocation.updatedAt': { $gte: cutoffDate },
+        $or: [
+            { 'lastLocation.updatedAt': { $gte: cutoffDate } },
+            { 'lastLocation.updatedAt': { $exists: false } },
+            { 'lastLocation.updatedAt': null },
+        ]
     };
     const isAgentOnline = (req.user?.userType || req.fullUser?.userType || '').toString().trim().toLowerCase() === 'agent';
     const agentGovOnline = (req.fullUser?.governorate || req.user?.governorate || '').trim();

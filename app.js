@@ -301,6 +301,19 @@ io.on('connection', (socket) => {
 
         const room = `order:${orderId}`;
         socket.join(room);
+        if (order) {
+            if (order._id) {
+                socket.join(`order:${order._id.toString()}`);
+                socket.join(`trip:${order._id.toString()}`);
+            }
+            if (order.orderId != null) {
+                socket.join(`order:${order.orderId.toString()}`);
+                socket.join(`trip:${order.orderId.toString()}`);
+            }
+        }
+        if (socket.user?.id) {
+            socket.join(`user:${socket.user.id}`);
+        }
         logger.debug(`[Socket.IO] ${socket.id} (user:${socket.user?.id}) joined room ${room}`);
         socket.emit('joined_order', { orderId, room });
 

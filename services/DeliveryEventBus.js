@@ -194,8 +194,10 @@ class DeliveryEventBus {
             session.customerId ? `user:${session.customerId}` : null,
             `order:${session.orderId}`,
             `order:${orderId}`,
+            trackData?.orderId ? `order:${trackData.orderId}` : null,
             `trip:${session.orderId}`,
             `trip:${orderId}`,
+            trackData?.orderId ? `trip:${trackData.orderId}` : null,
             ...(trackData?.extraRooms || [])
         ].filter(Boolean));
 
@@ -227,6 +229,7 @@ class DeliveryEventBus {
                 eventNames: [
                     'pickup_session:approved',
                     'order:pickup_approved',
+                    'delivery_session:approved',
                     'order:pod_approved',
                     'order:track_updated',
                     'order:status_changed',
