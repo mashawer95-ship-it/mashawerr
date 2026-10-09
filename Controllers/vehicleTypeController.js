@@ -104,7 +104,7 @@ const createVehicleType = asyncHandler(async (req, res) => {
     const vehicleType = await VehicleType.create({
         name_ar,
         name_en: name_en || undefined,
-        image: value.image || req.body.image || undefined,
+        image: (value.image && value.image.trim()) ? value.image.trim() : ((req.body.image && req.body.image.trim()) ? req.body.image.trim() : undefined),
         icon_key: icon_key || iconKey || 'sedan',
         baseFare: normalizeEgpInput(baseFare, 0),
         pricePerMeter: normalizeMeterPrice(pricePerMeter, 0),
@@ -159,7 +159,7 @@ const updateVehicleType = asyncHandler(async (req, res) => {
     if (name_ar !== undefined) vehicleType.name_ar = name_ar;
     if (name_en !== undefined) vehicleType.name_en = name_en;
     if (icon_key !== undefined || iconKey !== undefined) vehicleType.icon_key = icon_key || iconKey;
-    if (value.image !== undefined) vehicleType.image = value.image;
+    if (value.image !== undefined) vehicleType.image = (value.image && value.image.trim()) ? value.image.trim() : null;
     if (baseFare !== undefined) vehicleType.baseFare = normalizeEgpInput(baseFare, vehicleType.baseFare);
     if (pricePerMeter !== undefined) vehicleType.pricePerMeter = normalizeMeterPrice(pricePerMeter, vehicleType.pricePerMeter);
     if (minFare !== undefined) vehicleType.minFare = normalizeEgpInput(minFare, vehicleType.minFare);
