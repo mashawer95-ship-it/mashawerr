@@ -137,19 +137,27 @@ function validateCalculatePrice(object) {
 
 async function autoFixVehicleCategories() {
     try {
-        // Any vehicle with motorcycle / scooter / bike name or icon must be 'delivery'
+        // Backfill legacy vehicles only if category is null, undefined or empty
         await VehicleType.updateMany(
             {
                 $or: [
-                    { icon_key: { $in: ['motorcycle', 'bike', 'scooter'] } },
-                    { name_ar: { $regex: /موتوسيكل|سكوتر|دراجة|دباب/i } },
+                    { category: { $exists: false } },
+                    { category: null },
+                    { category: '' },
                 ],
-                category: { $ne: 'delivery' },
+                $and: [
+                    {
+                        $or: [
+                            { icon_key: { $in: ['motorcycle', 'bike', 'scooter'] } },
+                            { name_ar: { $regex: /موتوسيكل|سكوتر|دراجة|دباب/i } },
+                        ],
+                    },
+                ],
             },
             { $set: { category: 'delivery' } }
         );
 
-        // Any vehicle with car / sedan / taxi name or icon that has no category, set to 'passenger'
+        // Any legacy vehicle with car / sedan / taxi name or icon that has no category, set to 'passenger'
         await VehicleType.updateMany(
             {
                 $and: [
@@ -163,13 +171,14 @@ async function autoFixVehicleCategories() {
                         $or: [
                             { category: { $exists: false } },
                             { category: null },
+                            { category: '' },
                         ],
                     },
                 ],
             },
             { $set: { category: 'passenger' } }
         );
-        console.log('✅ [VehicleType] Auto-fixed vehicle categories for delivery & passenger');
+        console.log('✅ [VehicleType] Auto-fixed legacy vehicle categories without overriding custom settings');
     } catch (e) {
         console.warn('⚠️ [VehicleType] autoFixVehicleCategories error:', e.message);
     }

@@ -212,11 +212,7 @@ const getVehicleTypes = asyncHandler(async (req, res) => {
                 { category: { $ne: 'passenger' } },
             ];
         } else if (cat === 'passenger') {
-            filter.$and = [
-                { category: { $in: ['passenger', 'both'] } },
-                { icon_key: { $nin: ['motorcycle', 'bike', 'scooter'] } },
-                { name_ar: { $not: /موتوسيكل|سكوتر|دراجة|دباب/i } },
-            ];
+            filter.category = { $in: ['passenger', 'both'] };
         } else if (cat !== 'all') {
             filter.category = cat;
         }
@@ -373,11 +369,7 @@ const calculateVehiclePrices = asyncHandler(async (req, res) => {
                 { category: { $ne: 'passenger' } },
             ];
         } else if (cat === 'passenger') {
-            filter.$and = [
-                { category: { $in: ['passenger', 'both'] } },
-                { icon_key: { $nin: ['motorcycle', 'bike', 'scooter'] } },
-                { name_ar: { $not: /موتوسيكل|سكوتر|دراجة|دباب/i } },
-            ];
+            filter.category = { $in: ['passenger', 'both'] };
         } else if (cat !== 'all') {
             filter.category = cat;
         }
@@ -386,13 +378,15 @@ const calculateVehiclePrices = asyncHandler(async (req, res) => {
     let vehicleTypes = await VehicleType.find(filter).sort({ createdAt: -1 });
 
     // Fallback safety: If passenger category was requested but no vehicle matched,
-    // fallback to any active vehicle that is not a motorcycle or scooter
+    // fallback to any active vehicle configured for passenger or both
     if (rawCat && String(rawCat).toLowerCase().trim() === 'passenger' && vehicleTypes.length === 0) {
         vehicleTypes = await VehicleType.find({
             isActive: true,
-            icon_key: { $nin: ['motorcycle', 'bike', 'scooter'] },
-            name_ar: { $not: /موتوسيكل|سكوتر|دراجة|دباب/i },
+            category: { $in: ['passenger', 'both'] },
         }).sort({ createdAt: -1 });
+        if (vehicleTypes.length === 0) {
+            vehicleTypes = await VehicleType.find({ isActive: true }).sort({ createdAt: -1 });
+        }
     }
 
     const results = vehicleTypes.map((vt) => {
