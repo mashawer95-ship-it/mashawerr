@@ -35,6 +35,7 @@ const { WalletLedger } = require('../../middlewares/WalletLedger');
 const { Payment, PaymentEvent } = require('../../middlewares/Payment');
 const { CheckoutSession } = require('../../middlewares/CheckoutSession');
 const { Order, getNextGlobalOrderId, getNextTaskId } = require('../../middlewares/Order');
+const { normalizePagination, buildPaginationMetadata } = require('../../utils/pagination');
 const { detectGovernorateFromText } = require('../../utils/governorateHelper');
 const {
     PAYMENT_ERROR_CODES,
@@ -960,25 +961,78 @@ async function getWalletBalance(userId) {
  * @returns {Promise<{ transactions, total, page, limit }>}
  */
 async function getWalletTransactions({ userId, page = 1, limit = 20 }) {
-    const skip = (page - 1) * limit;
+    const { page: safePage, limit: safeLimit, skip } = normalizePagination({
+        page,
+        limit,
+        defaultLimit: 20,
+        maxLimit: 50,
+    });
     const userIdStr = String(userId);
 
-    // 1. Fetch from WalletLedger and user's Wallet document concurrently
-    const [transactions, ledgerTotal, walletDoc] = await Promise.all([
+    // 1. Fetch user's legacy Wallet document (to check if old embedded transactions exist)
+    const walletDoc = await Wallet.findOne({
+        $or: [
+            { userId: userIdStr },
+            ...(mongoose.Types.ObjectId.isValid(userId) ? [{ userId: new mongoose.Types.ObjectId(userId) }] : [])
+        ]
+    }).select('transactions').lean();
+
+    const hasLegacyTxs = Array.isArray(walletDoc?.transactions) && walletDoc.transactions.length > 0;
+
+    // Fast path: No legacy embedded transactions (the standard case).
+    // Perform direct DB pagination using the compound index { userId: 1, createdAt: -1, _id: -1 }.
+    if (!hasLegacyTxs) {
+        const [transactions, total] = await Promise.all([
+            WalletLedger.find({ userId: userIdStr })
+                .sort({ createdAt: -1, _id: -1 })
+                .skip(skip)
+                .limit(safeLimit)
+                .select('-metadata -__v')
+                .lean(),
+            WalletLedger.countDocuments({ userId: userIdStr }),
+        ]);
+
+        const mapped = transactions.map((tx) => ({
+            _id:              tx._id,
+            type:             tx.type,
+            source:           tx.source,
+            amountFils:       tx.amountFils,
+            amountEgp:        filsToEgp(tx.amountFils),
+            currency:         tx.currency,
+            balanceAfterFils: tx.balanceAfterFils,
+            balanceAfterEgp:  filsToEgp(tx.balanceAfterFils),
+            status:           tx.status,
+            description:      tx.description,
+            reference:        tx.reference,
+            createdAt:        tx.createdAt,
+            orderId:          tx.orderId,
+            paymentId:        tx.paymentId,
+        }));
+
+        const meta = buildPaginationMetadata(total, safePage, safeLimit);
+        return {
+            transactions: mapped,
+            total,
+            page: safePage,
+            limit: safeLimit,
+            totalPages: meta.totalPages,
+            hasNextPage: meta.hasNextPage,
+            hasPrevPage: meta.hasPrevPage,
+            nextPage: meta.nextPage,
+            prevPage: meta.prevPage,
+        };
+    }
+
+    // Fallback path: User has legacy embedded transactions on Wallet document.
+    // Merge WalletLedger and legacy transactions safely.
+    const [transactions, ledgerTotal] = await Promise.all([
         WalletLedger.find({ userId: userIdStr })
-            .sort({ createdAt: -1 })
+            .sort({ createdAt: -1, _id: -1 })
             .select('-metadata -__v')
             .lean(),
         WalletLedger.countDocuments({ userId: userIdStr }),
-        Wallet.findOne({
-            $or: [
-                { userId: userIdStr },
-                ...(mongoose.Types.ObjectId.isValid(userId) ? [{ userId: new mongoose.Types.ObjectId(userId) }] : [])
-            ]
-        }).select('transactions').lean(),
     ]);
 
-    // 2. Build set of existing references/IDs to avoid any duplicate transaction
     const knownRefs = new Set();
     for (const tx of transactions) {
         if (tx.reference) knownRefs.add(String(tx.reference));
@@ -986,37 +1040,33 @@ async function getWalletTransactions({ userId, page = 1, limit = 20 }) {
         if (tx.orderId) knownRefs.add(String(tx.orderId));
     }
 
-    // 3. Map any transactions from wallet.transactions (e.g. representative earnings/rewards/commission)
     const extraTxs = [];
-    if (walletDoc && Array.isArray(walletDoc.transactions)) {
-        for (const tx of walletDoc.transactions) {
-            const ref = tx.refId ? String(tx.refId) : null;
-            if (ref && knownRefs.has(ref)) continue;
+    for (const tx of walletDoc.transactions) {
+        const ref = tx.refId ? String(tx.refId) : null;
+        if (ref && knownRefs.has(ref)) continue;
 
-            const txType = (tx.type || '').toLowerCase();
-            const isCredit = txType === 'credit' || txType.includes('reward');
-            const type = isCredit ? 'CREDIT' : 'DEBIT';
+        const txType = (tx.type || '').toLowerCase();
+        const isCredit = txType === 'credit' || txType.includes('reward');
+        const type = isCredit ? 'CREDIT' : 'DEBIT';
 
-            extraTxs.push({
-                _id: tx._id,
-                type,
-                source: txType.includes('reward') ? 'REWARD' : 'OTHER',
-                amountFils: tx.amountFils,
-                amountEgp: filsToEgp(tx.amountFils),
-                currency: CURRENCY.EGP,
-                balanceAfterFils: tx.balanceAfterFils || 0,
-                balanceAfterEgp: filsToEgp(tx.balanceAfterFils || 0),
-                status: 'COMPLETED',
-                description: tx.description || (isCredit ? 'إضافة رصيد' : 'خصم رصيد'),
-                reference: ref,
-                createdAt: tx.createdAt || new Date(),
-                orderId: ref,
-                paymentId: null,
-            });
-        }
+        extraTxs.push({
+            _id: tx._id,
+            type,
+            source: txType.includes('reward') ? 'REWARD' : 'OTHER',
+            amountFils: tx.amountFils,
+            amountEgp: filsToEgp(tx.amountFils),
+            currency: CURRENCY.EGP,
+            balanceAfterFils: tx.balanceAfterFils || 0,
+            balanceAfterEgp: filsToEgp(tx.balanceAfterFils || 0),
+            status: 'COMPLETED',
+            description: tx.description || (isCredit ? 'إضافة رصيد' : 'خصم رصيد'),
+            reference: ref,
+            createdAt: tx.createdAt || new Date(),
+            orderId: ref,
+            paymentId: null,
+        });
     }
 
-    // 4. Combine and sort all transactions by createdAt descending
     const allMapped = [
         ...transactions.map((tx) => ({
             _id:              tx._id,
@@ -1040,9 +1090,20 @@ async function getWalletTransactions({ userId, page = 1, limit = 20 }) {
     allMapped.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
     const total = allMapped.length;
-    const paginated = allMapped.slice(skip, skip + limit);
+    const paginated = allMapped.slice(skip, skip + safeLimit);
+    const meta = buildPaginationMetadata(total, safePage, safeLimit);
 
-    return { transactions: paginated, total, page, limit };
+    return {
+        transactions: paginated,
+        total,
+        page: safePage,
+        limit: safeLimit,
+        totalPages: meta.totalPages,
+        hasNextPage: meta.hasNextPage,
+        hasPrevPage: meta.hasPrevPage,
+        nextPage: meta.nextPage,
+        prevPage: meta.prevPage,
+    };
 }
 
 // ─── Private Helpers ──────────────────────────────────────────────────────────

@@ -243,6 +243,12 @@ OrderSchema.index({ status: 1, isBusinessOrder: 1, createdAt: -1 });
 OrderSchema.index({ status: 1, orderCategory: 1, createdAt: -1 });
 OrderSchema.index({ status: 1, governorate: 1, createdAt: -1 });
 OrderSchema.index({ createdAt: -1 });
+OrderSchema.index({ clientId: 1, createdAt: -1, _id: -1 });
+OrderSchema.index({ userId: 1, createdAt: -1, _id: -1 });
+OrderSchema.index({ clientId: 1, status: 1, createdAt: -1, _id: -1 });
+OrderSchema.index({ representativeId: 1, createdAt: -1, _id: -1 });
+OrderSchema.index({ representativeId: 1, orderId: -1, _id: -1 });
+OrderSchema.index({ orderId: -1, _id: -1 });
 
 OrderSchema.pre('validate', function () {
     if (!this.clientId && (this.userId || this._doc?.userId)) {

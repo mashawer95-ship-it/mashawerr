@@ -52,6 +52,9 @@ const DeliverySessionSchema = new mongoose.Schema(
 // We'll use Mongoose's built-in __v for versioning, but we mapped it conceptually in the plan to "version".
 // Mongoose uses __v automatically when optimisticConcurrency: true is set.
 
+DeliverySessionSchema.index({ customerId: 1, createdAt: -1, _id: -1 });
+DeliverySessionSchema.index({ orderId: 1, createdAt: -1, _id: -1 });
+
 const DeliverySession = mongoose.model('DeliverySession', DeliverySessionSchema);
 
 module.exports = { DeliverySession };

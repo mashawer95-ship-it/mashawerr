@@ -33,6 +33,9 @@ const DiscountCodeSchema = new mongoose.Schema(
     { timestamps: true }
 );
 
+DiscountCodeSchema.index({ createdAt: -1, _id: -1 });
+DiscountCodeSchema.index({ isActive: 1, createdAt: -1 });
+
 const DiscountCode = mongoose.model('DiscountCode', DiscountCodeSchema);
 
 // ─── UserDiscount Schema ──────────────────────────────────────────────────────
@@ -51,6 +54,9 @@ const UserDiscountSchema = new mongoose.Schema(
     },
     { timestamps: true }
 );
+
+UserDiscountSchema.index({ createdAt: -1, _id: -1 });
+UserDiscountSchema.index({ isActive: 1, createdAt: -1 });
 
 const UserDiscount = mongoose.model('UserDiscount', UserDiscountSchema);
 

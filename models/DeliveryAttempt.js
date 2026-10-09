@@ -64,6 +64,8 @@ const DeliveryAttemptSchema = new mongoose.Schema(
     { timestamps: true }
 );
 
+DeliveryAttemptSchema.index({ sessionId: 1, attemptNumber: -1 });
+
 const DeliveryAttempt = mongoose.model('DeliveryAttempt', DeliveryAttemptSchema);
 
 module.exports = { DeliveryAttempt };

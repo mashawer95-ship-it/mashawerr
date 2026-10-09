@@ -3,6 +3,12 @@ const FcmToken = require('../models/FcmToken');
 const Notification = require('../models/Notification');
 const { sendToToken, sendToMultiple, isInvalidTokenError } = require('../services/firebaseService');
 const { isBanned } = require('../services/bannedDeviceService');
+const {
+    normalizePagination,
+    buildPaginationMetadata,
+    setPaginationHeaders,
+    formatPaginatedResponse,
+} = require('../utils/pagination');
 
 /**
  * POST /api/notifications/save-token
@@ -46,8 +52,30 @@ const saveToken = asyncHandler(async (req, res) => {
  * Returns all stored userId + fcmToken pairs (admin use).
  */
 const getAllUsers = asyncHandler(async (req, res) => {
-    const users = await FcmToken.find({}, { userId: 1, fcmToken: 1, _id: 0 }).lean();
-    res.status(200).json({ count: users.length, users });
+    const { page, limit, skip } = normalizePagination(req.query, { defaultLimit: 50, maxLimit: 100 });
+    const [users, total] = await Promise.all([
+        FcmToken.find({}, { userId: 1, fcmToken: 1, _id: 0 })
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit)
+            .lean(),
+        FcmToken.countDocuments(),
+    ]);
+
+    const meta = buildPaginationMetadata({ total, page, limit });
+    setPaginationHeaders(res, meta);
+
+    res.status(200).json({
+        success: true,
+        count: users.length,
+        users,
+        data: users,
+        total,
+        page,
+        limit,
+        totalPages: meta.totalPages,
+        pagination: meta,
+    });
 });
 
 /**
@@ -235,8 +263,27 @@ const testNotify = asyncHandler(async (req, res) => {
  */
 const getMyNotifications = asyncHandler(async (req, res) => {
     const userId = req.user.id;
-    const notifications = await Notification.find({ userId }).sort({ createdAt: -1 });
-    res.status(200).json(notifications);
+    const { page, limit, skip } = normalizePagination(req.query, { defaultLimit: 20, maxLimit: 50 });
+
+    const [notifications, total] = await Promise.all([
+        Notification.find({ userId })
+            .sort({ createdAt: -1, _id: -1 })
+            .skip(skip)
+            .limit(limit)
+            .lean(),
+        Notification.countDocuments({ userId }),
+    ]);
+
+    return res.status(200).json(
+        formatPaginatedResponse({
+            res,
+            data: notifications,
+            total,
+            page,
+            limit,
+            entityKey: 'notifications',
+        })
+    );
 });
 
 /**

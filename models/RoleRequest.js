@@ -31,6 +31,10 @@ const RoleRequestSchema = new mongoose.Schema({
     },
 }, { timestamps: true });
 
+RoleRequestSchema.index({ status: 1, createdAt: -1, _id: -1 });
+RoleRequestSchema.index({ requestedRole: 1, status: 1, createdAt: -1 });
+RoleRequestSchema.index({ user: 1, status: 1 });
+
 const RoleRequest = mongoose.model('RoleRequest', RoleRequestSchema);
 
 module.exports = {

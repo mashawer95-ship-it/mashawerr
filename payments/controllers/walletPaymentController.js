@@ -15,6 +15,7 @@ const { validateWalletTopupRequest } = require('../validators/paymentValidators'
 const { Payment } = require('../../middlewares/Payment');
 const ApiError = require('../../utils/ApiError');
 const logger = require('../../utils/logger');
+const { setPaginationHeaders } = require('../../utils/pagination');
 const { PAYMENT_ERROR_CODES } = require('../constants/paymentConstants');
 
 /**
@@ -143,9 +144,11 @@ const getCustomerLedgerTransactions = asyncHandler(async (req, res) => {
 
     const result = await walletPaymentService.getWalletTransactions({
         userId,
-        page,
-        limit,
+        page: req.query.page,
+        limit: req.query.limit,
     });
+
+    setPaginationHeaders(res, result.total, result.page, result.limit);
 
     return res.status(200).json({
         success: true,

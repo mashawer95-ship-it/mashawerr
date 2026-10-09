@@ -11,6 +11,7 @@ const { DeliveryEventBus } = require('../services/DeliveryEventBus');
 const { DeliveryOrderTracker } = require('../services/DeliveryOrderTracker');
 const logger = require('../utils/logger');
 const cloudinary = require('../config/cloudinary');
+const { normalizePagination, buildPaginationMetadata, setPaginationHeaders } = require('../utils/pagination');
 
 // ─── Utility: Get Parent Order ───────────────────────────────────────────────
 async function getParentOrder(orderId) {
@@ -949,36 +950,66 @@ exports.getCustomerConfirmations = async (req, res) => {
             };
         }
 
-        // Find recent sessions for this customer
-        const sessions = await DeliverySession.find(sessionQuery)
-            .sort({ createdAt: -1 })
-            .limit(30)
-            .lean();
+        const { page: safePage, limit: safeLimit, skip } = normalizePagination({
+            page: req.query.page,
+            limit: req.query.limit,
+            defaultLimit: 20,
+            maxLimit: 50,
+        });
+
+        // Find recent sessions for this customer with pagination and deterministic sorting
+        const [sessions, total] = await Promise.all([
+            DeliverySession.find(sessionQuery)
+                .sort({ createdAt: -1, _id: -1 })
+                .skip(skip)
+                .limit(safeLimit)
+                .lean(),
+            DeliverySession.countDocuments(sessionQuery),
+        ]);
+
+        // Batch-fetch all attempts for these sessions to eliminate N+1 queries
+        const sessionIds = sessions.map(s => s.sessionId).filter(Boolean);
+        const allAttempts = sessionIds.length > 0
+            ? await DeliveryAttempt.find({ sessionId: { $in: sessionIds } }).sort({ attemptNumber: -1 }).lean()
+            : [];
+
+        const attemptsBySession = new Map();
+        for (const attempt of allAttempts) {
+            if (!attemptsBySession.has(attempt.sessionId)) {
+                attemptsBySession.set(attempt.sessionId, []);
+            }
+            attemptsBySession.get(attempt.sessionId).push(attempt);
+        }
+
+        // Batch-fetch all orders for these sessions
+        const orderIds = sessions.map(s => s.orderId).filter(Boolean);
+        const numericOrderIds = orderIds.map(Number).filter(n => !isNaN(n));
+        const objectOrderIds = orderIds.filter(id => mongoose.isValidObjectId(id)).map(id => new mongoose.Types.ObjectId(id));
+
+        const orderConditions = [];
+        if (numericOrderIds.length > 0) orderConditions.push({ orderId: { $in: numericOrderIds } });
+        if (objectOrderIds.length > 0) orderConditions.push({ _id: { $in: objectOrderIds } });
+
+        const matchingOrders = orderConditions.length > 0
+            ? await Order.find({ $or: orderConditions, isBusinessOrder: { $ne: true } }).lean()
+            : [];
+
+        const ordersMap = new Map();
+        for (const ord of matchingOrders) {
+            if (ord.orderId != null) ordersMap.set(String(ord.orderId), ord);
+            if (ord._id) ordersMap.set(String(ord._id), ord);
+        }
 
         const results = [];
 
         for (const session of sessions) {
-            // Find latest attempt for this session
-            const attempts = await DeliveryAttempt.find({ sessionId: session.sessionId })
-                .sort({ attemptNumber: -1 })
-                .lean();
-
+            const attempts = attemptsBySession.get(session.sessionId) || [];
             const latestAttempt = attempts[0] || null;
 
-            // Fetch order info (StoreOrder or Order)
-            let orderType = 'DELIVERY';
-            let orderDetails = null;
+            let order = ordersMap.get(String(session.orderId)) || null;
 
-            // Fetch delivery order details
-            let order = null;
-            if (!isNaN(Number(session.orderId))) {
-                order = await Order.findOne({ orderId: Number(session.orderId), isBusinessOrder: { $ne: true } }).lean();
-            } else if (mongoose.isValidObjectId(session.orderId)) {
-                order = await Order.findById(session.orderId).lean();
-            }
-
-            orderType = 'DELIVERY';
-            orderDetails = {
+            const orderType = 'DELIVERY';
+            const orderDetails = {
                 pickupAddress: order?.pickupAddress || order?.pickupLocationName || 'عنوان الاستلام',
                 deliveryAddress: order?.deliveryAddress || order?.dropoffLocationName || 'عنوان التسليم',
                 details: order?.details || order?.itemDescription || 'طلب توصيل',
@@ -1033,9 +1064,21 @@ exports.getCustomerConfirmations = async (req, res) => {
             });
         }
 
+        const meta = buildPaginationMetadata(total, safePage, safeLimit);
+        setPaginationHeaders(res, total, safePage, safeLimit);
+
         res.json({
             success: true,
-            count: results.length,
+            count: total,
+            total,
+            page: safePage,
+            limit: safeLimit,
+            totalPages: meta.totalPages,
+            hasNextPage: meta.hasNextPage,
+            hasPrevPage: meta.hasPrevPage,
+            nextPage: meta.nextPage,
+            prevPage: meta.prevPage,
+            pagination: meta,
             data: results,
             confirmations: results,
         });

@@ -55,8 +55,10 @@ const UserRatingSchema = new mongoose.Schema(
 
 // تقييم واحد لكل رايتر/رايتي/أوردر
 UserRatingSchema.index({ orderId: 1, raterId: 1, rateeId: 1 }, { unique: true });
-// فهرس سريع لجلب كل تقييمات مستخدم معين
+// فهرس سريع ومحدد لجلب كل تقييمات مستخدم معين
 UserRatingSchema.index({ rateeId: 1, createdAt: -1 });
+UserRatingSchema.index({ rateeId: 1, rateeType: 1, createdAt: -1, _id: -1 });
+UserRatingSchema.index({ raterId: 1, raterType: 1, createdAt: -1, _id: -1 });
 // فهرس لجلب تقييمات أوردر معين
 UserRatingSchema.index({ orderId: 1 });
 

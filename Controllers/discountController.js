@@ -15,6 +15,7 @@ const {
     validateUpdateGlobalDiscount,
     isDiscountExpired,
 } = require('../middlewares/Discount');
+const { normalizePagination, buildPaginationMetadata, setPaginationHeaders } = require('../utils/pagination');
 
 // ─── User Endpoints ───────────────────────────────────────────────────────────
 
@@ -170,8 +171,45 @@ const createDiscountCode = asyncHandler(async (req, res) => {
  * @access Admin
  */
 const listDiscountCodes = asyncHandler(async (req, res) => {
-    const discounts = await DiscountCode.find().sort({ createdAt: -1 });
-    return res.status(200).json(discounts);
+    const { page: safePage, limit: safeLimit, skip } = normalizePagination({
+        page: req.query.page,
+        limit: req.query.limit,
+        defaultLimit: 20,
+        maxLimit: 50,
+    });
+
+    const filter = {};
+    if (req.query.isActive !== undefined) {
+        filter.isActive = req.query.isActive === 'true';
+    }
+
+    const [discounts, total] = await Promise.all([
+        DiscountCode.find(filter)
+            .sort({ createdAt: -1, _id: -1 })
+            .skip(skip)
+            .limit(safeLimit)
+            .lean(),
+        DiscountCode.countDocuments(filter),
+    ]);
+
+    const meta = buildPaginationMetadata(total, safePage, safeLimit);
+    setPaginationHeaders(res, total, safePage, safeLimit);
+
+    return res.status(200).json({
+        success: true,
+        data: discounts,
+        codes: discounts,
+        discounts,
+        total,
+        page: safePage,
+        limit: safeLimit,
+        totalPages: meta.totalPages,
+        hasNextPage: meta.hasNextPage,
+        hasPrevPage: meta.hasPrevPage,
+        nextPage: meta.nextPage,
+        prevPage: meta.prevPage,
+        pagination: meta,
+    });
 });
 
 /**
@@ -276,8 +314,46 @@ const assignUserDiscount = asyncHandler(async (req, res) => {
  * @access Admin
  */
 const listUserDiscounts = asyncHandler(async (req, res) => {
-    const userDiscounts = await UserDiscount.find().sort({ createdAt: -1 });
-    return res.status(200).json(userDiscounts);
+    const { page: safePage, limit: safeLimit, skip } = normalizePagination({
+        page: req.query.page,
+        limit: req.query.limit,
+        defaultLimit: 20,
+        maxLimit: 50,
+    });
+
+    const filter = {};
+    if (req.query.isActive !== undefined) {
+        filter.isActive = req.query.isActive === 'true';
+    }
+
+    const [userDiscounts, total] = await Promise.all([
+        UserDiscount.find(filter)
+            .sort({ createdAt: -1, _id: -1 })
+            .skip(skip)
+            .limit(safeLimit)
+            .lean(),
+        UserDiscount.countDocuments(filter),
+    ]);
+
+    const meta = buildPaginationMetadata(total, safePage, safeLimit);
+    setPaginationHeaders(res, total, safePage, safeLimit);
+
+    return res.status(200).json({
+        success: true,
+        data: userDiscounts,
+        users: userDiscounts,
+        userDiscounts,
+        discounts: userDiscounts,
+        total,
+        page: safePage,
+        limit: safeLimit,
+        totalPages: meta.totalPages,
+        hasNextPage: meta.hasNextPage,
+        hasPrevPage: meta.hasPrevPage,
+        nextPage: meta.nextPage,
+        prevPage: meta.prevPage,
+        pagination: meta,
+    });
 });
 
 /**

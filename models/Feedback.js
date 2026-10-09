@@ -46,10 +46,10 @@ const FeedbackSchema = new mongoose.Schema({
     timestamps: true,
 });
 
-FeedbackSchema.index({ createdAt: -1 });
-FeedbackSchema.index({ userId: 1 });
-FeedbackSchema.index({ userType: 1 });
-FeedbackSchema.index({ status: 1 });
+FeedbackSchema.index({ createdAt: -1, _id: -1 });
+FeedbackSchema.index({ userId: 1, createdAt: -1 });
+FeedbackSchema.index({ status: 1, createdAt: -1, _id: -1 });
+FeedbackSchema.index({ userType: 1, createdAt: -1, _id: -1 });
 
 const Feedback = mongoose.model('Feedback', FeedbackSchema);
 

@@ -2,6 +2,7 @@ const asyncHandler = require('express-async-handler');
 const { Feedback } = require('../models/Feedback');
 const { User } = require('../middlewares/User');
 const { notifyClient } = require('../services/notifyClient');
+const { normalizePagination, buildPaginationMetadata, setPaginationHeaders } = require('../utils/pagination');
 
 /**
  * @description Submit user feedback/opinion/issue
@@ -64,6 +65,13 @@ const submitFeedback = asyncHandler(async (req, res) => {
  * @access Private/Admin
  */
 const getAllFeedback = asyncHandler(async (req, res) => {
+    const { page: safePage, limit: safeLimit, skip } = normalizePagination({
+        page: req.query.page,
+        limit: req.query.limit,
+        defaultLimit: 20,
+        maxLimit: 50,
+    });
+
     const { userType, status, search } = req.query;
     let filter = {};
 
@@ -85,15 +93,33 @@ const getAllFeedback = asyncHandler(async (req, res) => {
         ];
     }
 
-    const feedbackList = await Feedback.find(filter)
-        .populate('userId', 'firstName lastName email phone userType profileImage status createdAt')
-        .sort({ createdAt: -1 })
-        .lean();
+    const [feedbackList, total] = await Promise.all([
+        Feedback.find(filter)
+            .populate('userId', 'firstName lastName email phone userType profileImage status createdAt')
+            .sort({ createdAt: -1, _id: -1 })
+            .skip(skip)
+            .limit(safeLimit)
+            .lean(),
+        Feedback.countDocuments(filter),
+    ]);
+
+    const meta = buildPaginationMetadata(total, safePage, safeLimit);
+    setPaginationHeaders(res, total, safePage, safeLimit);
 
     res.status(200).json({
         success: true,
-        count: feedbackList.length,
+        count: total,
+        total,
+        page: safePage,
+        limit: safeLimit,
+        totalPages: meta.totalPages,
+        hasNextPage: meta.hasNextPage,
+        hasPrevPage: meta.hasPrevPage,
+        nextPage: meta.nextPage,
+        prevPage: meta.prevPage,
+        pagination: meta,
         data: feedbackList,
+        feedbacks: feedbackList,
     });
 });
 

@@ -35,6 +35,12 @@ const { getCachedRepCommission, calcRepEarnings } = require('../middlewares/RepC
 const { checkAndRewardTarget } = require('../utils/targetRewardHelper');
 const { sanitizeErrorResponse, isOwnerOrAuthorized } = require('../middlewares/objectAuthorization');
 const { normalizeGovernorate, detectGovernorateFromText, EGYPT_GOVERNORATES } = require('../utils/governorateHelper');
+const {
+    normalizePagination,
+    buildPaginationMetadata,
+    setPaginationHeaders,
+    formatPaginatedResponse,
+} = require('../utils/pagination');
 
 /** Returns null for stale Render-local image URLs that no longer exist. */
 function sanitizeImageUrl(url) {
@@ -557,13 +563,11 @@ const listOrders = asyncHandler(async (req, res) => {
         }
     }
 
-    const pageNum = Math.max(1, parseInt(value.page || 1));
-    const limitNum = Math.min(100, Math.max(1, parseInt(value.limit || 20)));
-    const skip = (pageNum - 1) * limitNum;
+    const { page, limit, skip } = normalizePagination(value, { defaultLimit: 20, maxLimit: 100 });
 
     const commissionCfg = await getCachedRepCommission().catch(() => null);
     const [orders, total] = await Promise.all([
-        Order.find(filter).sort({ orderId: -1 }).skip(skip).limit(limitNum).lean(),
+        Order.find(filter).sort({ orderId: -1, _id: -1 }).skip(skip).limit(limit).lean(),
         Order.countDocuments(filter)
     ]);
 
@@ -572,16 +576,16 @@ const listOrders = asyncHandler(async (req, res) => {
     formatted = await enrichOrdersWithVehicleData(req, formatted);
     formatted = await enrichOrdersWithDeliveryPhotos(req, formatted);
 
-    const totalPages = Math.ceil(total / limitNum);
-    res.setHeader('X-Total-Count', total);
-
-    return res.status(200).json({
-        orders: formatted,
-        total,
-        page: pageNum,
-        limit: limitNum,
-        totalPages,
-    });
+    return res.status(200).json(
+        formatPaginatedResponse({
+            res,
+            data: formatted,
+            total,
+            page,
+            limit,
+            entityKey: 'orders',
+        })
+    );
 });
 
 /**
@@ -609,6 +613,8 @@ const listOrdersByUserId = asyncHandler(async (req, res) => {
         return sanitizeErrorResponse(res, true, true);
     }
 
+    const { page, limit, skip } = normalizePagination(req.query, { defaultLimit: 20, maxLimit: 50 });
+
     const commissionCfg = await getCachedRepCommission().catch(() => null);
     const mongoose = require('mongoose');
     const userObjId = mongoose.isValidObjectId(userId) ? new mongoose.Types.ObjectId(userId) : null;
@@ -624,9 +630,14 @@ const listOrdersByUserId = asyncHandler(async (req, res) => {
         orderCategory: { $ne: 'business' },
     };
 
-    const orders = await Order.find(deliveryFilter)
-        .sort({ createdAt: -1, orderId: -1 })
-        .lean();
+    const [orders, total] = await Promise.all([
+        Order.find(deliveryFilter)
+            .sort({ createdAt: -1, _id: -1 })
+            .skip(skip)
+            .limit(limit)
+            .lean(),
+        Order.countDocuments(deliveryFilter),
+    ]);
 
     const formattedList = orders
         .map((doc) => formatOrder(req, doc, commissionCfg))
@@ -638,7 +649,16 @@ const listOrdersByUserId = asyncHandler(async (req, res) => {
     enriched = await enrichOrdersWithDeliveryPhotos(req, enriched);
     enriched.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
 
-    return res.status(200).json(enriched);
+    return res.status(200).json(
+        formatPaginatedResponse({
+            res,
+            data: enriched,
+            total,
+            page,
+            limit,
+            entityKey: 'orders',
+        })
+    );
 });
 
 
@@ -839,11 +859,22 @@ const listOrdersByRepresentativeId = asyncHandler(async (req, res) => {
         return sanitizeErrorResponse(res, true, true);
     }
 
-    const orders = await Order.find({
+    const { page, limit, skip } = normalizePagination(req.query, { defaultLimit: 20, maxLimit: 50 });
+
+    const repFilter = {
         representativeId: repId,
         isBusinessOrder: { $ne: true },
         orderCategory: { $ne: 'business' },
-    }).sort({ orderId: -1 }).lean();
+    };
+
+    const [orders, total] = await Promise.all([
+        Order.find(repFilter)
+            .sort({ orderId: -1, _id: -1 })
+            .skip(skip)
+            .limit(limit)
+            .lean(),
+        Order.countDocuments(repFilter),
+    ]);
 
     // ─── جلب بيانات المندوب مرة واحدة وإدراجها في كل الأوردرات ──────────────
     let repData = null;
@@ -891,7 +922,17 @@ const listOrdersByRepresentativeId = asyncHandler(async (req, res) => {
     let finalFormatted = await enrichOrdersWithClientData(req, formattedOrders);
     finalFormatted = await enrichOrdersWithVehicleData(req, finalFormatted);
     finalFormatted = await enrichOrdersWithDeliveryPhotos(req, finalFormatted);
-    return res.status(200).json(finalFormatted);
+
+    return res.status(200).json(
+        formatPaginatedResponse({
+            res,
+            data: finalFormatted,
+            total,
+            page,
+            limit,
+            entityKey: 'orders',
+        })
+    );
 });
 
 
@@ -2505,8 +2546,12 @@ const listWaitingOrders = asyncHandler(async (req, res) => {
         }
     }
 
+    const { page, limit, skip } = normalizePagination(req.query, { defaultLimit: 20, maxLimit: 50 });
+    const total = orders.length;
+    const pagedOrders = orders.slice(skip, skip + limit);
+
     const commissionCfg = await getCachedRepCommission().catch(() => null);
-    const formatted = orders.map((o) => {
+    const formatted = pagedOrders.map((o) => {
         const item = formatOrder(req, o, commissionCfg);
         if (o.distanceToPickup != null) {
             item.distanceToPickup = Number(o.distanceToPickup.toFixed(2));
@@ -2515,10 +2560,21 @@ const listWaitingOrders = asyncHandler(async (req, res) => {
         return item;
     });
     const finalFormatted = await enrichOrdersWithClientData(req, formatted);
+
+    const meta = buildPaginationMetadata({ total, page, limit });
+    setPaginationHeaders(res, meta);
+
     return res.status(200).json({
         succeeded: true,
+        success: true,
         data: finalFormatted,
+        orders: finalFormatted,
         count: finalFormatted.length,
+        total,
+        page,
+        limit,
+        totalPages: meta.totalPages,
+        pagination: meta,
     });
 });
 

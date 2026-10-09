@@ -14,6 +14,7 @@ const { banIdentifier, unbanIdentifier, isBanned, normalizePhone } = require('..
 
 const { sanitizeErrorResponse, isOwnerOrAuthorized } = require('../middlewares/objectAuthorization');
 const { pickAllowedFields } = require('../utils/sanitizer');
+const { normalizePagination, buildPaginationMetadata, setPaginationHeaders } = require('../utils/pagination');
 
 /**
  * Returns null for any image URL stored on Render's ephemeral local disk
@@ -185,14 +186,25 @@ const getAllUser = asyncHandler(async (req, res) => {
     const isAgent = (req.user?.userType || req.fullUser?.userType || '').toString().trim().toLowerCase() === 'agent';
     const agentGov = (req.fullUser?.governorate || req.user?.governorate || '').trim();
 
+    const { page: safePage, limit: safeLimit, skip } = normalizePagination({
+        page: req.query.page,
+        limit: req.query.limit,
+        defaultLimit: 20,
+        maxLimit: 50,
+    });
+
     if (isAgent) {
         if (!agentGov) {
+            setPaginationHeaders(res, 0, safePage, safeLimit);
             return res.status(200).json({
+                success: true,
                 users: [],
+                data: [],
                 total: 0,
-                page: 1,
-                limit: Math.min(100, Math.max(1, parseInt(req.query.limit || 20))),
+                page: safePage,
+                limit: safeLimit,
                 totalPages: 0,
+                pagination: buildPaginationMetadata(0, safePage, safeLimit),
             });
         }
         // Force the governorate filter to agentGov
@@ -204,12 +216,8 @@ const getAllUser = asyncHandler(async (req, res) => {
         filter.governorate = { $regex: new RegExp(req.query.governorate.trim(), 'i') };
     }
 
-    const page = Math.max(1, parseInt(req.query.page || 1));
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || 20)));
-    const skip = (page - 1) * limit;
-
     const [rawUsers, total] = await Promise.all([
-        User.find(filter).select('-password').sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+        User.find(filter).select('-password').sort({ createdAt: -1, _id: -1 }).skip(skip).limit(safeLimit).lean(),
         User.countDocuments(filter)
     ]);
 
@@ -272,15 +280,22 @@ const getAllUser = asyncHandler(async (req, res) => {
             repTypeTitle: 'عميل 👤',
         };
     });
-    const totalPages = Math.ceil(total / limit);
-    res.setHeader('X-Total-Count', total);
+    const meta = buildPaginationMetadata(total, safePage, safeLimit);
+    setPaginationHeaders(res, total, safePage, safeLimit);
 
     return res.status(200).json({
+        success: true,
         users,
+        data: users,
         total,
-        page,
-        limit,
-        totalPages,
+        page: safePage,
+        limit: safeLimit,
+        totalPages: meta.totalPages,
+        hasNextPage: meta.hasNextPage,
+        hasPrevPage: meta.hasPrevPage,
+        nextPage: meta.nextPage,
+        prevPage: meta.prevPage,
+        pagination: meta,
     });
 });
 /**
@@ -1062,16 +1077,71 @@ const unsuspendUser = asyncHandler(async (req, res) => {
  * @access Admin
  */
 const getSuspendedUsers = asyncHandler(async (req, res) => {
-    const users = await User.find({
+    const { page: safePage, limit: safeLimit, skip } = normalizePagination({
+        page: req.query.page,
+        limit: req.query.limit,
+        defaultLimit: 20,
+        maxLimit: 50,
+    });
+
+    const filter = {
         $or: [
             { isSuspended: true },
             { status: 'blocked' }
         ]
-    })
-        .select('-password')
-        .sort({ updatedAt: -1 });
+    };
 
-    return res.status(200).json(users);
+    const isAgent = (req.user?.userType || req.fullUser?.userType || '').toString().trim().toLowerCase() === 'agent';
+    const agentGov = (req.fullUser?.governorate || req.user?.governorate || '').trim();
+
+    if (isAgent) {
+        if (!agentGov) {
+            setPaginationHeaders(res, 0, safePage, safeLimit);
+            return res.status(200).json({
+                success: true,
+                data: [],
+                users: [],
+                suspendedUsers: [],
+                total: 0,
+                page: safePage,
+                limit: safeLimit,
+                totalPages: 0,
+                pagination: buildPaginationMetadata(0, safePage, safeLimit),
+            });
+        }
+        filter.governorate = { $regex: new RegExp(agentGov.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&'), 'i') };
+        filter.isAdmin = { $ne: true };
+        filter.userType = { $nin: ['Admin', 'admin', 'Administration', 'administration'] };
+    }
+
+    const [users, total] = await Promise.all([
+        User.find(filter)
+            .select('-password')
+            .sort({ updatedAt: -1, _id: -1 })
+            .skip(skip)
+            .limit(safeLimit)
+            .lean(),
+        User.countDocuments(filter)
+    ]);
+
+    const meta = buildPaginationMetadata(total, safePage, safeLimit);
+    setPaginationHeaders(res, total, safePage, safeLimit);
+
+    return res.status(200).json({
+        success: true,
+        data: users,
+        users,
+        suspendedUsers: users,
+        total,
+        page: safePage,
+        limit: safeLimit,
+        totalPages: meta.totalPages,
+        hasNextPage: meta.hasNextPage,
+        hasPrevPage: meta.hasPrevPage,
+        nextPage: meta.nextPage,
+        prevPage: meta.prevPage,
+        pagination: meta,
+    });
 });
 
 /**
@@ -1306,9 +1376,12 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
         }
     }
 
-    const page  = Math.max(1, parseInt(req.query.page  || '1',  10));
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '20', 10)));
-    const skip  = (page - 1) * limit;
+    const { page: safePage, limit: safeLimit, skip } = normalizePagination({
+        page: req.query.page,
+        limit: req.query.limit,
+        defaultLimit: 20,
+        maxLimit: 50,
+    });
 
     // Build date filter
     const dateFilter = {};
@@ -1379,7 +1452,7 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
         ordersRaw,
         total
     ] = await Promise.all([
-        Order.find(deliveryFilter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+        Order.find(deliveryFilter).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(safeLimit).lean(),
         Order.countDocuments(deliveryFilter)
     ]);
 
@@ -1613,7 +1686,11 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
     const totalCompletedProfitFils = regCompletedProfitFils;
     const totalCancelledRevFils = regCancelledRevFils;
 
+    const meta = buildPaginationMetadata(allTotal, safePage, safeLimit);
+    setPaginationHeaders(res, allTotal, safePage, safeLimit);
+
     return res.status(200).json({
+        success: true,
         representativeId:   repId,
         representativeName: `${user.firstName || ''} ${user.lastName || ''}`.trim(),
         profileImage:       user.profileImage || null,
@@ -1676,23 +1753,25 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
                 totalCount:           allRepOrdersForStats.length,
             },
         },
-        page,
-        limit,
+        page: safePage,
+        limit: safeLimit,
         regularOrders: {
             total:      regularTotal,
-            totalPages: Math.ceil(regularTotal / limit),
+            totalPages: Math.ceil(regularTotal / safeLimit),
             orders:     regularOrdersEnriched,
         },
         storeOrders: {
             total:      storeTotal,
-            totalPages: Math.ceil(storeTotal / limit),
+            totalPages: Math.ceil(storeTotal / safeLimit),
             orders:     storeOrdersEnriched,
         },
         allOrders: {
             total:      allTotal,
-            totalPages: Math.ceil(allTotal / limit),
+            totalPages: Math.ceil(allTotal / safeLimit),
             orders:     allOrdersEnriched,
         },
+        data: allOrdersEnriched,
+        pagination: meta,
     });
 });
 
@@ -1720,9 +1799,12 @@ const getRepresentativeRatingsAdmin = asyncHandler(async (req, res) => {
         }
     }
 
-    const page  = Math.max(1, parseInt(req.query.page  || '1',  10));
-    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit || '20', 10)));
-    const skip  = (page - 1) * limit;
+    const { page: safePage, limit: safeLimit, skip } = normalizePagination({
+        page: req.query.page,
+        limit: req.query.limit,
+        defaultLimit: 20,
+        maxLimit: 50,
+    });
 
     // Build date filter
     const dateFilter = {};
@@ -1761,11 +1843,11 @@ const getRepresentativeRatingsAdmin = asyncHandler(async (req, res) => {
     ] = await Promise.all([
         // Ratings clients gave to this rep
         UserRating.find({ rateeId: repId, rateeType: 'representative', ...dateFilter })
-            .sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+            .sort({ createdAt: -1, _id: -1 }).skip(skip).limit(safeLimit).lean(),
         UserRating.countDocuments({ rateeId: repId, rateeType: 'representative', ...dateFilter }),
         // Ratings this rep gave to clients
         UserRating.find({ raterId: repId, raterType: 'representative', ...dateFilter })
-            .sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+            .sort({ createdAt: -1, _id: -1 }).skip(skip).limit(safeLimit).lean(),
         UserRating.countDocuments({ raterId: repId, raterType: 'representative', ...dateFilter }),
         // Aggregate average
         UserRating.aggregate([
@@ -1781,7 +1863,11 @@ const getRepresentativeRatingsAdmin = asyncHandler(async (req, res) => {
         { $sort: { _id: -1 } },
     ]);
 
+    const maxTotal = Math.max(receivedTotal, givenTotal);
+    setPaginationHeaders(res, maxTotal, safePage, safeLimit);
+
     return res.status(200).json({
+        success: true,
         representativeId:   repId,
         representativeName: `${user.firstName || ''} ${user.lastName || ''}`.trim(),
         profileImage:       user.profileImage || null,
@@ -1795,20 +1881,21 @@ const getRepresentativeRatingsAdmin = asyncHandler(async (req, res) => {
         averageRating:      stats[0] ? Math.round(stats[0].avg * 10) / 10 : 0,
         ratingCount:        stats[0]?.count || 0,
         distribution:       distribution.map(d => ({ stars: d._id, count: d.count })),
-        page,
-        limit,
+        page:               safePage,
+        limit:              safeLimit,
         // Ratings received from clients
         receivedFromClients: {
             total:      receivedTotal,
-            totalPages: Math.ceil(receivedTotal / limit),
+            totalPages: Math.ceil(receivedTotal / safeLimit),
             ratings:    receivedRatings,
         },
         // Ratings this rep gave to clients
         givenToClients: {
             total:      givenTotal,
-            totalPages: Math.ceil(givenTotal / limit),
+            totalPages: Math.ceil(givenTotal / safeLimit),
             ratings:    givenRatings,
         },
+        pagination: buildPaginationMetadata(maxTotal, safePage, safeLimit),
     });
 });
 
@@ -2009,9 +2096,12 @@ const changeUserType = asyncHandler(async (req, res) => {
  * @access Admin
  */
 const getBannedDevices = asyncHandler(async (req, res) => {
-    const page = parseInt(req.query.page, 10) || 1;
-    const limit = parseInt(req.query.limit, 10) || 50;
-    const skip = (page - 1) * limit;
+    const { page: safePage, limit: safeLimit, skip } = normalizePagination({
+        page: req.query.page,
+        limit: req.query.limit,
+        defaultLimit: 20,
+        maxLimit: 50,
+    });
 
     const filter = { isActive: true };
     if (req.query.search) {
@@ -2026,7 +2116,7 @@ const getBannedDevices = asyncHandler(async (req, res) => {
     }
 
     const [rawDevices, total] = await Promise.all([
-        BannedDevice.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+        BannedDevice.find(filter).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(safeLimit).lean(),
         BannedDevice.countDocuments(filter)
     ]);
 
@@ -2089,12 +2179,22 @@ const getBannedDevices = asyncHandler(async (req, res) => {
         })
     );
 
+    const meta = buildPaginationMetadata(total, safePage, safeLimit);
+    setPaginationHeaders(res, total, safePage, safeLimit);
+
     return res.status(200).json({
-        page,
-        limit,
+        success: true,
+        page: safePage,
+        limit: safeLimit,
         total,
-        totalPages: Math.ceil(total / limit),
+        totalPages: meta.totalPages,
+        hasNextPage: meta.hasNextPage,
+        hasPrevPage: meta.hasPrevPage,
+        nextPage: meta.nextPage,
+        prevPage: meta.prevPage,
         devices,
+        data: devices,
+        pagination: meta,
     });
 });
 

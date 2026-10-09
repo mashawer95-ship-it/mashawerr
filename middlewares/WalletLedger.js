@@ -213,9 +213,9 @@ WalletLedgerSchema.index(
     { unique: true, sparse: true, name: 'uniq_wallet_reference' }
 );
 
-// Fast per-user history queries
-WalletLedgerSchema.index({ userId: 1, createdAt: -1 });
-WalletLedgerSchema.index({ walletId: 1, createdAt: -1 });
+// Fast per-user history queries with deterministic tie-breaker
+WalletLedgerSchema.index({ userId: 1, createdAt: -1, _id: -1 });
+WalletLedgerSchema.index({ walletId: 1, createdAt: -1, _id: -1 });
 
 const WalletLedger = mongoose.model('WalletLedger', WalletLedgerSchema, 'wallet_ledger');
 

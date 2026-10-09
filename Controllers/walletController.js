@@ -2,6 +2,7 @@ const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
 const { Wallet, getOrCreateWallet, creditWallet, debitWallet, debitWalletAllowNegative, validateCreditDebit } = require('../middlewares/Wallet');
 const { User } = require('../middlewares/User');
+const { normalizePagination, buildPaginationMetadata, setPaginationHeaders } = require('../utils/pagination');
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
 function filsToKwd(fils) {
@@ -40,9 +41,12 @@ function formatTransaction(tx) {
  * @access Admin
  */
 const getAllWallets = asyncHandler(async (req, res) => {
-    const page = Math.max(1, parseInt(req.query.page || '1', 10));
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '20', 10)));
-    const skip = (page - 1) * limit;
+    const { page: safePage, limit: safeLimit, skip } = normalizePagination({
+        page: req.query.page,
+        limit: req.query.limit,
+        defaultLimit: 20,
+        maxLimit: 50,
+    });
     const { search, minBalance, maxBalance, userType, governorate } = req.query;
 
     // 1. Build User query filter
@@ -90,13 +94,13 @@ const getAllWallets = asyncHandler(async (req, res) => {
         userFilter.$and = conditions;
     }
 
-    // 2. Fetch Users matching filter
+    // 2. Fetch Users matching filter with deterministic sorting
     const [users, totalUsers] = await Promise.all([
         User.find(userFilter)
             .select('firstName lastName email phone userType profileImage createdAt governorate')
-            .sort({ createdAt: -1 })
+            .sort({ createdAt: -1, _id: -1 })
             .skip(skip)
-            .limit(limit)
+            .limit(safeLimit)
             .lean(),
         User.countDocuments(userFilter),
     ]);
@@ -145,12 +149,22 @@ const getAllWallets = asyncHandler(async (req, res) => {
         enriched = enriched.filter(w => w.balanceFils <= max);
     }
 
+    const meta = buildPaginationMetadata(totalUsers, safePage, safeLimit);
+    setPaginationHeaders(res, totalUsers, safePage, safeLimit);
+
     return res.status(200).json({
-        page,
-        limit,
+        success: true,
+        page: safePage,
+        limit: safeLimit,
         total: totalUsers,
-        totalPages: Math.ceil(totalUsers / limit),
+        totalPages: meta.totalPages,
+        hasNextPage: meta.hasNextPage,
+        hasPrevPage: meta.hasPrevPage,
+        nextPage: meta.nextPage,
+        prevPage: meta.prevPage,
+        pagination: meta,
         wallets: enriched,
+        data: enriched,
     });
 });
 
@@ -207,8 +221,12 @@ const getTransactions = asyncHandler(async (req, res) => {
         return sanitizeErrorResponse(res, true, true);
     }
 
-    const page = Math.max(1, parseInt(req.query.page || '1', 10));
-    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || '50', 10)));
+    const { page: safePage, limit: safeLimit, skip } = normalizePagination({
+        page: req.query.page,
+        limit: req.query.limit,
+        defaultLimit: 20,
+        maxLimit: 50,
+    });
     const { type, startDate, endDate } = req.query;
 
     const wallet = await getOrCreateWallet(userId);
@@ -229,21 +247,34 @@ const getTransactions = asyncHandler(async (req, res) => {
         txs = txs.filter(t => new Date(t.createdAt) <= to);
     }
 
-    // Sort newest first
-    txs.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    // Sort newest first with deterministic tie breaker
+    txs.sort((a, b) => {
+        const diff = new Date(b.createdAt) - new Date(a.createdAt);
+        if (diff !== 0) return diff;
+        return String(b._id || '').localeCompare(String(a._id || ''));
+    });
 
     const total = txs.length;
-    const skip = (page - 1) * limit;
-    const paginated = txs.slice(skip, skip + limit).map(formatTransaction);
+    const paginated = txs.slice(skip, skip + safeLimit).map(formatTransaction);
+    const meta = buildPaginationMetadata(total, safePage, safeLimit);
+
+    setPaginationHeaders(res, total, safePage, safeLimit);
 
     return res.status(200).json({
-        page,
-        limit,
+        success: true,
+        page: safePage,
+        limit: safeLimit,
         total,
-        totalPages: Math.ceil(total / limit),
+        totalPages: meta.totalPages,
+        hasNextPage: meta.hasNextPage,
+        hasPrevPage: meta.hasPrevPage,
+        nextPage: meta.nextPage,
+        prevPage: meta.prevPage,
+        pagination: meta,
         balanceFils: wallet.balanceFils,
         balanceKWD: filsToKwd(wallet.balanceFils),
         transactions: paginated,
+        data: paginated,
     });
 });
 

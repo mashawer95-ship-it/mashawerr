@@ -1,6 +1,7 @@
 const asyncHandler = require('express-async-handler');
 const { RoleRequest } = require('../models/RoleRequest');
 const { User } = require('../middlewares/User');
+const { normalizePagination, buildPaginationMetadata, setPaginationHeaders } = require('../utils/pagination');
 
 /**
  * @description Create a new role request (Representative or Agent)
@@ -52,7 +53,14 @@ const createRoleRequest = asyncHandler(async (req, res) => {
  */
 const getAllRoleRequests = asyncHandler(async (req, res) => {
     const isAgent = (req.user?.userType || req.fullUser?.userType || '').toString().trim().toLowerCase() === 'agent';
-    const agentGov = (req.fullUser?.governorate || req.user?.governorate || '').trim().toLowerCase();
+    const agentGov = (req.fullUser?.governorate || req.user?.governorate || '').trim();
+
+    const { page: safePage, limit: safeLimit, skip } = normalizePagination({
+        page: req.query.page,
+        limit: req.query.limit,
+        defaultLimit: 20,
+        maxLimit: 50,
+    });
 
     const status = req.query.status;
     let filter = {};
@@ -63,23 +71,61 @@ const getAllRoleRequests = asyncHandler(async (req, res) => {
     if (isAgent) {
         // Strict Agent restriction: can ONLY see Representative requests, never Agent requests
         filter.requestedRole = 'Representative';
-    }
 
-    let requests = await RoleRequest.find(filter)
-        .populate('user', 'firstName lastName email profileImage userType governorate phone')
-        .sort({ createdAt: -1 });
-
-    if (isAgent) {
         if (!agentGov) {
-            return res.status(200).json([]);
+            setPaginationHeaders(res, 0, safePage, safeLimit);
+            return res.status(200).json({
+                success: true,
+                requests: [],
+                data: [],
+                roleRequests: [],
+                total: 0,
+                page: safePage,
+                limit: safeLimit,
+                totalPages: 0,
+                pagination: buildPaginationMetadata(0, safePage, safeLimit),
+            });
         }
-        requests = requests.filter(r => r.user && r.user.governorate && r.user.governorate.toLowerCase().includes(agentGov));
+
+        const userIds = await User.find({
+            governorate: { $regex: new RegExp(agentGov.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&'), 'i') }
+        }).distinct('_id');
+        filter.user = { $in: userIds };
     } else if (req.query.governorate && req.query.governorate.trim()) {
-        const govLower = req.query.governorate.trim().toLowerCase();
-        requests = requests.filter(r => r.user && r.user.governorate && r.user.governorate.toLowerCase().includes(govLower));
+        const userIds = await User.find({
+            governorate: { $regex: new RegExp(req.query.governorate.trim(), 'i') }
+        }).distinct('_id');
+        filter.user = { $in: userIds };
     }
 
-    res.status(200).json(requests);
+    const [requests, total] = await Promise.all([
+        RoleRequest.find(filter)
+            .populate('user', 'firstName lastName email profileImage userType governorate phone')
+            .sort({ createdAt: -1, _id: -1 })
+            .skip(skip)
+            .limit(safeLimit)
+            .lean(),
+        RoleRequest.countDocuments(filter),
+    ]);
+
+    const meta = buildPaginationMetadata(total, safePage, safeLimit);
+    setPaginationHeaders(res, total, safePage, safeLimit);
+
+    return res.status(200).json({
+        success: true,
+        requests,
+        data: requests,
+        roleRequests: requests,
+        total,
+        page: safePage,
+        limit: safeLimit,
+        totalPages: meta.totalPages,
+        hasNextPage: meta.hasNextPage,
+        hasPrevPage: meta.hasPrevPage,
+        nextPage: meta.nextPage,
+        prevPage: meta.prevPage,
+        pagination: meta,
+    });
 });
 
 /**

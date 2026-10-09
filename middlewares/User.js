@@ -162,6 +162,11 @@ const UserSchema = new mongoose.Schema({
  }
 } ,{timestamps:true});
 
+UserSchema.index({ createdAt: -1, _id: -1 });
+UserSchema.index({ userType: 1, createdAt: -1 });
+UserSchema.index({ isSuspended: 1, updatedAt: -1, _id: -1 });
+UserSchema.index({ status: 1, updatedAt: -1, _id: -1 });
+
 UserSchema.set('toJSON', {
     transform(_doc, ret) {
         if (typeof ret.userType === 'string') {
