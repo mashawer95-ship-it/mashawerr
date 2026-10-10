@@ -37,7 +37,75 @@ async function calcUserStats(rateeId) {
  * Body: { raterId, raterType, rateeId, rateeType, rating, comment? }
  */
 const submitUserRating = asyncHandler(async (req, res) => {
-    const orderIdParam = (req.params.orderId || '').trim();
+    // 1. Support legacy field names in request body
+    if (!req.body.raterId && req.body.ratedById) {
+        req.body.raterId = req.body.ratedById;
+    }
+    if (!req.body.rateeId && req.body.ratedUserId) {
+        req.body.rateeId = req.body.ratedUserId;
+    }
+    if (req.body.rating == null && req.body.stars != null) {
+        req.body.rating = req.body.stars;
+    }
+
+    // Auto-assign raterId from token if missing from request body
+    if (!req.body.raterId && req.user?.id) {
+        req.body.raterId = req.user.id.toString();
+    }
+
+    const raterIdStr = (req.body.raterId || req.user?.id || '').toString().trim();
+    const rateeIdStr = (req.body.rateeId || '').toString().trim();
+
+    // 2. Auto-detect raterType and rateeType if missing
+    if (!req.body.raterType || !req.body.rateeType) {
+        let raterType = req.body.raterType;
+        let rateeType = req.body.rateeType;
+
+        const tokenUserType = (req.user?.userType || '').toLowerCase();
+        if (['representative', 'rep', 'driver', 'captain'].includes(tokenUserType)) {
+            raterType = 'representative';
+            rateeType = 'client';
+        } else if (['client', 'customer', 'user'].includes(tokenUserType)) {
+            raterType = 'client';
+            rateeType = 'representative';
+        } else {
+            const mongoose = require('mongoose');
+            if (mongoose.Types.ObjectId.isValid(raterIdStr)) {
+                const raterUser = await User.findById(raterIdStr).select('userType').lean();
+                const rUserType = (raterUser?.userType || '').toLowerCase();
+                if (['representative', 'rep', 'driver', 'captain'].includes(rUserType)) {
+                    raterType = 'representative';
+                    rateeType = 'client';
+                } else {
+                    raterType = 'client';
+                    rateeType = 'representative';
+                }
+            }
+        }
+        req.body.raterType = raterType || 'representative';
+        req.body.rateeType = rateeType || (req.body.raterType === 'client' ? 'representative' : 'client');
+    }
+
+    let orderIdParam = (req.params.orderId || req.body.orderId || '').toString().trim();
+
+    // 3. If orderId is missing, attempt to find latest completed order between rater and ratee
+    if (!orderIdParam && raterIdStr && rateeIdStr) {
+        const COMPLETED_STATUSES = ['completed', 'delivered', 'تم التسليم', 'مكتمل', '3', 'ended', 'done'];
+        const recentOrder = await Order.findOne({
+            $or: [
+                { clientId: raterIdStr, representativeId: rateeIdStr },
+                { clientId: rateeIdStr, representativeId: raterIdStr },
+                { userId: raterIdStr, representativeId: rateeIdStr },
+                { userId: rateeIdStr, representativeId: raterIdStr },
+            ],
+            status: { $in: COMPLETED_STATUSES },
+        }).sort({ updatedAt: -1, createdAt: -1 }).lean();
+
+        if (recentOrder) {
+            orderIdParam = (recentOrder.orderId || recentOrder._id).toString();
+        }
+    }
+
     if (!orderIdParam) {
         return res.status(400).json({ message: 'orderId parameter is required' });
     }
@@ -51,14 +119,8 @@ const submitUserRating = asyncHandler(async (req, res) => {
     if (mongoose.Types.ObjectId.isValid(orderIdParam)) {
         filterConditions.push({ _id: new mongoose.Types.ObjectId(orderIdParam) });
     }
-
     if (filterConditions.length === 0) {
-        return res.status(400).json({ message: 'Invalid orderId parameter' });
-    }
-
-    // Auto-assign raterId from token if missing from request body
-    if (!req.body.raterId && req.user?.id) {
-        req.body.raterId = req.user.id.toString();
+        filterConditions.push({ orderId: orderIdParam });
     }
 
     const { error, value } = validateUserRating(req.body);
@@ -78,11 +140,11 @@ const submitUserRating = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: 'raterId is required' });
     }
 
-    const raterIdStr = value.raterId.toString();
-    const rateeIdStr = value.rateeId.toString();
+    const finalRaterId = value.raterId.toString();
+    const finalRateeId = value.rateeId.toString();
 
     // ── التحقق من أن المقيِّم والمقيَّم مختلفان ────────────────────────────
-    if (raterIdStr === rateeIdStr) {
+    if (finalRaterId === finalRateeId) {
         return res.status(400).json({ message: 'You cannot rate yourself' });
     }
 
@@ -110,8 +172,8 @@ const submitUserRating = asyncHandler(async (req, res) => {
         const orderClientId = (order.clientId || order.userId || '').toString();
         const orderRepId = (order.representativeId || '').toString();
 
-        const isClientRater  = value.raterType === 'client' && (orderClientId === raterIdStr || !orderClientId);
-        const isRepRater     = value.raterType === 'representative' && (orderRepId === raterIdStr || !orderRepId);
+        const isClientRater  = value.raterType === 'client' && (orderClientId === finalRaterId || !orderClientId);
+        const isRepRater     = value.raterType === 'representative' && (orderRepId === finalRaterId || !orderRepId);
 
         if (!isClientRater && !isRepRater && !isAdmin) {
             return res.status(403).json({
@@ -119,8 +181,8 @@ const submitUserRating = asyncHandler(async (req, res) => {
             });
         }
 
-        const isClientRatee  = value.rateeType === 'client' && (orderClientId === rateeIdStr || !orderClientId);
-        const isRepRatee     = value.rateeType === 'representative' && (orderRepId === rateeIdStr || !orderRepId);
+        const isClientRatee  = value.rateeType === 'client' && (orderClientId === finalRateeId || !orderClientId);
+        const isRepRatee     = value.rateeType === 'representative' && (orderRepId === finalRateeId || !orderRepId);
 
         if (!isClientRatee && !isRepRatee) {
             return res.status(403).json({
@@ -136,12 +198,12 @@ const submitUserRating = asyncHandler(async (req, res) => {
     // ── Upsert: تقييم واحد لكل رايتر/رايتي/أوردر ─────────────────────────
     const alreadyExists = await UserRating.exists({
         orderId: normalizedOrderId,
-        raterId: raterIdStr,
-        rateeId: rateeIdStr,
+        raterId: finalRaterId,
+        rateeId: finalRateeId,
     });
 
     await UserRating.findOneAndUpdate(
-        { orderId: normalizedOrderId, raterId: raterIdStr, rateeId: rateeIdStr },
+        { orderId: normalizedOrderId, raterId: finalRaterId, rateeId: finalRateeId },
         {
             raterType: value.raterType,
             rateeType: value.rateeType,
@@ -152,14 +214,14 @@ const submitUserRating = asyncHandler(async (req, res) => {
         { upsert: true, new: true }
     );
 
-    const stats = await calcUserStats(rateeIdStr);
+    const stats = await calcUserStats(finalRateeId);
 
     return res.status(alreadyExists ? 200 : 201).json({
         message: alreadyExists ? 'Rating updated successfully' : 'Rating submitted successfully',
         orderId:       normalizedOrderId,
-        raterId:       raterIdStr,
+        raterId:       finalRaterId,
         raterType:     value.raterType,
-        rateeId:       rateeIdStr,
+        rateeId:       finalRateeId,
         rateeType:     value.rateeType,
         yourRating:    value.rating,
         yourComment:   value.comment,

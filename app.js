@@ -154,6 +154,7 @@ app.use('/api/orders', require('./routes/orders'));
 app.use('/api/v2/orders', require('./routes/orders'));
 app.use('/api/orders/:orderId/tasks', require('./routes/tasks'));   // task pickup/deliver/photos
 app.use('/api/ratings', require('./routes/ratings'));               // user ratings (client ↔ representative)
+app.use('/api/rating', require('./routes/ratings'));                // legacy / singular alias
 app.use('/api/discounts', require('./routes/discounts'));
 app.use('/api/rep-commission', require('./routes/repCommission'));
 app.use('/api/notifications', require('./routes/notifications'));

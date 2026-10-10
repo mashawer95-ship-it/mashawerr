@@ -12,6 +12,9 @@ const { verifyToken } = require('../middlewares/verifytoken');
 // POST /api/ratings/order/:orderId        — تقديم تقييم بعد اكتمال الأوردر
 router.post('/order/:orderId', verifyToken, submitUserRating);
 
+// POST /api/ratings                       — تقديم تقييم (orderId في الـ body أو يكتشف تلقائياً)
+router.post('/', verifyToken, submitUserRating);
+
 // GET  /api/ratings/order/:orderId        — جلب كل تقييمات أوردر معين
 router.get('/order/:orderId', verifyToken, getOrderRatings);
 

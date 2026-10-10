@@ -89,9 +89,9 @@ function validateUserRating(obj) {
             'number.min': 'rating must be at least 1',
             'number.max': 'rating must be at most 5',
         }),
-        comment: joi.string().trim().max(1000).allow('').default(''),
+        comment: joi.string().trim().max(1000).allow('', null).default(''),
         reasons: joi.array().items(joi.string().trim()).default([]),
-    });
+    }).unknown(true);
     return schema.validate(obj, { abortEarly: false });
 }
 
