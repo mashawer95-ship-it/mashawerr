@@ -235,6 +235,10 @@ const OrderSchema = new mongoose.Schema(
             provider: { type: String, default: 'google' },
             providerVersion: { type: String, default: 'v2' }
         },
+
+        // ─── Idempotency Fields (Durable Ground Truth) ───────────────────────────
+        idempotencyKey: { type: String, trim: true, default: null },
+        idempotencyPayloadHash: { type: String, trim: true, default: null },
     },
     { timestamps: true }
 );
@@ -249,6 +253,20 @@ OrderSchema.index({ clientId: 1, status: 1, createdAt: -1, _id: -1 });
 OrderSchema.index({ representativeId: 1, createdAt: -1, _id: -1 });
 OrderSchema.index({ representativeId: 1, orderId: -1, _id: -1 });
 OrderSchema.index({ orderId: -1, _id: -1 });
+
+// ─── Durable Idempotency Compound Index (User-Scoped) ─────────────────────────
+// Partial index ignores null/missing/empty idempotencyKey to allow non-idempotent
+// orders without index bloat, while strictly enforcing exactly-once per client.
+OrderSchema.index(
+    { clientId: 1, idempotencyKey: 1 },
+    {
+        unique: true,
+        partialFilterExpression: {
+            idempotencyKey: { $type: 'string', $gt: '' },
+        },
+        name: 'uniq_order_client_idempotency_v1',
+    }
+);
 
 OrderSchema.pre('validate', function () {
     if (!this.clientId && (this.userId || this._doc?.userId)) {
@@ -418,6 +436,43 @@ function validateCancelOrder(object) {
     return schema.validate(object, { abortEarly: false, allowUnknown: true });
 }
 
+/** Safe one-time index migration: ensure partial unique compound index for order idempotency */
+async function fixOrderIdempotencyIndexes() {
+    if (mongoose.connection.readyState !== 1) return;
+    try {
+        const ordersCol = mongoose.connection.collection('orders');
+        if (ordersCol) {
+            const indexes = await ordersCol.indexes();
+            for (const idx of indexes) {
+                const isBadIdx =
+                    (idx.name === 'idempotencyKey_1' || idx.name === 'clientId_1_idempotencyKey_1') &&
+                    !idx.partialFilterExpression;
+                if (isBadIdx) {
+                    try {
+                        await ordersCol.dropIndex(idx.name);
+                        console.log(`[OrderIndexFix] Dropped outdated index on orders: ${idx.name}`);
+                    } catch (e) {
+                        console.warn(`[OrderIndexFix] Could not drop index ${idx.name} on orders:`, e.message);
+                    }
+                }
+            }
+            await ordersCol.createIndex(
+                { clientId: 1, idempotencyKey: 1 },
+                {
+                    unique: true,
+                    partialFilterExpression: {
+                        idempotencyKey: { $type: 'string', $gt: '' },
+                    },
+                    name: 'uniq_order_client_idempotency_v1',
+                    background: true,
+                }
+            );
+        }
+    } catch (err) {
+        console.warn('[OrderIndexFix] Error inspecting/creating orders idempotency indexes:', err.message);
+    }
+}
+
 module.exports = {
     Order,
     ORDER_STATUSES,
@@ -429,5 +484,6 @@ module.exports = {
     validateCancelOrder,
     migrateOrderStatusFromNumbersToStrings,
     migrateUnifiedOrderIds,
+    fixOrderIdempotencyIndexes,
 };
 

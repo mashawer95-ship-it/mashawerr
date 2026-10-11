@@ -35,15 +35,17 @@ function getRedisClient() {
     }
 
     client = new Redis(REDIS_URL, {
-        maxRetriesPerRequest: 3,
+        maxRetriesPerRequest: 1,
+        enableOfflineQueue: false,
+        connectTimeout: 2000,
         enableReadyCheck: true,
         lazyConnect: false,
         retryStrategy: (times) => {
-            if (times > 5) {
+            if (times > 3) {
                 logger.error('[Redis] Max reconnection attempts reached');
                 return null; // stop retrying
             }
-            const delay = Math.min(times * 500, 3000);
+            const delay = Math.min(times * 500, 2000);
             logger.warn(`[Redis] Reconnecting in ${delay}ms (attempt ${times})`);
             return delay;
         },
@@ -75,70 +77,149 @@ function getRedisClient() {
     return client;
 }
 
+// ─── In-Memory Fallback Store (when Redis is offline / disconnected) ────────
+const memStore = new Map();
+const memTimers = new Map();
+
+function memSet(key, val, ttlMs = null) {
+    if (memTimers.has(key)) {
+        clearTimeout(memTimers.get(key));
+        memTimers.delete(key);
+    }
+    memStore.set(key, val);
+    if (ttlMs && ttlMs > 0) {
+        const timer = setTimeout(() => {
+            memStore.delete(key);
+            memTimers.delete(key);
+        }, ttlMs);
+        if (timer.unref) timer.unref();
+        memTimers.set(key, timer);
+    }
+}
+
+function memGet(key) {
+    return memStore.get(key) || null;
+}
+
+function memDel(...keys) {
+    for (const k of keys) {
+        if (memTimers.has(k)) {
+            clearTimeout(memTimers.get(k));
+            memTimers.delete(k);
+        }
+        memStore.delete(k);
+    }
+}
+
 /**
  * Safe SET with optional TTL (seconds).
- * Falls back silently if Redis is not available.
+ * Falls back to in-memory store when Redis is disconnected or offline.
  *
  * @param {string} key
  * @param {string|object} value - objects are JSON.stringified automatically
  * @param {number} [ttlSeconds] - expiry in seconds (optional)
  */
 async function redisSet(key, value, ttlSeconds = null) {
-    const redis = getRedisClient();
-    if (!redis) return;
-
     const serialized = typeof value === 'object' ? JSON.stringify(value) : String(value);
+    const redis = getRedisClient();
 
-    try {
-        if (ttlSeconds) {
-            await redis.set(key, serialized, 'EX', ttlSeconds);
-        } else {
-            await redis.set(key, serialized);
+    if (redis && isConnected) {
+        try {
+            if (ttlSeconds) {
+                await redis.set(key, serialized, 'EX', ttlSeconds);
+            } else {
+                await redis.set(key, serialized);
+            }
+            return;
+        } catch (err) {
+            logger.error(`[Redis] SET error for key "${key}":`, err.message);
         }
-    } catch (err) {
-        logger.error(`[Redis] SET error for key "${key}":`, err.message);
     }
+
+    // In-memory fallback
+    memSet(key, serialized, ttlSeconds ? ttlSeconds * 1000 : null);
 }
 
 /**
  * Safe GET with automatic JSON parsing.
- * Falls back silently if Redis is not available.
+ * Falls back to in-memory store when Redis is disconnected or offline.
  *
  * @param {string} key
  * @returns {any|null}
  */
 async function redisGet(key) {
     const redis = getRedisClient();
-    if (!redis) return null;
+    let val = null;
+
+    if (redis && isConnected) {
+        try {
+            val = await redis.get(key);
+        } catch (err) {
+            logger.error(`[Redis] GET error for key "${key}":`, err.message);
+        }
+    }
+
+    if (val === null) {
+        val = memGet(key);
+    }
+
+    if (val === null) return null;
 
     try {
-        const val = await redis.get(key);
-        if (val === null) return null;
-
-        try {
-            return JSON.parse(val);
-        } catch {
-            return val; // plain string
-        }
-    } catch (err) {
-        logger.error(`[Redis] GET error for key "${key}":`, err.message);
-        return null;
+        return JSON.parse(val);
+    } catch {
+        return val; // plain string
     }
 }
 
 /**
  * Safe DELETE.
+ * Falls back to in-memory store when Redis is disconnected or offline.
  * @param {...string} keys
  */
 async function redisDel(...keys) {
+    if (keys.length === 0) return;
     const redis = getRedisClient();
-    if (!redis || keys.length === 0) return;
 
-    try {
-        await redis.del(...keys);
-    } catch (err) {
-        logger.error(`[Redis] DEL error for keys [${keys.join(', ')}]:`, err.message);
+    if (redis && isConnected) {
+        try {
+            await redis.del(...keys);
+        } catch (err) {
+            logger.error(`[Redis] DEL error for keys [${keys.join(', ')}]:`, err.message);
+        }
     }
+
+    memDel(...keys);
+}
+
+/**
+ * Atomic SET NX with millisecond expiry (PX).
+ * If Redis is online, uses native atomic Redis SET key val PX ttl NX.
+ * If Redis is offline, uses in-memory Map atomic check-and-set.
+ *
+ * @param {string} key
+ * @param {string|object} value
+ * @param {number} ttlMs
+ * @returns {Promise<string|null>} 'OK' if lock acquired, null if key already exists
+ */
+async function redisSetNxPx(key, value, ttlMs) {
+    const serialized = typeof value === 'object' ? JSON.stringify(value) : String(value);
+    const redis = getRedisClient();
+
+    if (redis && isConnected) {
+        try {
+            return await redis.set(key, serialized, 'PX', ttlMs, 'NX');
+        } catch (err) {
+            logger.error(`[Redis] setNxPx error for key "${key}":`, err.message);
+        }
+    }
+
+    // In-memory atomic reservation
+    if (memStore.has(key)) {
+        return null; // Key already held
+    }
+    memSet(key, serialized, ttlMs);
+    return 'OK';
 }
 
 /**
@@ -201,6 +282,7 @@ module.exports = {
     redisDel,
     redisLock,
     redisUnlock,
+    redisSetNxPx,
     isRedisReady,
     
     // ─── PoD V2 Methods ──────────────────────────────────────────────────────────

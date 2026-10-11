@@ -22,6 +22,12 @@ const { notifyClient } = require('../services/notifyClient');
 const { calculateRoute } = require('../services/googleRoutesService');
 const { getOrCreatePricing, kdToFils } = require('../middlewares/Pricing');
 const { redisGet, redisSet } = require('../config/redis');
+const {
+    getCompletedIdempotency,
+    acquireInFlightLock,
+    recordIdempotencySuccess,
+    releaseIdempotencyLock,
+} = require('../utils/orderIdempotencyHelper');
 const logger = require('../utils/logger');
 const metrics = require('../utils/metrics');
 const { resolveOrderIds } = require('../utils/orderIdResolver');
@@ -946,14 +952,25 @@ const listOrdersByRepresentativeId = asyncHandler(async (req, res) => {
  * @access Public
  */
 const createOrder = asyncHandler(async (req, res) => {
-    // ─── Idempotency Check (User-Scoped) ───
-    const idempotencyKey = req.headers['idempotency-key'];
-    const authUserId = req.user?.id?.toString() || req.user?._id?.toString() || 'anonymous';
-    const redisIdempotencyKey = idempotencyKey ? `idempotency:order:${authUserId}:${idempotencyKey}` : null;
-    if (redisIdempotencyKey) {
-        const cachedOrder = await redisGet(redisIdempotencyKey);
-        if (cachedOrder) {
-            return res.status(201).json(cachedOrder);
+    // ─── 1. Idempotency Pre-Check (Redis Cache & MongoDB Ground Truth) ───────
+    const rawIdempotencyKey = req.headers['idempotency-key'] || req.headers['x-idempotency-key'] || req.body?.idempotencyKey;
+    const authUserId = req.user?.id?.toString() || req.user?._id?.toString() || req.body?.clientId?.toString() || 'anonymous';
+
+    if (rawIdempotencyKey) {
+        const completedCheck = await getCompletedIdempotency({
+            req,
+            userId: authUserId,
+            idempotencyKey: rawIdempotencyKey,
+            payload: req.body,
+        });
+
+        if (completedCheck) {
+            if (completedCheck.state === 'COMPLETED') {
+                return res.status(201).json(completedCheck.response);
+            }
+            if (completedCheck.state === 'MISMATCH') {
+                return res.status(completedCheck.error.status).json(completedCheck.error);
+            }
         }
     }
 
@@ -979,10 +996,45 @@ const createOrder = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: 'clientId is required' });
     }
 
+    const effectiveUserId = value.clientId;
+
+    // ─── 2. Atomic In-Flight Lock Claim (SET NX + Poll Contention) ───────────
+    let idempotencyContext = null;
+    if (rawIdempotencyKey) {
+        idempotencyContext = await acquireInFlightLock({
+            req,
+            userId: effectiveUserId,
+            idempotencyKey: rawIdempotencyKey,
+            payload: req.body,
+        });
+
+        if (idempotencyContext.state === 'COMPLETED') {
+            return res.status(201).json(idempotencyContext.response);
+        }
+        if (idempotencyContext.state === 'MISMATCH' || idempotencyContext.state === 'INVALID_KEY') {
+            return res.status(idempotencyContext.error.status).json(idempotencyContext.error);
+        }
+        if (idempotencyContext.state === 'IN_PROGRESS') {
+            res.setHeader('Retry-After', '2');
+            return res.status(idempotencyContext.error.status).json(idempotencyContext.error);
+        }
+    }
+
+    // Helper to release in-flight lock on failure before order is saved
+    const releaseLockOnFailure = async () => {
+        if (idempotencyContext?.idempotencyKey) {
+            await releaseIdempotencyLock({
+                userId: effectiveUserId,
+                idempotencyKey: idempotencyContext.idempotencyKey,
+            });
+        }
+    };
+
     // ─── منع إنشاء طلبات إلكترونية غير مدفوعة عبر POST /api/orders ──────────
     // الدفع الإلكتروني أو عبر المحفظة يجب أن يمر عبر جلسة الدفع /api/checkout/session لضمان الدفع المسبق
     const ONLINE_PAYMENT_METHODS = ['online', 'card', 'wallet', 'app_wallet', 'paymob', 'mobile_wallet'];
     if (!isAdmin && value.paymentMethod && ONLINE_PAYMENT_METHODS.includes(value.paymentMethod.toLowerCase())) {
+        await releaseLockOnFailure();
         return res.status(400).json({
             code: 'CHECKOUT_SESSION_REQUIRED',
             message: 'يتطلب الدفع الإلكتروني أو عبر المحفظة إنشاء جلسة دفع أولاً عبر /api/checkout/session',
@@ -995,6 +1047,7 @@ const createOrder = asyncHandler(async (req, res) => {
     if (isPurchaseOrder) {
         const repAmountVal = Number(value.representativePaymentAmount) || 0;
         if (repAmountVal <= 0 || repAmountVal > 50000) {
+            await releaseLockOnFailure();
             return res.status(400).json({
                 code: 'INVALID_PURCHASE_AMOUNT',
                 message: 'مبلغ الشراء يجب أن يكون أكبر من 0 وأقل من 50,000 ج.م'
@@ -1008,6 +1061,7 @@ const createOrder = asyncHandler(async (req, res) => {
         const checkUserId = value.clientId || req.user?.id || req.user?._id;
         const walletCheck = await checkWalletCanOrder(checkUserId);
         if (!walletCheck.canOrder) {
+            await releaseLockOnFailure();
             return res.status(402).json({
                 code: 'WALLET_NEGATIVE_BALANCE',
                 message: walletCheck.message,
@@ -1038,6 +1092,7 @@ const createOrder = asyncHandler(async (req, res) => {
         });
 
         if (activeCount >= 2) {
+            await releaseLockOnFailure();
             return res.status(400).json({
                 code: 'MAX_ACTIVE_ORDERS_REACHED',
                 message: 'لقد وصلت إلى الحد الأقصى للطلبات النشطة (طلبين كحد أقصى)',
@@ -1071,6 +1126,7 @@ const createOrder = asyncHandler(async (req, res) => {
         const isFemale = ['female', 'أنثى', 'انثى'].includes(normalizedGender);
 
         if (!isFemale) {
+            await releaseLockOnFailure();
             return res.status(403).json({
                 code: 'LADIES_ONLY_VEHICLE',
                 message: 'عذراً، هذه المركبة مخصصة حصرياً لرحلات السيدات لتوفير أقصى درجات الخصوصية والأمان. حسابك مسجل كـ (ذكر)، يرجى اختيار إحدى المركبات الأخرى المتاحة لخدمتكم بكل سرور.',
@@ -1084,11 +1140,13 @@ const createOrder = asyncHandler(async (req, res) => {
     if (amt > 0 && (dtype === 'percentage' || dtype === 'fixed') && value.discountCode) {
         const check = await assertUserCanUseDiscountCode(value.clientId, value.discountCode);
         if (!check.ok) {
+            await releaseLockOnFailure();
             return res.status(check.status).json({ message: check.message });
         }
     } else if (amt > 0 && dtype === 'global_discount') {
         const check = await assertUserCanUseGlobalDiscount(value.clientId);
         if (!check.ok) {
+            await releaseLockOnFailure();
             return res.status(check.status).json({ message: check.message });
         }
     }
@@ -1237,10 +1295,8 @@ const createOrder = asyncHandler(async (req, res) => {
     }
 
     // ─── Secure Pricing Calculation ───
+    let pricing = null;
     try {
-        let pricing;
-        let pricingVersion = 1;
-
         if (value.vehicleTypeId) {
             const { VehicleType } = require('../middlewares/VehicleType');
             const mongoose = require('mongoose');
@@ -1292,6 +1348,7 @@ const createOrder = asyncHandler(async (req, res) => {
     }
 
     if (!backendDeliveryPriceFils || backendDeliveryPriceFils <= 0) {
+        await releaseLockOnFailure();
         return res.status(422).json({
             message: 'سعر التوصيل غير صالح',
             code: 'INVALID_DELIVERY_PRICE'
@@ -1354,14 +1411,59 @@ const createOrder = asyncHandler(async (req, res) => {
         pricingVersion,
         routeStatus,
         routeSource: 'GOOGLE',
-        routeSnapshot
+        routeSnapshot,
+
+        // ─── Durable Idempotency Fields ───────────────────────────────────────
+        idempotencyKey: idempotencyContext?.idempotencyKey || null,
+        idempotencyPayloadHash: idempotencyContext?.payloadHash || null,
     });
 
     if (routeStatus === 'READY' && !routeSnapshot.encodedPolyline) {
         order.routeStatus = 'FAILED';
     }
 
-    await order.save();
+    try {
+        await order.save();
+    } catch (saveErr) {
+        // Detect MongoDB E11000 duplicate key error on (clientId, idempotencyKey)
+        const isIdempotencyDup = saveErr.code === 11000 && (
+            saveErr.keyPattern?.idempotencyKey ||
+            String(saveErr.message).includes('idempotencyKey') ||
+            String(saveErr.message).includes('uniq_order_client_idempotency')
+        );
+
+        if (isIdempotencyDup && idempotencyContext?.idempotencyKey) {
+            logger.warn('[createOrder] Concurrent save race caught by MongoDB unique index constraint', {
+                clientId: effectiveUserId,
+                idempotencyKey: idempotencyContext.idempotencyKey,
+            });
+
+            // Concurrently saved by another request! Load the saved order and return it
+            const existingOrder = await Order.findOne({
+                clientId: effectiveUserId,
+                idempotencyKey: idempotencyContext.idempotencyKey,
+            });
+
+            if (existingOrder) {
+                const commissionCfg = await getCachedRepCommission().catch(() => null);
+                let [formatted] = await enrichOrdersWithVehicleData(req, [formatOrder(req, existingOrder, commissionCfg)]);
+
+                await recordIdempotencySuccess({
+                    userId: effectiveUserId,
+                    idempotencyKey: idempotencyContext.idempotencyKey,
+                    payloadHash: idempotencyContext.payloadHash,
+                    response: formatted,
+                    orderId: existingOrder.orderId,
+                    orderMongoId: String(existingOrder._id),
+                });
+
+                return res.status(201).json(formatted);
+            }
+        }
+
+        await releaseLockOnFailure();
+        throw saveErr;
+    }
 
     await consumeDiscountAfterSuccessfulOrder({
         clientId: value.clientId,
@@ -1373,8 +1475,16 @@ const createOrder = asyncHandler(async (req, res) => {
     const commissionCfg = await getCachedRepCommission().catch(() => null);
     let [formatted] = await enrichOrdersWithVehicleData(req, [formatOrder(req, order, commissionCfg)]);
 
-    if (redisIdempotencyKey) {
-        await redisSet(redisIdempotencyKey, formatted, 3600);
+    if (idempotencyContext?.idempotencyKey) {
+        await recordIdempotencySuccess({
+            userId: effectiveUserId,
+            idempotencyKey: idempotencyContext.idempotencyKey,
+            payloadHash: idempotencyContext.payloadHash,
+            response: formatted,
+            orderId: order.orderId,
+            orderMongoId: String(order._id),
+            ttlSeconds: 86400,
+        });
     }
 
     return res.status(201).json(formatted);
@@ -3849,6 +3959,7 @@ module.exports = {
     searchOrderByNumber,
     getAdminOrderFinancialStats,
     enrichOrdersWithDeliveryPhotos,
+    enrichOrdersWithVehicleData,
     formatOrder,
     getActiveOrders,
 };
