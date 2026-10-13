@@ -3167,6 +3167,10 @@ const markClientDelayed = asyncHandler(async (req, res) => {
 
     if (oldRepId) {
         try {
+            const { refundCompanyCommissionOnCancelOrRelease } = require('../middlewares/Wallet');
+            await refundCompanyCommissionOnCancelOrRelease({ order });
+        } catch (_) { }
+        try {
             const { clearRepCurrentOrder, invalidateLiveDashboard } = require('../redis/hrRedis');
             await clearRepCurrentOrder(oldRepId);
             await invalidateLiveDashboard();

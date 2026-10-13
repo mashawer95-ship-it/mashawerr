@@ -142,8 +142,8 @@ function dispatchWalletNotification({ userId, type, amountFils, balanceAfterFils
     if (!userId || !amountFils) return;
     try {
         const { notifyClient } = require('../services/notifyClient');
-        const amountKD = (Number(amountFils) / 1000).toFixed(3);
-        const balanceKD = (Number(balanceAfterFils) / 1000).toFixed(3);
+        const amountKD = (Number(amountFils) / 1000).toFixed(2);
+        const balanceKD = (Number(balanceAfterFils) / 1000).toFixed(2);
 
         let title = '💰 حركة في المحفظة';
         let body = '';
@@ -677,15 +677,15 @@ async function checkWalletCanOrder(userId) {
         const minAllowedFils = await getMinWalletBalanceFils();
         // يُمنع الطلب إذا وصل الرصيد إلى الحد السالب أو تجاوزه بالسالب (<= minAllowedFils)
         const canOrder = balanceFils > minAllowedFils;
-        const currentBalanceKd = (balanceFils / 1000).toFixed(3);
-        const limitKd = (Math.abs(minAllowedFils) / 1000).toFixed(3);
+        const currentBalanceKd = (balanceFils / 1000).toFixed(2);
+        const limitKd = (Math.abs(minAllowedFils) / 1000).toFixed(2);
 
         return {
             canOrder,
             balanceFils,
-            balanceKWD: Number((balanceFils / 1000).toFixed(3)),
+            balanceKWD: Number((balanceFils / 1000).toFixed(2)),
             minBalanceFils: minAllowedFils,
-            minBalanceKWD: Number((minAllowedFils / 1000).toFixed(3)),
+            minBalanceKWD: Number((minAllowedFils / 1000).toFixed(2)),
             message: canOrder
                 ? null
                 : `تجاوز رصيدك الحد الأقصى للمديونية المسموح بها (${limitKd} ج.م). رصيدك الحالي: ${currentBalanceKd} ج.م. يرجى سداد المديونية وشحن المحفظة لإنشاء طلب جديد.`,
