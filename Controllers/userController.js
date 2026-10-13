@@ -1651,7 +1651,7 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
     }
 
     // Compute comprehensive summary stats across all rep orders in period
-    const allRepOrdersForStats = await Order.find(deliveryFilter).select('status totalPrice totalDeliveryPrice deliveryPrice').lean();
+    const allRepOrdersForStats = await Order.find(deliveryFilter).select('status totalPrice totalDeliveryPrice deliveryPrice orderCategory').lean();
 
     let regCompletedCount = 0, regCompletedRevFils = 0, regCompletedProfitFils = 0, regCancelledCount = 0, regCancelledRevFils = 0, regCancelledProfitFils = 0, regActiveCount = 0;
 
@@ -1694,6 +1694,9 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
     const totalCancelledRevFils = regCancelledRevFils;
     const totalCancelledProfitFils = regCancelledProfitFils;
 
+    const totalAllRevFils = totalCompletedRevFils + totalCancelledRevFils;
+    const totalAllProfitFils = totalCompletedProfitFils + totalCancelledProfitFils;
+
     const meta = buildPaginationMetadata(allTotal, safePage, safeLimit);
     setPaginationHeaders(res, allTotal, safePage, safeLimit);
 
@@ -1728,6 +1731,14 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
                 cancelledProfit:      regCancelledProfitKD,
                 cancelledProfitFils:  regCancelledProfitFils,
                 cancelledProfitText:  getFilsAsText(regCancelledProfitFils),
+
+                totalRevenue:         Number((totalAllRevFils / 1000).toFixed(3)),
+                totalRevenueFils:     totalAllRevFils,
+                totalRevenueText:     getFilsAsText(totalAllRevFils),
+                totalProfit:          Number((totalAllProfitFils / 1000).toFixed(3)),
+                totalProfitFils:      totalAllProfitFils,
+                totalProfitText:      getFilsAsText(totalAllProfitFils),
+
                 inProgressCount:      regActiveCount,
                 totalCount:           regCompletedCount + regCancelledCount + regActiveCount,
             },
@@ -1747,6 +1758,14 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
                 cancelledProfit:      0,
                 cancelledProfitFils:  0,
                 cancelledProfitText:  '0 فلس',
+
+                totalRevenue:         0,
+                totalRevenueFils:     0,
+                totalRevenueText:     '0 فلس',
+                totalProfit:          0,
+                totalProfitFils:      0,
+                totalProfitText:      '0 فلس',
+
                 inProgressCount:      0,
                 totalCount:           0,
             },
@@ -1766,6 +1785,14 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
                 cancelledProfit:      Number((totalCancelledProfitFils / 1000).toFixed(3)),
                 cancelledProfitFils:  totalCancelledProfitFils,
                 cancelledProfitText:  getFilsAsText(totalCancelledProfitFils),
+
+                totalRevenue:         Number((totalAllRevFils / 1000).toFixed(3)),
+                totalRevenueFils:     totalAllRevFils,
+                totalRevenueText:     getFilsAsText(totalAllRevFils),
+                totalProfit:          Number((totalAllProfitFils / 1000).toFixed(3)),
+                totalProfitFils:      totalAllProfitFils,
+                totalProfitText:      getFilsAsText(totalAllProfitFils),
+
                 inProgressCount:      regActiveCount,
                 totalCount:           allRepOrdersForStats.length,
             },
