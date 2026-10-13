@@ -1651,9 +1651,15 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
     }
 
     // Compute comprehensive summary stats across all rep orders in period
-    const allRepOrdersForStats = await Order.find(deliveryFilter).select('status totalPrice totalDeliveryPrice deliveryPrice orderCategory').lean();
+    const allRepOrdersForStats = await Order.find(deliveryFilter).select('status totalPrice totalDeliveryPrice deliveryPrice orderCategory paymentMethod').lean();
 
     let regCompletedCount = 0, regCompletedRevFils = 0, regCompletedProfitFils = 0, regCancelledCount = 0, regCancelledRevFils = 0, regCancelledProfitFils = 0, regActiveCount = 0;
+
+    let pmStats = {
+        cash:   { count: 0, completedCount: 0, cancelledCount: 0, inProgressCount: 0, revFils: 0, profitFils: 0 },
+        card:   { count: 0, completedCount: 0, cancelledCount: 0, inProgressCount: 0, revFils: 0, profitFils: 0 },
+        wallet: { count: 0, completedCount: 0, cancelledCount: 0, inProgressCount: 0, revFils: 0, profitFils: 0 },
+    };
 
     for (const o of allRepOrdersForStats) {
         const status  = (o.status || '').toLowerCase();
@@ -1671,16 +1677,36 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
         const profitKD = calcRepEarnings(dPriceKD, commPct);
         const profitFils = Math.round(profitKD * 1000);
 
+        const rawPm = (o.paymentMethod || '').toLowerCase().trim();
+        let pmKey = 'cash';
+        if (rawPm.includes('wallet')) {
+            pmKey = 'wallet';
+        } else if (['card', 'visa', 'online', 'knet', 'credit'].some(x => rawPm.includes(x))) {
+            pmKey = 'card';
+        } else {
+            pmKey = 'cash';
+        }
+        pmStats[pmKey].count++;
+
         if (['completed', 'delivered'].includes(status)) {
             regCompletedCount++;
             regCompletedRevFils += tPriceFils;
             regCompletedProfitFils += profitFils;
+
+            pmStats[pmKey].completedCount++;
+            pmStats[pmKey].revFils += tPriceFils;
+            pmStats[pmKey].profitFils += profitFils;
         } else if (['cancelled', 'canceled'].includes(status)) {
             regCancelledCount++;
             regCancelledRevFils += tPriceFils;
             regCancelledProfitFils += profitFils;
+
+            pmStats[pmKey].cancelledCount++;
+            pmStats[pmKey].revFils += tPriceFils;
+            pmStats[pmKey].profitFils += profitFils;
         } else {
             regActiveCount++;
+            pmStats[pmKey].inProgressCount++;
         }
     }
 
@@ -1795,6 +1821,44 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
 
                 inProgressCount:      regActiveCount,
                 totalCount:           allRepOrdersForStats.length,
+            },
+            paymentMethods: {
+                cash: {
+                    count:            pmStats.cash.count,
+                    completedCount:   pmStats.cash.completedCount,
+                    cancelledCount:   pmStats.cash.cancelledCount,
+                    inProgressCount:  pmStats.cash.inProgressCount,
+                    totalRevenue:     Number((pmStats.cash.revFils / 1000).toFixed(3)),
+                    totalRevenueFils: pmStats.cash.revFils,
+                    totalRevenueText: getFilsAsText(pmStats.cash.revFils),
+                    totalProfit:      Number((pmStats.cash.profitFils / 1000).toFixed(3)),
+                    totalProfitFils:  pmStats.cash.profitFils,
+                    totalProfitText:  getFilsAsText(pmStats.cash.profitFils),
+                },
+                card: {
+                    count:            pmStats.card.count,
+                    completedCount:   pmStats.card.completedCount,
+                    cancelledCount:   pmStats.card.cancelledCount,
+                    inProgressCount:  pmStats.card.inProgressCount,
+                    totalRevenue:     Number((pmStats.card.revFils / 1000).toFixed(3)),
+                    totalRevenueFils: pmStats.card.revFils,
+                    totalRevenueText: getFilsAsText(pmStats.card.revFils),
+                    totalProfit:      Number((pmStats.card.profitFils / 1000).toFixed(3)),
+                    totalProfitFils:  pmStats.card.profitFils,
+                    totalProfitText:  getFilsAsText(pmStats.card.profitFils),
+                },
+                wallet: {
+                    count:            pmStats.wallet.count,
+                    completedCount:   pmStats.wallet.completedCount,
+                    cancelledCount:   pmStats.wallet.cancelledCount,
+                    inProgressCount:  pmStats.wallet.inProgressCount,
+                    totalRevenue:     Number((pmStats.wallet.revFils / 1000).toFixed(3)),
+                    totalRevenueFils: pmStats.wallet.revFils,
+                    totalRevenueText: getFilsAsText(pmStats.wallet.revFils),
+                    totalProfit:      Number((pmStats.wallet.profitFils / 1000).toFixed(3)),
+                    totalProfitFils:  pmStats.wallet.profitFils,
+                    totalProfitText:  getFilsAsText(pmStats.wallet.profitFils),
+                },
             },
         },
         page: safePage,
