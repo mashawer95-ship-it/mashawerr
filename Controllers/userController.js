@@ -1439,6 +1439,11 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
         if (val == null || isNaN(val)) return 0;
         let num = Number(val);
         if (num <= 0) return 0;
+        // If price is stored in EGP/KD units (e.g. 5, 10, 50, < 100), convert to fils (x 1000)
+        // If already in fils (>= 100, e.g. 5000), keep as is
+        if (num < 100) {
+            return Math.round(num * 1000);
+        }
         return Math.round(num);
     }
 
