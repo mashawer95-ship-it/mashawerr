@@ -340,6 +340,7 @@ function formatOrder(req, order, commissionCfg) {
             pickedUpAt: t.pickedUpAt ? (t.pickedUpAt instanceof Date ? t.pickedUpAt.toISOString() : String(t.pickedUpAt)) : null,
             deliveredAt: t.deliveredAt ? (t.deliveredAt instanceof Date ? t.deliveredAt.toISOString() : String(t.deliveredAt)) : (taskDelivered ? (taskDelivered instanceof Date ? taskDelivered.toISOString() : String(taskDelivered)) : null),
             completedAt: t.completedAt ? (t.completedAt instanceof Date ? t.completedAt.toISOString() : String(t.completedAt)) : null,
+            delayedAt: t.delayedAt ? (t.delayedAt instanceof Date ? t.delayedAt.toISOString() : String(t.delayedAt)) : (order.delayedAt ? (order.delayedAt instanceof Date ? order.delayedAt.toISOString() : String(order.delayedAt)) : null),
         };
     });
 
@@ -1831,6 +1832,15 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
                 t.completedAt = t.completedAt || now;
             });
         }
+    } else if (st === 'delayed') {
+        const now = new Date();
+        order.isClientDelayed = true;
+        order.delayedAt = order.delayedAt || now;
+        if (Array.isArray(order.tasks) && order.tasks.length > 0) {
+            order.tasks.forEach((t) => {
+                t.delayedAt = t.delayedAt || now;
+            });
+        }
     } else if (st === 'waiting' || st === 'pending') {
         if (Array.isArray(order.tasks) && order.tasks.length > 0) {
             order.tasks.forEach((t) => {
@@ -3181,6 +3191,11 @@ const markClientDelayed = asyncHandler(async (req, res) => {
     order.status = 'delayed';
     order.isClientDelayed = true;
     order.delayedAt = now;
+    if (Array.isArray(order.tasks) && order.tasks.length > 0) {
+        order.tasks.forEach((t) => {
+            if (!t.delayedAt) t.delayedAt = now;
+        });
+    }
     if (!order.clientId && (order.userId || order._doc?.userId)) {
         order.clientId = String(order.userId || order._doc?.userId);
     }

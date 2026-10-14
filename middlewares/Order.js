@@ -109,6 +109,7 @@ const TaskSchema = new mongoose.Schema(
         // حالة التاسك — pending | picked_up | completed
         arrivedAt: { type: Date, default: null },    // وقت وصول المندوب لنقطة الاستلام
         pickedUpAt: { type: Date, default: null },   // وقت تأكيد الاستلام
+        delayedAt: { type: Date, default: null },    // وقت تسجيل تأخير العميل
         deliveredAt: { type: Date, default: null },  // وقت اكتمال التسليم
         completedAt: { type: Date, default: null },  // وقت إنهاء المهمة
         fromLatitude: { type: Number, default: 0 },
