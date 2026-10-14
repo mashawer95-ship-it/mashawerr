@@ -59,37 +59,62 @@ function registerChatSocket(io) {
         socket.broadcast.emit('userStatus', { userId: user.id, status: 'online' });
         logger.debug(`[Chat] User ${user.id} connected. Socket ID: ${socket.id}`);
 
+        // Client-side liveness probe: a round-trip ack proves the connection isn't a zombie
+        socket.on('healthCheck', (_payload, callback) => {
+            if (typeof callback === 'function') callback({ ok: true, ts: Date.now() });
+        });
+
         // 2. Join a specific order's chat room (joins rooms for ALL representations of the orderId)
-        socket.on('joinChat', async ({ orderId }) => {
-            if (!orderId) return;
-            const { allIds } = await resolveOrderIds(orderId);
-            for (const oid of allIds) {
-                socket.join(`chat:${oid}`);
+        socket.on('joinChat', async (payload, callback) => {
+            try {
+                const orderId = payload && payload.orderId;
+                if (!orderId) {
+                    if (typeof callback === 'function') callback({ success: false });
+                    return;
+                }
+                const { allIds } = await resolveOrderIds(orderId);
+                for (const oid of allIds) {
+                    socket.join(`chat:${oid}`);
+                }
+                logger.debug(`[Chat] User ${user.id} joined chat rooms: ${allIds.join(', ')}`);
+                if (typeof callback === 'function') callback({ success: true });
+            } catch (error) {
+                logger.error(`[Chat] joinChat error: ${error.message}`);
+                if (typeof callback === 'function') callback({ success: false });
             }
-            logger.debug(`[Chat] User ${user.id} joined chat rooms: ${allIds.join(', ')}`);
         });
 
         // 3. Leave a specific order's chat room
-        socket.on('leaveChat', async ({ orderId }) => {
-            if (!orderId) return;
-            const { allIds } = await resolveOrderIds(orderId);
-            for (const oid of allIds) {
-                socket.leave(`chat:${oid}`);
+        socket.on('leaveChat', async (payload) => {
+            try {
+                const orderId = payload && payload.orderId;
+                if (!orderId) return;
+                const { allIds } = await resolveOrderIds(orderId);
+                for (const oid of allIds) {
+                    socket.leave(`chat:${oid}`);
+                }
+                logger.debug(`[Chat] User ${user.id} left chat rooms: ${allIds.join(', ')}`);
+            } catch (error) {
+                logger.error(`[Chat] leaveChat error: ${error.message}`);
             }
-            logger.debug(`[Chat] User ${user.id} left chat rooms: ${allIds.join(', ')}`);
         });
 
         // 4. Typing indicator
-        socket.on('typing', async ({ orderId, isTyping }) => {
-            if (!orderId) return;
-            const { allIds } = await resolveOrderIds(orderId);
-            for (const oid of allIds) {
-                socket.to(`chat:${oid}`).emit('userTyping', {
-                    orderId: oid,
-                    allOrderIds: allIds,
-                    userId: user.id,
-                    isTyping
-                });
+        socket.on('typing', async (payload) => {
+            try {
+                const { orderId, isTyping } = payload || {};
+                if (!orderId) return;
+                const { allIds } = await resolveOrderIds(orderId);
+                for (const oid of allIds) {
+                    socket.to(`chat:${oid}`).emit('userTyping', {
+                        orderId: oid,
+                        allOrderIds: allIds,
+                        userId: user.id,
+                        isTyping
+                    });
+                }
+            } catch (error) {
+                logger.error(`[Chat] typing error: ${error.message}`);
             }
         });
 
@@ -104,8 +129,10 @@ function registerChatSocket(io) {
                     audioUrl, 
                     audioDuration, 
                     messageType,
+                    clientMsgId: rawClientMsgId,
                     senderName: clientProvidedSenderName
-                } = payload;
+                } = payload || {};
+                const clientMsgId = rawClientMsgId ? String(rawClientMsgId) : null;
 
                 if (!orderId || !receiverId) {
                     if (typeof callback === 'function') callback({ success: false, error: 'orderId and receiverId are required' });
@@ -117,13 +144,28 @@ function registerChatSocket(io) {
                     return;
                 }
 
+                const { allIds, numericId, mongoId, canonicalId } = await resolveOrderIds(orderId);
+                const primaryOrderId = canonicalId || String(orderId);
+
+                // Idempotency: a retry of an already-saved message just re-acks (no duplicate, no re-notify)
+                if (clientMsgId) {
+                    const existing = await Message.findOne({ senderId: user.id, clientMsgId }).lean();
+                    if (existing) {
+                        existing.allOrderIds = allIds;
+                        if (typeof callback === 'function') callback({ success: true, duplicate: true, message: existing });
+                        return;
+                    }
+                }
+
                 const resolvedType = audioUrl ? 'voice' : (imageUrl ? 'image' : (messageType || 'text'));
 
                 const userFullName = user.name || (user.firstName ? `${user.firstName} ${user.lastName || ''}`.trim() : '');
                 const effectiveSenderName = clientProvidedSenderName || userFullName || '';
 
-                const { allIds, numericId, mongoId, canonicalId } = await resolveOrderIds(orderId);
-                const primaryOrderId = canonicalId || String(orderId);
+                // Make sure the sender is in the room so it always receives its own echo
+                for (const oid of allIds) {
+                    socket.join(`chat:${oid}`);
+                }
 
                 // Save to MongoDB with canonical orderId
                 const message = new Message({
@@ -136,10 +178,24 @@ function registerChatSocket(io) {
                     audioDuration: Number(audioDuration) || 0,
                     messageType: resolvedType,
                     senderName: effectiveSenderName,
-                    status: 'sent'
+                    status: 'sent',
+                    clientMsgId
                 });
 
-                await message.save();
+                try {
+                    await message.save();
+                } catch (saveErr) {
+                    // Concurrent retry raced us on the unique (senderId, clientMsgId) index
+                    if (saveErr && saveErr.code === 11000 && clientMsgId) {
+                        const existing = await Message.findOne({ senderId: user.id, clientMsgId }).lean();
+                        if (existing) {
+                            existing.allOrderIds = allIds;
+                            if (typeof callback === 'function') callback({ success: true, duplicate: true, message: existing });
+                            return;
+                        }
+                    }
+                    throw saveErr;
+                }
                 const msgData = message.toObject();
 
                 // Attach alternative order identifiers so any client matching rule succeeds
@@ -156,7 +212,12 @@ function registerChatSocket(io) {
                 socket.to(`user:${receiverId}`).emit('receiveMessage', msgData);
 
                 // ── Push updated unread count to the RECEIVER immediately (for all orderId aliases) ────
-                await pushUnreadCount(nsp, receiverId, orderId);
+                // Never let a badge failure turn an already-saved+delivered message into a send error.
+                try {
+                    await pushUnreadCount(nsp, receiverId, orderId);
+                } catch (badgeErr) {
+                    logger.warn(`[Chat] pushUnreadCount failed: ${badgeErr.message}`);
+                }
 
                 // ── Send Push Notification (FCM) to the RECEIVER ─────────────
                 try {

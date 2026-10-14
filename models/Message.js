@@ -19,9 +19,16 @@ const messageSchema = new mongoose.Schema({
         enum: ['sent', 'delivered', 'read'],
         default: 'sent'
     },
-    readAt: { type: Date, default: null }
+    readAt: { type: Date, default: null },
+    // Client-generated idempotency key: a retried send with the same key never duplicates the message
+    clientMsgId: { type: String, default: null }
 }, {
     timestamps: true // adds createdAt and updatedAt
 });
+
+messageSchema.index(
+    { senderId: 1, clientMsgId: 1 },
+    { unique: true, partialFilterExpression: { clientMsgId: { $type: 'string' } } }
+);
 
 module.exports = mongoose.model('Message', messageSchema);
