@@ -38,7 +38,11 @@ const upload = multer({
 
 // ─── Helper: find task by taskId ─────────────────────────────────────────────
 function findTask(order, taskId) {
-    return order.tasks.find((t) => t.taskId === taskId);
+    if (!Array.isArray(order.tasks) || order.tasks.length === 0) return null;
+    return order.tasks.find((t) => t.taskId === taskId) ||
+           order.tasks.find((t) => String(t.taskId) === String(taskId)) ||
+           order.tasks.find((t) => String(t._id) === String(taskId)) ||
+           (order.tasks.length === 1 ? order.tasks[0] : null);
 }
 
 // ─── Helper: emit socket event ────────────────────────────────────────────────
@@ -108,13 +112,18 @@ const markTaskPickedUp = asyncHandler(async (req, res) => {
             targetStop = order.allLocationsInOrder[parseInt(rawStopIdx, 10)];
         }
         if (!targetStop) {
-            targetStop = order.allLocationsInOrder.find(l => l.isFrom === true && !l.isCompleted);
+            targetStop = order.allLocationsInOrder.find(l => (l.isFrom === true || l.isFrom === 'true') && !l.isCompleted);
         }
         if (targetStop) {
             targetStop.isCompleted = true;
             targetStop.completedAt = new Date();
         }
         order.markModified('allLocationsInOrder');
+    }
+
+    const allPickupsDone = !Array.isArray(order.tasks) || order.tasks.every(t => t.taskStatus === 'picked_up' || t.taskStatus === 'completed' || t.isPickedUp);
+    if (allPickupsDone && (order.status === 'accepted' || order.status === 'waiting' || order.status === 'assigned')) {
+        order.status = 'delivering';
     }
 
     await order.save();
@@ -130,6 +139,15 @@ const markTaskPickedUp = asyncHandler(async (req, res) => {
         message: 'تم استلام البضاعة',
         track: trackData,
     });
+
+    if (order.status === 'delivering') {
+        emitSocket(req, room, 'order:status_changed', {
+            orderId,
+            status: 'delivering',
+            phase: 'DELIVERY',
+            message: 'تم بدء مرحلة التسليم',
+        });
+    }
 
     if (trackData) {
         emitSocket(req, room, 'order:track_updated', {
