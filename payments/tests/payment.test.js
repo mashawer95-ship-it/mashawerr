@@ -1480,6 +1480,36 @@ describe('Post-Audit Invariant 1: Commission Pre-flight & Idempotent Deduction',
         assert.strictEqual(result.allowed, true);
         assert.strictEqual(result.companyFeeFils, 2000, 'Idempotent call preserves existing fee without re-debiting');
     });
+
+    test('checkCompanyCommissionSufficient blocks acceptance when representative balance drops below negative limit', async () => {
+        const order = {
+            orderId: 993,
+            totalDeliveryPrice: 10000,
+            orderCategory: 'delivery',
+            companyCommissionDeducted: false,
+        };
+        // Simulated representative wallet with -5500 fils (exceeding default -5000 fils limit)
+        const walletExceeded = { balanceFils: -5500, transactions: [] };
+        const repId = 'rep-comm-test-3';
+        const result = await checkCompanyCommissionSufficient({ order, repId, wallet: walletExceeded });
+        assert.strictEqual(result.allowed, false, 'Representative with debt exceeding limit must NOT be allowed to accept orders');
+        assert.strictEqual(result.code, 'INSUFFICIENT_WALLET_BALANCE');
+        assert.ok(result.message.includes('المحفظة') || result.message.includes('المديونية'));
+    });
+
+    test('deductCompanyCommissionOnAccept blocks deduction when representative balance drops below negative limit', async () => {
+        const order = {
+            orderId: 994,
+            totalDeliveryPrice: 10000,
+            orderCategory: 'delivery',
+            companyCommissionDeducted: false,
+        };
+        const walletExceeded = { balanceFils: -6000, transactions: [] };
+        const repId = 'rep-comm-test-4';
+        const result = await deductCompanyCommissionOnAccept({ order, repId, wallet: walletExceeded });
+        assert.strictEqual(result.allowed, false, 'Deduction must be rejected when balance exceeds negative debt limit');
+        assert.strictEqual(result.code, 'INSUFFICIENT_WALLET_BALANCE');
+    });
 });
 
 describe('Post-Audit Invariant 2: Cash Order Earnings Accounting (No Double Payout)', () => {

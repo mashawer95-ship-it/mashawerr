@@ -9,6 +9,9 @@ const DEFAULT_MIN_WALLET_FILS = -5000;
  * إذا وضع الأدمن 3 دينار (3000 فلس)، يكون الحد السالب المسموح به -3000 فلس
  */
 async function getMinWalletBalanceFils() {
+    if (mongoose.connection.readyState === 0) {
+        return DEFAULT_MIN_WALLET_FILS;
+    }
     try {
         const { getOrCreatePricing } = require('./Pricing');
         const pricing = await getOrCreatePricing();
@@ -106,6 +109,9 @@ const Wallet = mongoose.model('Wallet', WalletSchema);
 async function getOrCreateWallet(userId) {
     if (!userId) throw new Error('userId is required for wallet');
     const uStr = String(userId);
+    if (mongoose.connection.readyState === 0) {
+        return { _id: uStr, userId: uStr, balanceFils: 0, transactions: [], save: async () => {} };
+    }
     let wallet = await Wallet.findOne({ userId: uStr });
     if (!wallet && mongoose.Types.ObjectId.isValid(userId)) {
         wallet = await Wallet.findOne({ userId: new mongoose.Types.ObjectId(userId) });
@@ -385,8 +391,28 @@ function extractDeliveryPriceFils(order) {
  * ─── Helper: التحقق من كفاية رصيد محفظة المندوب لعمولة الشركة دون خصم ─────
  * Pre-flight check: validates balance before atomic order acceptance without mutating the wallet.
  */
-async function checkCompanyCommissionSufficient({ order, repId }) {
-    if (!order || !repId) return { allowed: true, companyFeeFils: 0 };
+async function checkCompanyCommissionSufficient({ order, repId, wallet: walletOverride = null }) {
+    if (!repId) return { allowed: true, companyFeeFils: 0 };
+
+    const wallet = walletOverride || await getOrCreateWallet(repId);
+    const minAllowedFils = await getMinWalletBalanceFils();
+    const limitKd = (Math.abs(minAllowedFils) / 1000).toFixed(2);
+    const currentBalanceKd = (wallet.balanceFils / 1000).toFixed(2);
+
+    // 1. فحص أساسي إلزامي: هل رصيد المندوب الحالي وصل أو تجاوز الحد الأدنى بالسالب؟
+    if (wallet.balanceFils <= minAllowedFils) {
+        return {
+            allowed: false,
+            message: `برجاء شحن المحفظة لقبول الطلب، تم تجاوز الحد المسموح به للمديونية (${limitKd} ج.م). رصيدك الحالي: ${currentBalanceKd} ج.م`,
+            code: 'INSUFFICIENT_WALLET_BALANCE',
+            requiredFils: 0,
+            currentBalanceFils: wallet.balanceFils,
+            minBalanceFils: minAllowedFils,
+            companyFeeFils: 0,
+        };
+    }
+
+    if (!order) return { allowed: true, companyFeeFils: 0 };
 
     const deliveryPriceFils = extractDeliveryPriceFils(order);
     if (deliveryPriceFils <= 0) return { allowed: true, companyFeeFils: 0 };
@@ -410,15 +436,13 @@ async function checkCompanyCommissionSufficient({ order, repId }) {
         return { allowed: true, companyFeeFils: 0 };
     }
 
-    const wallet = await getOrCreateWallet(repId);
+    // 2. فحص بعد احتساب عمولة الشركة: هل الخصم سيتجاوز الحد الأدنى بالسالب؟
     const potentialBalance = wallet.balanceFils - companyFeeFils;
-    const minAllowedFils = await getMinWalletBalanceFils();
-
     if (potentialBalance < minAllowedFils) {
-        const limitKd = (Math.abs(minAllowedFils) / 1000).toFixed(2);
+        const feeKd = (companyFeeFils / 1000).toFixed(2);
         return {
             allowed: false,
-            message: `برجاء شحن المحفظة لقبول الطلب، تم تجاوز الحد المسموح به للمديونية (${limitKd} ج.م)`,
+            message: `برجاء شحن المحفظة لقبول الطلب، سيتم تجاوز الحد المسموح به للمديونية (${limitKd} ج.م) بخصم عمولة الطلب (${feeKd} ج.م)`,
             code: 'INSUFFICIENT_WALLET_BALANCE',
             requiredFils: companyFeeFils,
             currentBalanceFils: wallet.balanceFils,
@@ -435,12 +459,28 @@ async function checkCompanyCommissionSufficient({ order, repId }) {
  * إذا كان خصم العمولة سيتجاوز الحد السالب (-5000 فلس / -5 KWD)، يمنع قبول الطلب
  * IDEMPOTENT: If already deducted for this order, returns immediately without double-debiting.
  */
-async function deductCompanyCommissionOnAccept({ order, repId, isBusiness = false }) {
+async function deductCompanyCommissionOnAccept({ order, repId, isBusiness = false, wallet: walletOverride = null }) {
     if (!order || !repId) return { allowed: true, companyFeeFils: 0 };
 
     // Idempotency: if commission was already deducted for this order, do not deduct again
     if (order.companyCommissionDeducted) {
         return { allowed: true, companyFeeFils: order.companyCommissionFils || 0 };
+    }
+
+    const wallet = walletOverride || await getOrCreateWallet(repId);
+    const minAllowedFils = await getMinWalletBalanceFils();
+    const limitKd = (Math.abs(minAllowedFils) / 1000).toFixed(2);
+    const currentBalanceKd = (wallet.balanceFils / 1000).toFixed(2);
+
+    if (wallet.balanceFils <= minAllowedFils) {
+        return {
+            allowed: false,
+            message: `برجاء شحن المحفظة لقبول الطلب، تم تجاوز الحد المسموح به للمديونية (${limitKd} ج.م). رصيدك الحالي: ${currentBalanceKd} ج.م`,
+            code: 'INSUFFICIENT_WALLET_BALANCE',
+            requiredFils: 0,
+            currentBalanceFils: wallet.balanceFils,
+            minBalanceFils: minAllowedFils,
+        };
     }
 
     const deliveryPriceFils = extractDeliveryPriceFils(order);
@@ -467,15 +507,12 @@ async function deductCompanyCommissionOnAccept({ order, repId, isBusiness = fals
         return { allowed: true, companyFeeFils: 0 };
     }
 
-    const wallet = await getOrCreateWallet(repId);
     const potentialBalance = wallet.balanceFils - companyFeeFils;
-    const minAllowedFils = await getMinWalletBalanceFils();
-
     if (potentialBalance < minAllowedFils) {
-        const limitKd = (Math.abs(minAllowedFils) / 1000).toFixed(2);
+        const feeKd = (companyFeeFils / 1000).toFixed(2);
         return {
             allowed: false,
-            message: `برجاء شحن المحفظة لقبول الطلب، تم تجاوز الحد المسموح به للمديونية (${limitKd} ج.م)`,
+            message: `برجاء شحن المحفظة لقبول الطلب، سيتم تجاوز الحد المسموح به للمديونية (${limitKd} ج.م) بخصم عمولة الطلب (${feeKd} ج.م)`,
             code: 'INSUFFICIENT_WALLET_BALANCE',
             requiredFils: companyFeeFils,
             currentBalanceFils: wallet.balanceFils,

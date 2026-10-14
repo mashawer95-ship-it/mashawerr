@@ -116,6 +116,23 @@ async function checkRepCanAcceptOrder(repId, order = null) {
         }
     }
 
+    // 5. فحص الحد الأدنى لرصيد المحفظة بالسالب (الحد الأقصى للمديونية المحدد من الأدمن)
+    try {
+        const { getOrCreateWallet, getMinWalletBalanceFils } = require('../middlewares/Wallet');
+        const wallet = await getOrCreateWallet(repId);
+        const minAllowedFils = await getMinWalletBalanceFils();
+        if (wallet && typeof wallet.balanceFils === 'number' && wallet.balanceFils <= minAllowedFils) {
+            const limitKd = (Math.abs(minAllowedFils) / 1000).toFixed(2);
+            const currentBalanceKd = (wallet.balanceFils / 1000).toFixed(2);
+            return {
+                canAccept: false,
+                statusCode: 402,
+                code: 'INSUFFICIENT_WALLET_BALANCE',
+                message: `برجاء شحن المحفظة لقبول الطلب، تم تجاوز الحد المسموح به للمديونية (${limitKd} ج.م). رصيدك الحالي: ${currentBalanceKd} ج.م`,
+            };
+        }
+    } catch (_) {}
+
     // Shifts and attendance checks removed per business requirement:
     // Representatives are no longer bound by shifts or attendance/absence.
     // Live tracking (online/offline availability and active orders) is fully maintained.
