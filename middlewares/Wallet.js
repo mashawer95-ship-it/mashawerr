@@ -15,11 +15,19 @@ async function getMinWalletBalanceFils() {
     try {
         const { getOrCreatePricing } = require('./Pricing');
         const pricing = await getOrCreatePricing();
-        let maxNegFils = Math.abs(Number(pricing?.maxNegativeBalanceFils !== undefined ? pricing.maxNegativeBalanceFils : 5000));
-        if (isNaN(maxNegFils) || maxNegFils === 0) {
-            maxNegFils = 5000;
+        const rawVal = pricing?.maxNegativeBalanceFils;
+        if (rawVal === undefined || rawVal === null || rawVal === '') {
+            return DEFAULT_MIN_WALLET_FILS;
         }
-        // إذا قام الأدمن بإدخال القيمة بالدينار/الجنيه (مثل 5 أو 50 أو 100 ج.م بدلاً من فلس)
+        let maxNegFils = Math.abs(Number(rawVal));
+        if (isNaN(maxNegFils)) {
+            return DEFAULT_MIN_WALLET_FILS;
+        }
+        // إذا قام الأدمن بإدخال 0، فالحد السالب المسموح هو 0 (ممنوع أي مديونية إطلاقاً)
+        if (maxNegFils === 0) {
+            return 0;
+        }
+        // إذا قام الأدمن بإدخال القيمة بالدينار/الجنيه (مثل 5 أو 10 أو 50 ج.م بدلاً من فلس)
         if (maxNegFils > 0 && maxNegFils < 500) {
             maxNegFils = Math.round(maxNegFils * 1000);
         }
