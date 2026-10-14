@@ -107,9 +107,10 @@ const TaskSchema = new mongoose.Schema(
         taskId: { type: Number, required: true },
         type: { type: String, enum: [...TASK_TYPES], required: true },
         // حالة التاسك — pending | picked_up | completed
-        taskStatus: { type: String, enum: [...TASK_STATUSES], default: 'pending' },
         arrivedAt: { type: Date, default: null },    // وقت وصول المندوب لنقطة الاستلام
+        pickedUpAt: { type: Date, default: null },   // وقت تأكيد الاستلام
         deliveredAt: { type: Date, default: null },  // وقت اكتمال التسليم
+        completedAt: { type: Date, default: null },  // وقت إنهاء المهمة
         fromLatitude: { type: Number, default: 0 },
         fromLongitude: { type: Number, default: 0 },
         toLatitude: { type: Number, default: 0 },
@@ -194,17 +195,22 @@ const OrderSchema = new mongoose.Schema(
         reviewReason: { type: String, trim: true, default: null },
         tasks: { type: [TaskSchema], default: [] },
 
-        // ─── حقول التايمر والتأخير ────────────────────────────────────────────────
+        // ─── حقول التايمر ومواعيد الاستلام والتسليم ──────────────────────────────
         // وقت قبول المندوب للأوردر — يُستخدم لحساب رسوم الإلغاء
         acceptedAt: { type: Date, default: null },
         // وقت ضغط المندوب على "تأكيد الوصول" لنقطة الاستلام
         arrivalConfirmedAt: { type: Date, default: null },
+        // وقت وصول المندوب لنقطة الاستلام
+        arrivedAt: { type: Date, default: null },
         // وقت انتهاء التايمر = arrivalConfirmedAt + arrivalTimerMinutes
         arrivalTimerExpiredAt: { type: Date, default: null },
         // هل ضغط المندوب على "العميل تأخر"؟
         isClientDelayed: { type: Boolean, default: false },
         // وقت تسجيل التأخير
         delayedAt: { type: Date, default: null },
+        // وقت تسليم المندوب للأوردر وإنهائه
+        deliveredAt: { type: Date, default: null },
+        completedAt: { type: Date, default: null },
         
         allLocationsInOrder: { type: [mongoose.Schema.Types.Mixed], default: [] },
         

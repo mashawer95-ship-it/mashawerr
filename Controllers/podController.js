@@ -428,8 +428,12 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
                     targetTask = parentOrder.tasks.find(t => !t.isPickedUp && t.taskStatus !== 'completed');
                 }
                 if (targetTask) {
+                    const now = new Date();
                     targetTask.isPickedUp = true;
-                    targetTask.pickedUpAt = new Date();
+                    targetTask.pickedUpAt = now;
+                    targetTask.arrivedAt = targetTask.arrivedAt || now;
+                    if (!parentOrder.arrivalConfirmedAt) parentOrder.arrivalConfirmedAt = now;
+                    if (!parentOrder.arrivedAt) parentOrder.arrivedAt = now;
                     if (photoUrl) {
                         targetTask.itemPhotoBefore = photoUrl;
                         targetTask.pickupPhoto = photoUrl;
@@ -565,8 +569,10 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
                 targetTask = parentOrder.tasks.find(t => t.taskStatus !== 'completed');
             }
             if (targetTask) {
+                const now = new Date();
                 targetTask.taskStatus = 'completed';
-                targetTask.deliveredAt = new Date();
+                targetTask.deliveredAt = targetTask.deliveredAt || now;
+                targetTask.completedAt = targetTask.completedAt || now;
                 if (photoUrl) {
                     targetTask.itemPhotoAfter = photoUrl;
                     targetTask.deliveryPhoto = photoUrl;
@@ -590,9 +596,13 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
 
         const isReturn = parentOrder.isReturnOrder === true || (typeof parentOrder.status === 'string' && parentOrder.status.startsWith('return_'));
         if (allDone) {
+            const now = new Date();
             parentOrder.status = isReturn ? 'returned' : 'delivered';
-            if (isReturn) parentOrder.returnedAt = parentOrder.returnedAt || new Date();
-            else parentOrder.deliveredAt = parentOrder.deliveredAt || new Date();
+            if (isReturn) parentOrder.returnedAt = parentOrder.returnedAt || now;
+            else {
+                parentOrder.deliveredAt = parentOrder.deliveredAt || now;
+                parentOrder.completedAt = parentOrder.completedAt || now;
+            }
         } else {
             parentOrder.status = isReturn ? 'return_delivering' : 'delivering';
         }
@@ -608,7 +618,10 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
                     deliveryPhotoUrl: parentOrder.deliveryPhotoUrl,
                     itemPhotoAfter: parentOrder.itemPhotoAfter,
                     deliveredAt: parentOrder.deliveredAt,
+                    completedAt: parentOrder.completedAt,
                     returnedAt: parentOrder.returnedAt,
+                    arrivalConfirmedAt: parentOrder.arrivalConfirmedAt,
+                    arrivedAt: parentOrder.arrivedAt,
                 }
             }
         ).catch(err => logger.error(`[PoD] Order.updateOne delivery error [${traceId}]: ${err.message}`));

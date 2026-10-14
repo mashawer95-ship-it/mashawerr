@@ -324,6 +324,9 @@ function formatOrder(req, order, commissionCfg) {
         const beforeUrl = rawBefore ? sanitizeImageUrl(buildUrl(req, rawBefore)) : null;
         const afterUrl = rawAfter ? sanitizeImageUrl(buildUrl(req, rawAfter)) : null;
 
+        const taskArrived = t.arrivedAt || t.pickedUpAt || (order.arrivedAt || order.arrivalConfirmedAt || null);
+        const taskDelivered = t.deliveredAt || t.completedAt || (t.taskStatus === 'completed' || status === 'completed' || status === 'delivered' ? (order.deliveredAt || order.completedAt || null) : null);
+
         return {
             ...t,
             taskId: t.taskId,
@@ -333,6 +336,10 @@ function formatOrder(req, order, commissionCfg) {
             deliveryPhoto: afterUrl,
             pickupPhotoUrl: beforeUrl,
             deliveryPhotoUrl: afterUrl,
+            arrivedAt: t.arrivedAt ? (t.arrivedAt instanceof Date ? t.arrivedAt.toISOString() : String(t.arrivedAt)) : (taskArrived ? (taskArrived instanceof Date ? taskArrived.toISOString() : String(taskArrived)) : null),
+            pickedUpAt: t.pickedUpAt ? (t.pickedUpAt instanceof Date ? t.pickedUpAt.toISOString() : String(t.pickedUpAt)) : null,
+            deliveredAt: t.deliveredAt ? (t.deliveredAt instanceof Date ? t.deliveredAt.toISOString() : String(t.deliveredAt)) : (taskDelivered ? (taskDelivered instanceof Date ? taskDelivered.toISOString() : String(taskDelivered)) : null),
+            completedAt: t.completedAt ? (t.completedAt instanceof Date ? t.completedAt.toISOString() : String(t.completedAt)) : null,
         };
     });
 
@@ -410,9 +417,12 @@ function formatOrder(req, order, commissionCfg) {
         allLocationsInOrder: order.allLocationsInOrder || [],
         acceptedAt: order.acceptedAt ? (order.acceptedAt instanceof Date ? order.acceptedAt.toISOString() : String(order.acceptedAt)) : null,
         arrivalConfirmedAt: order.arrivalConfirmedAt ? (order.arrivalConfirmedAt instanceof Date ? order.arrivalConfirmedAt.toISOString() : String(order.arrivalConfirmedAt)) : null,
+        arrivedAt: (order.arrivedAt || order.arrivalConfirmedAt) ? ((order.arrivedAt || order.arrivalConfirmedAt) instanceof Date ? (order.arrivedAt || order.arrivalConfirmedAt).toISOString() : String(order.arrivedAt || order.arrivalConfirmedAt)) : null,
         arrivalTimerExpiredAt: order.arrivalTimerExpiredAt ? (order.arrivalTimerExpiredAt instanceof Date ? order.arrivalTimerExpiredAt.toISOString() : String(order.arrivalTimerExpiredAt)) : null,
         isClientDelayed: order.isClientDelayed || false,
         delayedAt: order.delayedAt ? (order.delayedAt instanceof Date ? order.delayedAt.toISOString() : String(order.delayedAt)) : null,
+        deliveredAt: (order.deliveredAt || order.completedAt) ? ((order.deliveredAt || order.completedAt) instanceof Date ? (order.deliveredAt || order.completedAt).toISOString() : String(order.deliveredAt || order.completedAt)) : null,
+        completedAt: order.completedAt ? (order.completedAt instanceof Date ? order.completedAt.toISOString() : String(order.completedAt)) : null,
         createdAt: order.createdAt,
         updatedAt: order.updatedAt,
     };
@@ -1811,9 +1821,14 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
 
     // ─── Sync internal task statuses when general order status completes or resets ───
     if (st === 'completed' || st === 'delivered') {
+        const now = new Date();
+        order.deliveredAt = order.deliveredAt || now;
+        order.completedAt = order.completedAt || now;
         if (Array.isArray(order.tasks) && order.tasks.length > 0) {
             order.tasks.forEach((t) => {
                 t.taskStatus = 'completed';
+                t.deliveredAt = t.deliveredAt || now;
+                t.completedAt = t.completedAt || now;
             });
         }
     } else if (st === 'waiting' || st === 'pending') {
@@ -3028,7 +3043,14 @@ const confirmArrival = asyncHandler(async (req, res) => {
     const expiredAt = new Date(now.getTime() + timerMinutes * 60 * 1000);
 
     order.arrivalConfirmedAt = now;
+    order.arrivedAt = now;
     order.arrivalTimerExpiredAt = expiredAt;
+    if (Array.isArray(order.tasks) && order.tasks.length > 0) {
+        const targetTask = order.tasks.find(t => !t.arrivedAt && t.taskStatus !== 'completed') || order.tasks[0];
+        if (targetTask && !targetTask.arrivedAt) {
+            targetTask.arrivedAt = now;
+        }
+    }
     if (!order.clientId && (order.userId || order._doc?.userId)) {
         order.clientId = String(order.userId || order._doc?.userId);
     }

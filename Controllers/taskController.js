@@ -93,8 +93,12 @@ const markTaskPickedUp = asyncHandler(async (req, res) => {
         return res.status(409).json({ message: 'Task is already completed' });
     }
 
+    const now = new Date();
     task.taskStatus = 'picked_up';
-    task.arrivedAt  = new Date();
+    task.arrivedAt  = task.arrivedAt || now;
+    task.pickedUpAt = now;
+    if (!order.arrivalConfirmedAt) order.arrivalConfirmedAt = task.arrivedAt;
+    if (!order.arrivedAt) order.arrivedAt = task.arrivedAt;
 
     // 🎯 تحديث محطة الاستلام في allLocationsInOrder إن وجدت
     if (Array.isArray(order.allLocationsInOrder) && order.allLocationsInOrder.length > 0) {
@@ -279,8 +283,10 @@ const deliverTask = [
             if (!order.itemPhotoAfter) order.itemPhotoAfter = req.file.path;
         }
 
+        const now = new Date();
         task.taskStatus  = 'completed';
-        task.deliveredAt = new Date();
+        task.deliveredAt = task.deliveredAt || now;
+        task.completedAt = task.completedAt || now;
 
         // 🎯 تحديث محطة التسليم في allLocationsInOrder وحفظ الصورة
         if (Array.isArray(order.allLocationsInOrder) && order.allLocationsInOrder.length > 0) {
@@ -295,7 +301,7 @@ const deliverTask = [
             if (targetStop) {
                 targetStop.isCompleted = true;
                 if (req.file) targetStop.deliveryPhoto = req.file.path;
-                targetStop.completedAt = new Date();
+                targetStop.completedAt = now;
             }
             order.markModified('allLocationsInOrder');
         }
@@ -310,6 +316,8 @@ const deliverTask = [
 
         if (allDone) {
             order.status = 'completed';
+            order.deliveredAt = order.deliveredAt || now;
+            order.completedAt = order.completedAt || now;
             const { processOrderCompletionWallet } = require('../middlewares/Wallet');
             await processOrderCompletionWallet(order).catch((e) => console.error('[taskController] Wallet error:', e.message));
         }
