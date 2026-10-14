@@ -12,12 +12,16 @@ const createRoleRequest = asyncHandler(async (req, res) => {
     const { requestedRole, description, phone } = req.body;
 
     if (!requestedRole || !['Representative', 'Agent'].includes(requestedRole)) {
-        return res.status(400).json({ message: 'requestedRole must be Representative or Agent' });
+        return res.status(400).json({ message: 'نوع الطلب غير صالح (يجب أن يكون مندوب أو وكيل)' });
     }
 
-    if (!description || !phone) {
-        return res.status(400).json({ message: 'description and phone are required' });
+    if (!phone || String(phone).trim().length < 7) {
+        return res.status(400).json({ message: 'رقم الهاتف مطلوب ويجب أن يكون صحيحاً' });
     }
+
+    const finalDescription = (description && String(description).trim().length > 0)
+        ? String(description).trim()
+        : (requestedRole === 'Agent' ? 'طلب انضمام كوكيل مع مشاوير' : 'طلب انضمام كمندوب مع مشاوير');
 
     // Check if user already has a pending request
     const existingRequest = await RoleRequest.findOne({
@@ -35,13 +39,13 @@ const createRoleRequest = asyncHandler(async (req, res) => {
     const roleRequest = await RoleRequest.create({
         user: req.user.id,
         requestedRole,
-        description,
-        phone,
+        description: finalDescription,
+        phone: String(phone).trim(),
         status: 'pending'
     });
 
     res.status(201).json({
-        message: 'Role request submitted successfully',
+        message: 'تم إرسال طلبك بنجاح وسيتواصل معك فريق الإدارة قريباً',
         roleRequest
     });
 });
