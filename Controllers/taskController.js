@@ -58,39 +58,86 @@ function emitSocket(req, room, event, data) {
     }
 }
 
+const mongoose = require('mongoose');
+
+// ─── Helper: flexible order lookup (numeric ID, ObjectId, or string) ───────────
+async function findOrderDoc(rawId) {
+    if (!rawId) return null;
+    const strId = String(rawId).trim();
+    const numId = Number(strId);
+    if (!isNaN(numId) && numId > 0) {
+        const o = await Order.findOne({ orderId: numId });
+        if (o) return o;
+    }
+    if (mongoose.isValidObjectId(strId)) {
+        const o = await Order.findOne({ _id: strId });
+        if (o) return o;
+    }
+    return await Order.findOne({ orderId: strId });
+}
+
+// ─── Helper: Broadcast to all relevant order rooms ────────────────────────────
+function broadcastToOrderRooms(req, order, rawOrderId, event, data) {
+    const rooms = new Set([
+        order.orderId != null ? `order:${order.orderId}` : null,
+        order._id ? `order:${order._id}` : null,
+        rawOrderId ? `order:${rawOrderId}` : null,
+        order.orderId != null ? `trip:${order.orderId}` : null,
+        order._id ? `trip:${order._id}` : null,
+        rawOrderId ? `trip:${rawOrderId}` : null,
+        order.clientId ? `user:${order.clientId}` : null,
+        order.userId ? `user:${order.userId}` : null,
+    ].filter(Boolean));
+
+    for (const r of rooms) {
+        emitSocket(req, r, event, data);
+    }
+}
 
 /**
  * @description Mark task as picked_up (تم الاستلام)
  *   - Sets task.taskStatus = 'picked_up'
  *   - Sets task.arrivedAt = now
- *   - Emits task:picked_up via Socket.IO
+ *   - Emits task:picked_up, order:status_changed, order:track_updated via Socket.IO
  *
  * @route PATCH /api/orders/:orderId/tasks/:taskId/pickup
  */
 const markTaskPickedUp = asyncHandler(async (req, res) => {
-    const orderId = parseInt(req.params.orderId, 10);
-    const taskId  = parseInt(req.params.taskId,  10);
+    const rawOrderId = req.params.orderId;
+    const rawTaskId  = req.params.taskId;
 
-    if (isNaN(orderId) || isNaN(taskId)) {
-        return res.status(400).json({ message: 'orderId and taskId must be positive integers' });
+    if (!rawOrderId) {
+        return res.status(400).json({ message: 'orderId is required' });
     }
 
-    const mongoose = require('mongoose');
     if (process.env.TEST_MODE === 'true' && mongoose.connection.readyState !== 1) {
         return sanitizeErrorResponse(res, true, true);
     }
 
-    const order = await Order.findOne({ orderId });
+    const order = await findOrderDoc(rawOrderId);
     if (!order) return sanitizeErrorResponse(res, false, true);
 
     const isAdmin = req.user?.isAdmin === true || req.fullUser?.isAdmin === true;
-    const isRep = order.representativeId && order.representativeId.toString() === req.user?.id?.toString();
-    const isClient = order.clientId && order.clientId.toString() === req.user?.id?.toString();
+    const isRep = (order.representativeId && order.representativeId.toString() === req.user?.id?.toString()) ||
+                  (order.driverId && order.driverId.toString() === req.user?.id?.toString());
+    const isClient = (order.clientId && order.clientId.toString() === req.user?.id?.toString()) ||
+                     (order.userId && order.userId.toString() === req.user?.id?.toString());
     if (!isRep && !isClient && !isAdmin) {
         return sanitizeErrorResponse(res, true, true);
     }
 
-    const task = findTask(order, taskId);
+    // Ensure tasks array is present
+    if (!Array.isArray(order.tasks) || order.tasks.length === 0) {
+        order.tasks = [{
+            taskId: 1,
+            taskStatus: 'pending',
+            type: 'delivery',
+        }];
+    }
+
+    const parsedTaskId = parseInt(rawTaskId, 10);
+    const lookupTaskId = isNaN(parsedTaskId) ? rawTaskId : parsedTaskId;
+    const task = findTask(order, lookupTaskId) || order.tasks[0];
     if (!task) return sanitizeErrorResponse(res, false, true);
 
     if (task.taskStatus === 'completed') {
@@ -129,50 +176,60 @@ const markTaskPickedUp = asyncHandler(async (req, res) => {
     await order.save();
 
     const trackData = await DeliveryOrderTracker.getOrderTrack(order).catch(() => null);
+    const effectiveOrderId = order.orderId ?? rawOrderId;
 
-    const room = `order:${orderId}`;
-    emitSocket(req, room, 'task:picked_up', {
-        orderId,
-        taskId,
+    // 🎯 Broadcast to ALL order & user rooms
+    const pickedUpPayload = {
+        orderId: effectiveOrderId,
+        taskId: task.taskId ?? lookupTaskId ?? 1,
         taskStatus: 'picked_up',
         arrivedAt: task.arrivedAt,
         message: 'تم استلام البضاعة',
         track: trackData,
-    });
+        phase: 'DELIVERY',
+        allPickupsDone,
+    };
+    broadcastToOrderRooms(req, order, rawOrderId, 'task:picked_up', pickedUpPayload);
 
-    if (order.status === 'delivering') {
-        emitSocket(req, room, 'order:status_changed', {
-            orderId,
-            status: 'delivering',
-            phase: 'DELIVERY',
-            message: 'تم بدء مرحلة التسليم',
-        });
-    }
+    const statusPayload = {
+        orderId: effectiveOrderId,
+        status: order.status || 'delivering',
+        phase: 'DELIVERY',
+        message: 'تم بدء مرحلة التسليم',
+        track: trackData,
+        allPickupsDone,
+    };
+    broadcastToOrderRooms(req, order, rawOrderId, 'order:status_changed', statusPayload);
 
     if (trackData) {
-        emitSocket(req, room, 'order:track_updated', {
-            orderId,
+        const trackPayload = {
+            orderId: effectiveOrderId,
             track: trackData,
             currentStopIndex: trackData.currentStopIndex,
             phase: trackData.phase,
             stops: trackData.stops,
-        });
+        };
+        broadcastToOrderRooms(req, order, rawOrderId, 'order:track_updated', trackPayload);
     }
 
     // ─── إشعار FCM للعميل ────────────────────────────────────────────────────
-    notifyClient(
-        order.clientId,
-        '📦 تم استلام طلبك',
-        `المندوب استلم البضاعة — في الطريق إليك`,
-        { type: 'task_picked_up', orderId: String(orderId) },
-    ).catch(() => {});
+    const clientToNotify = order.clientId || order.userId;
+    if (clientToNotify) {
+        notifyClient(
+            clientToNotify,
+            '📦 تم استلام طلبك',
+            `المندوب استلم البضاعة — في الطريق إليك`,
+            { type: 'task_picked_up', orderId: String(effectiveOrderId) },
+        ).catch(() => {});
+    }
 
     return res.status(200).json({
         succeeded: true,
-        orderId,
-        taskId,
+        orderId: effectiveOrderId,
+        taskId: task.taskId ?? lookupTaskId ?? 1,
         taskStatus: task.taskStatus,
         arrivedAt: task.arrivedAt,
+        status: order.status,
         track: trackData,
     });
 });
@@ -188,27 +245,35 @@ const uploadPhotoBeforeHandler = upload.single('photo');
 const uploadPhotoBefore = [
     (req, res, next) => uploadPhotoBeforeHandler(req, res, next),
     asyncHandler(async (req, res) => {
-        const orderId = parseInt(req.params.orderId, 10);
-        const taskId  = parseInt(req.params.taskId,  10);
+        const rawOrderId = req.params.orderId;
+        const rawTaskId  = req.params.taskId;
 
-        if (isNaN(orderId) || isNaN(taskId)) {
-            return res.status(400).json({ message: 'Invalid orderId or taskId' });
+        if (!rawOrderId) {
+            return res.status(400).json({ message: 'orderId is required' });
         }
         if (!req.file) {
             return res.status(400).json({ message: 'photo file is required' });
         }
 
-        const order = await Order.findOne({ orderId });
+        const order = await findOrderDoc(rawOrderId);
         if (!order) return sanitizeErrorResponse(res, false, true);
 
         const isAdmin = req.user?.isAdmin === true || req.fullUser?.isAdmin === true;
-        const isRep = order.representativeId && order.representativeId.toString() === req.user?.id?.toString();
-        const isClient = order.clientId && order.clientId.toString() === req.user?.id?.toString();
+        const isRep = (order.representativeId && order.representativeId.toString() === req.user?.id?.toString()) ||
+                      (order.driverId && order.driverId.toString() === req.user?.id?.toString());
+        const isClient = (order.clientId && order.clientId.toString() === req.user?.id?.toString()) ||
+                         (order.userId && order.userId.toString() === req.user?.id?.toString());
         if (!isRep && !isClient && !isAdmin) {
             return sanitizeErrorResponse(res, true, true);
         }
 
-        const task = findTask(order, taskId);
+        if (!Array.isArray(order.tasks) || order.tasks.length === 0) {
+            order.tasks = [{ taskId: 1, taskStatus: 'pending', type: 'delivery' }];
+        }
+
+        const parsedTaskId = parseInt(rawTaskId, 10);
+        const lookupTaskId = isNaN(parsedTaskId) ? rawTaskId : parsedTaskId;
+        const task = findTask(order, lookupTaskId) || order.tasks[0];
         if (!task) return sanitizeErrorResponse(res, false, true);
 
         task.itemPhotoBefore = req.file.path;
@@ -234,11 +299,11 @@ const uploadPhotoBefore = [
         await order.save();
 
         const trackData = await DeliveryOrderTracker.getOrderTrack(order).catch(() => null);
+        const effectiveOrderId = order.orderId ?? rawOrderId;
 
-        const room = `order:${orderId}`;
         if (trackData) {
-            emitSocket(req, room, 'order:track_updated', {
-                orderId,
+            broadcastToOrderRooms(req, order, rawOrderId, 'order:track_updated', {
+                orderId: effectiveOrderId,
                 track: trackData,
                 currentStopIndex: trackData.currentStopIndex,
                 phase: trackData.phase,
@@ -248,8 +313,8 @@ const uploadPhotoBefore = [
 
         return res.status(200).json({
             succeeded: true,
-            orderId,
-            taskId,
+            orderId: effectiveOrderId,
+            taskId: task.taskId ?? lookupTaskId ?? 1,
             itemPhotoBefore: task.itemPhotoBefore,
             track: trackData,
         });
@@ -270,24 +335,32 @@ const deliverTaskHandler = upload.single('photo');
 const deliverTask = [
     (req, res, next) => deliverTaskHandler(req, res, next),
     asyncHandler(async (req, res) => {
-        const orderId = parseInt(req.params.orderId, 10);
-        const taskId  = parseInt(req.params.taskId,  10);
+        const rawOrderId = req.params.orderId;
+        const rawTaskId  = req.params.taskId;
 
-        if (isNaN(orderId) || isNaN(taskId)) {
-            return res.status(400).json({ message: 'Invalid orderId or taskId' });
+        if (!rawOrderId) {
+            return res.status(400).json({ message: 'orderId is required' });
         }
 
-        const order = await Order.findOne({ orderId });
+        const order = await findOrderDoc(rawOrderId);
         if (!order) return sanitizeErrorResponse(res, false, true);
 
         const isAdmin = req.user?.isAdmin === true || req.fullUser?.isAdmin === true;
-        const isRep = order.representativeId && order.representativeId.toString() === req.user?.id?.toString();
-        const isClient = order.clientId && order.clientId.toString() === req.user?.id?.toString();
+        const isRep = (order.representativeId && order.representativeId.toString() === req.user?.id?.toString()) ||
+                      (order.driverId && order.driverId.toString() === req.user?.id?.toString());
+        const isClient = (order.clientId && order.clientId.toString() === req.user?.id?.toString()) ||
+                         (order.userId && order.userId.toString() === req.user?.id?.toString());
         if (!isRep && !isClient && !isAdmin) {
             return sanitizeErrorResponse(res, true, true);
         }
 
-        const task = findTask(order, taskId);
+        if (!Array.isArray(order.tasks) || order.tasks.length === 0) {
+            order.tasks = [{ taskId: 1, taskStatus: 'pending', type: 'delivery' }];
+        }
+
+        const parsedTaskId = parseInt(rawTaskId, 10);
+        const lookupTaskId = isNaN(parsedTaskId) ? rawTaskId : parsedTaskId;
+        const task = findTask(order, lookupTaskId) || order.tasks[0];
         if (!task) return sanitizeErrorResponse(res, false, true);
 
         if (task.taskStatus === 'completed') {
@@ -343,13 +416,12 @@ const deliverTask = [
         await order.save();
 
         const trackData = await DeliveryOrderTracker.getOrderTrack(order).catch(() => null);
-
-        const room = `order:${orderId}`;
+        const effectiveOrderId = order.orderId ?? rawOrderId;
 
         // إشعار: تم التسليم للتاسك
-        emitSocket(req, room, 'task:delivered', {
-            orderId,
-            taskId,
+        broadcastToOrderRooms(req, order, rawOrderId, 'task:delivered', {
+            orderId: effectiveOrderId,
+            taskId: task.taskId ?? lookupTaskId ?? 1,
             taskStatus: 'completed',
             deliveredAt: task.deliveredAt,
             itemPhotoAfter: task.itemPhotoAfter || null,
@@ -359,8 +431,8 @@ const deliverTask = [
         });
 
         if (trackData) {
-            emitSocket(req, room, 'order:track_updated', {
-                orderId,
+            broadcastToOrderRooms(req, order, rawOrderId, 'order:track_updated', {
+                orderId: effectiveOrderId,
                 track: trackData,
                 currentStopIndex: trackData.currentStopIndex,
                 phase: trackData.phase,
@@ -370,8 +442,8 @@ const deliverTask = [
 
         // إشعار: الأوردر كله اكتمل
         if (allDone) {
-            emitSocket(req, room, 'order:completed', {
-                orderId,
+            broadcastToOrderRooms(req, order, rawOrderId, 'order:completed', {
+                orderId: effectiveOrderId,
                 status: 'completed',
                 message: 'تم إتمام جميع مهام الطلب بنجاح 🎉',
                 track: trackData,
@@ -379,13 +451,16 @@ const deliverTask = [
         }
 
         // ─── إشعار FCM وإيميل للعميل عند إتمام الطلب بالكامل ────────────────
+        const clientToNotify = order.clientId || order.userId;
         if (allDone) {
-            notifyClient(
-                order.clientId,
-                '🎉 تم تسليم طلبك بنجاح',
-                `تم إتمام جميع مهام الطلب بنجاح!`,
-                { type: 'order_completed', orderId: String(orderId) },
-            ).catch(() => {});
+            if (clientToNotify) {
+                notifyClient(
+                    clientToNotify,
+                    '🎉 تم تسليم طلبك بنجاح',
+                    `تم إتمام جميع مهام الطلب بنجاح!`,
+                    { type: 'order_completed', orderId: String(effectiveOrderId) },
+                ).catch(() => {});
+            }
 
             // ─── إرسال بريد إلكتروني لاكتمال الطلب في الخلفية (Non-blocking) ───
             const { sendDeliveryOrderCompletionEmail, dispatchBackgroundEmail } = require('../services/emailService');
@@ -393,18 +468,20 @@ const deliverTask = [
                 await sendDeliveryOrderCompletionEmail(order);
             });
         } else {
-            notifyClient(
-                order.clientId,
-                '✅ تم تسليم جزء من طلبك',
-                `تم تسليم مهمة من الطلب`,
-                { type: 'task_delivered', orderId: String(orderId) },
-            ).catch(() => {});
+            if (clientToNotify) {
+                notifyClient(
+                    clientToNotify,
+                    '✅ تم تسليم جزء من طلبك',
+                    `تم تسليم مهمة من الطلب`,
+                    { type: 'task_delivered', orderId: String(effectiveOrderId) },
+                ).catch(() => {});
+            }
         }
 
         return res.status(200).json({
             succeeded: true,
-            orderId,
-            taskId,
+            orderId: effectiveOrderId,
+            taskId: task.taskId ?? lookupTaskId ?? 1,
             taskStatus: task.taskStatus,
             deliveredAt: task.deliveredAt,
             itemPhotoAfter: task.itemPhotoAfter || null,
@@ -420,29 +497,33 @@ const deliverTask = [
  * @route GET /api/orders/:orderId/tasks/:taskId/status
  */
 const getTaskStatus = asyncHandler(async (req, res) => {
-    const orderId = parseInt(req.params.orderId, 10);
-    const taskId  = parseInt(req.params.taskId,  10);
+    const rawOrderId = req.params.orderId;
+    const rawTaskId  = req.params.taskId;
 
-    if (isNaN(orderId) || isNaN(taskId)) {
-        return res.status(400).json({ message: 'Invalid orderId or taskId' });
+    if (!rawOrderId) {
+        return res.status(400).json({ message: 'orderId is required' });
     }
 
-    const order = await Order.findOne({ orderId }).lean();
+    const order = await findOrderDoc(rawOrderId);
     if (!order) return sanitizeErrorResponse(res, false, true);
 
     const isAdmin = req.user?.isAdmin === true || req.fullUser?.isAdmin === true;
-    const isRep = order.representativeId && order.representativeId.toString() === req.user?.id?.toString();
-    const isClient = order.clientId && order.clientId.toString() === req.user?.id?.toString();
+    const isRep = (order.representativeId && order.representativeId.toString() === req.user?.id?.toString()) ||
+                  (order.driverId && order.driverId.toString() === req.user?.id?.toString());
+    const isClient = (order.clientId && order.clientId.toString() === req.user?.id?.toString()) ||
+                     (order.userId && order.userId.toString() === req.user?.id?.toString());
     if (!isRep && !isClient && !isAdmin) {
         return sanitizeErrorResponse(res, true, true);
     }
 
-    const task = order.tasks.find((t) => t.taskId === taskId);
+    const parsedTaskId = parseInt(rawTaskId, 10);
+    const lookupTaskId = isNaN(parsedTaskId) ? rawTaskId : parsedTaskId;
+    const task = findTask(order, lookupTaskId) || (Array.isArray(order.tasks) && order.tasks[0]);
     if (!task) return sanitizeErrorResponse(res, false, true);
 
     return res.status(200).json({
-        orderId,
-        taskId,
+        orderId: order.orderId ?? rawOrderId,
+        taskId: task.taskId ?? lookupTaskId ?? 1,
         taskStatus: task.taskStatus ?? 'pending',
         arrivedAt: task.arrivedAt ?? null,
         deliveredAt: task.deliveredAt ?? null,

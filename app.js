@@ -270,8 +270,9 @@ io.on('connection', (socket) => {
         }
 
         // سكيورتي: تحقق إن المستخدم صاحب الطلب أو ممثل تسليم قبل إضافته للـ room
+        let order = null;
         try {
-            const order = await _findOrder(orderId);
+            order = await _findOrder(orderId);
 
             if (!order) {
                 logger.warn(`[Socket.IO] join_order rejected: order ${orderId} not found (socket: ${socket.id})`);
@@ -321,21 +322,23 @@ io.on('connection', (socket) => {
         // 🔄 State Sync: If the client missed an event while disconnected/backgrounded,
         // send them the current status immediately upon joining.
         try {
-            const order = await _findOrder(orderId);
+            if (!order) order = await _findOrder(orderId);
             const isCompletedOrder = order && ['delivered', 'completed', 'returned', 'finished'].includes(order.status?.toLowerCase());
+            const isDelivery = order && (order.status === 'delivering' || order.status === 'picked_up' || order.status === 'on_way_to_delivery');
 
             if (order && order.status) {
                 // Emit only to this specific socket, not the whole room
                 socket.emit('order:status_changed', {
-                    orderId: order.orderId,
+                    orderId: order.orderId ?? orderId,
                     status: order.status,
+                    phase: isDelivery ? 'DELIVERY' : (order.status === 'accepted' ? 'PICKUP' : undefined),
                     message: 'State sync on connect'
                 });
                 logger.debug(`[Socket.IO] Synced state '${order.status}' for order ${orderId} to socket ${socket.id}`);
 
                 if (isCompletedOrder) {
                     socket.emit('order:completed', {
-                        orderId: order.orderId,
+                        orderId: order.orderId ?? orderId,
                         status: order.status,
                         isCompleted: true,
                         allTasksCompleted: true,
