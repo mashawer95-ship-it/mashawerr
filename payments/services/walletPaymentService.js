@@ -1046,13 +1046,33 @@ async function getWalletTransactions({ userId, page = 1, limit = 20 }) {
         if (ref && knownRefs.has(ref)) continue;
 
         const txType = (tx.type || '').toLowerCase();
-        const isCredit = txType === 'credit' || txType.includes('reward');
+        const desc = (tx.description || '').toLowerCase();
+        const isCredit =
+            txType === 'credit' ||
+            txType === 'order_earnings' ||
+            txType.includes('reward') ||
+            txType.includes('refund') ||
+            (txType === 'admin_adjustment' && (
+                desc.includes('شحن') ||
+                desc.includes('اضاف') ||
+                desc.includes('إضاف') ||
+                desc.includes('ايداع') ||
+                desc.includes('إيداع') ||
+                desc.includes('مكاف') ||
+                (!desc.includes('خصم') && !desc.includes('سحب'))
+            ));
         const type = isCredit ? 'CREDIT' : 'DEBIT';
+
+        let source = 'OTHER';
+        if (txType.includes('reward')) source = 'REWARD';
+        else if (txType === 'admin_adjustment') source = 'ADMIN_ADJUSTMENT';
+        else if (txType === 'order_earnings') source = 'ORDER_EARNINGS';
+        else if (txType.includes('refund')) source = 'ORDER_REFUND';
 
         extraTxs.push({
             _id: tx._id,
             type,
-            source: txType.includes('reward') ? 'REWARD' : 'OTHER',
+            source,
             amountFils: tx.amountFils,
             amountEgp: filsToEgp(tx.amountFils),
             currency: CURRENCY.EGP,

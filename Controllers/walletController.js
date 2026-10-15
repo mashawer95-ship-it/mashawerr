@@ -1,6 +1,7 @@
 const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
 const { Wallet, getOrCreateWallet, creditWallet, debitWallet, debitWalletAllowNegative, validateCreditDebit } = require('../middlewares/Wallet');
+const { WalletLedger } = require('../middlewares/WalletLedger');
 const { User } = require('../middlewares/User');
 const { normalizePagination, buildPaginationMetadata, setPaginationHeaders } = require('../utils/pagination');
 
@@ -301,14 +302,32 @@ const creditUserWallet = asyncHandler(async (req, res) => {
     const user = await User.findById(userId).select('firstName lastName email').lean();
     if (!user) return res.status(404).json({ message: 'User not found' });
 
+    const desc = value.description || 'شحن رصيد من الأدمن';
+    const performedBy = req.user?._id?.toString() || req.user?.id || 'admin';
+
     const wallet = await creditWallet({
         userId,
         amountFils: value.amountFils,
-        type: 'admin_adjustment',
-        description: value.description || 'شحن رصيد من الأدمن',
+        type: 'credit',
+        description: desc,
         refId: value.refId || null,
-        performedBy: req.user?._id?.toString() || 'admin',
+        performedBy,
     });
+
+    // Also record in WalletLedger so it appears immediately in the customer ledger history as CREDIT
+    await WalletLedger.create({
+        walletId: wallet._id,
+        userId: String(userId),
+        type: 'CREDIT',
+        source: 'ADMIN_ADJUSTMENT',
+        amountFils: value.amountFils,
+        currency: 'EGP',
+        balanceAfterFils: wallet.balanceFils,
+        status: 'COMPLETED',
+        description: desc,
+        reference: `ADMIN_CREDIT_${userId}_${Date.now()}`,
+        performedBy,
+    }).catch((err) => console.error('[creditUserWallet] WalletLedger insert error:', err.message));
 
     return res.status(200).json({
         message: 'تم شحن الرصيد بنجاح',
@@ -343,15 +362,34 @@ const debitUserWallet = asyncHandler(async (req, res) => {
     const user = await User.findById(userId).select('firstName lastName email').lean();
     if (!user) return res.status(404).json({ message: 'User not found' });
 
+    const desc = value.description || 'خصم رصيد من الأدمن';
+    const performedBy = req.user?._id?.toString() || req.user?.id || 'admin';
+
     let wallet;
     try {
         wallet = await debitWalletAllowNegative({
             userId,
             amountFils: value.amountFils,
-            description: value.description || 'خصم رصيد من الأدمن',
+            type: 'debit',
+            description: desc,
             refId: value.refId || null,
-            performedBy: req.user?._id?.toString() || 'admin',
+            performedBy,
         });
+
+        // Also record in WalletLedger so it appears immediately in the customer ledger history as DEBIT
+        await WalletLedger.create({
+            walletId: wallet._id,
+            userId: String(userId),
+            type: 'DEBIT',
+            source: 'ADMIN_ADJUSTMENT',
+            amountFils: value.amountFils,
+            currency: 'EGP',
+            balanceAfterFils: wallet.balanceFils,
+            status: 'COMPLETED',
+            description: desc,
+            reference: `ADMIN_DEBIT_${userId}_${Date.now()}`,
+            performedBy,
+        }).catch((err) => console.error('[debitUserWallet] WalletLedger insert error:', err.message));
     } catch (err) {
         return res.status(400).json({ message: err.message });
     }

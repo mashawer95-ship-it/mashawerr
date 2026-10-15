@@ -205,9 +205,18 @@ function dispatchWalletNotification({ userId, type, amountFils, balanceAfterFils
                 body = `تم خصم ${amountKD} ج.م من محفظتك.${description ? ' ' + description : ''} رصيدك الحالي: ${balanceKD} ج.م`;
                 break;
             case 'admin_adjustment':
-                const isCredit = (description || '').includes('إضافة') || (description || '').includes('شحن');
-                title = isCredit ? '⚙️ تعديل إداري (إضافة رصيد)' : '⚙️ تعديل إداري (خصم رصيد)';
-                body = `${isCredit ? 'تمت إضافة' : 'تم خصم'} ${amountKD} ج.م${description ? ' (' + description + ')' : ''}. رصيدك الحالي: ${balanceKD} ج.م`;
+                const descLower = (description || '').toLowerCase();
+                const isCredit =
+                    descLower.includes('شحن') ||
+                    descLower.includes('اضاف') ||
+                    descLower.includes('إضاف') ||
+                    descLower.includes('ايداع') ||
+                    descLower.includes('إيداع') ||
+                    descLower.includes('مكاف') ||
+                    descLower.includes('بونص') ||
+                    (!descLower.includes('خصم') && !descLower.includes('سحب'));
+                title = isCredit ? '💰 تم إضافة رصيد إلى محفظتك' : '💳 تم خصم مبلغ من محفظتك';
+                body = `${isCredit ? 'تمت إضافة' : 'تم خصم'} ${amountKD} ج.م${description ? ' (' + description + ')' : ''} إلى محفظتك. رصيدك الحالي: ${balanceKD} ج.م`;
                 break;
             default:
                 title = '💰 تحديث في رصيد المحفظة';
