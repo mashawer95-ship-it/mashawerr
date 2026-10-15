@@ -76,6 +76,37 @@ async function findOrderDoc(rawId) {
     return await Order.findOne({ orderId: strId });
 }
 
+// ─── Helper: check if order is passenger / ride order ─────────────────────────
+function isPassengerOrder(order) {
+    if (!order) return false;
+    const cat = String(order.orderCategory || order.order_category || order.category || '').toLowerCase().trim();
+    if (['passenger', 'ladies', 'توصيل أفراد', 'توصيل افراد', 'توصيل ركاب', 'ركاب', 'سيدات'].includes(cat)) {
+        return true;
+    }
+    const type = String(order.orderType || order.order_type || order.type || '').toLowerCase().trim();
+    if (['passenger', 'ladies', 'توصيل أفراد', 'توصيل افراد', 'توصيل ركاب', 'ركاب', 'سيدات'].includes(type)) {
+        return true;
+    }
+    if (order.is_ladies_only === true || order.isLadiesOnly === true) {
+        return true;
+    }
+    const desc = String(order.deliveryDescription || order.itemDescription || '').toLowerCase();
+    if (desc.includes('توصيل أفراد') || desc.includes('توصيل افراد') || desc.includes('passenger') || desc.includes('سيدات') || desc.includes('ركاب')) {
+        return true;
+    }
+    if (Array.isArray(order.tasks)) {
+        for (const t of order.tasks) {
+            const tCat = String(t.orderCategory || t.category || '').toLowerCase().trim();
+            if (['passenger', 'ladies', 'توصيل أفراد', 'توصيل افراد', 'ركاب', 'سيدات'].includes(tCat)) return true;
+            const tType = String(t.orderType || t.type || '').toLowerCase().trim();
+            if (['passenger', 'ladies', 'توصيل أفراد', 'توصيل افراد', 'ركاب', 'سيدات'].includes(tType)) return true;
+            const tDesc = String(t.deliveryDescription || t.itemDescription || '').toLowerCase();
+            if (tDesc.includes('توصيل أفراد') || tDesc.includes('توصيل افراد') || tDesc.includes('passenger') || tDesc.includes('سيدات')) return true;
+        }
+    }
+    return false;
+}
+
 // ─── Helper: Broadcast to all relevant order rooms ────────────────────────────
 function broadcastToOrderRooms(req, order, rawOrderId, event, data) {
     const rooms = new Set([
@@ -177,6 +208,7 @@ const markTaskPickedUp = asyncHandler(async (req, res) => {
 
     const trackData = await DeliveryOrderTracker.getOrderTrack(order).catch(() => null);
     const effectiveOrderId = order.orderId ?? rawOrderId;
+    const isPassenger = isPassengerOrder(order);
 
     // 🎯 Broadcast to ALL order & user rooms
     const pickedUpPayload = {
@@ -184,7 +216,7 @@ const markTaskPickedUp = asyncHandler(async (req, res) => {
         taskId: task.taskId ?? lookupTaskId ?? 1,
         taskStatus: 'picked_up',
         arrivedAt: task.arrivedAt,
-        message: 'تم استلام البضاعة',
+        message: isPassenger ? 'تم بدء الرحلة مع الراكب 🚗' : 'تم استلام البضاعة',
         track: trackData,
         phase: 'DELIVERY',
         allPickupsDone,
@@ -195,7 +227,7 @@ const markTaskPickedUp = asyncHandler(async (req, res) => {
         orderId: effectiveOrderId,
         status: order.status || 'delivering',
         phase: 'DELIVERY',
-        message: 'تم بدء مرحلة التسليم',
+        message: isPassenger ? 'تم بدء الرحلة — في الطريق إلى وجهتك 🚗' : 'تم بدء مرحلة التسليم',
         track: trackData,
         allPickupsDone,
     };
@@ -215,11 +247,20 @@ const markTaskPickedUp = asyncHandler(async (req, res) => {
     // ─── إشعار FCM للعميل ────────────────────────────────────────────────────
     const clientToNotify = order.clientId || order.userId;
     if (clientToNotify) {
+        const notifTitle = isPassenger ? '🚗 بدأت رحلتك' : '📦 تم استلام طلبك';
+        const notifBody = isPassenger
+            ? 'المندوب أكد ركوبك — في الطريق إلى وجهتك 🚗'
+            : 'المندوب استلم البضاعة — في الطريق إليك';
+
         notifyClient(
             clientToNotify,
-            '📦 تم استلام طلبك',
-            `المندوب استلم البضاعة — في الطريق إليك`,
-            { type: 'task_picked_up', orderId: String(effectiveOrderId) },
+            notifTitle,
+            notifBody,
+            {
+                type: 'task_picked_up',
+                orderId: String(effectiveOrderId),
+                isPassenger: String(isPassenger),
+            },
         ).catch(() => {});
     }
 
@@ -417,6 +458,7 @@ const deliverTask = [
 
         const trackData = await DeliveryOrderTracker.getOrderTrack(order).catch(() => null);
         const effectiveOrderId = order.orderId ?? rawOrderId;
+        const isPassenger = isPassengerOrder(order);
 
         // إشعار: تم التسليم للتاسك
         broadcastToOrderRooms(req, order, rawOrderId, 'task:delivered', {
@@ -426,7 +468,7 @@ const deliverTask = [
             deliveredAt: task.deliveredAt,
             itemPhotoAfter: task.itemPhotoAfter || null,
             allTasksCompleted: allDone,
-            message: 'تم تسليم البضاعة',
+            message: isPassenger ? 'تم الوصول إلى الوجهة بنجاح 🏁' : 'تم تسليم البضاعة',
             track: trackData,
         });
 
@@ -445,7 +487,9 @@ const deliverTask = [
             broadcastToOrderRooms(req, order, rawOrderId, 'order:completed', {
                 orderId: effectiveOrderId,
                 status: 'completed',
-                message: 'تم إتمام جميع مهام الطلب بنجاح 🎉',
+                message: isPassenger
+                    ? 'تم إنهاء الرحلة بنجاح 🎉 نتمنى لك يوماً سعيداً!'
+                    : 'تم إتمام جميع مهام الطلب بنجاح 🎉',
                 track: trackData,
             });
         }
@@ -454,11 +498,20 @@ const deliverTask = [
         const clientToNotify = order.clientId || order.userId;
         if (allDone) {
             if (clientToNotify) {
+                const compTitle = isPassenger ? '🎉 تم إنهاء الرحلة بنجاح' : '🎉 تم تسليم طلبك بنجاح';
+                const compBody = isPassenger
+                    ? 'وصلت إلى وجهتك بالسلامة، شكراً لاستخدامك مشاوير!'
+                    : 'تم إتمام جميع مهام الطلب بنجاح!';
+
                 notifyClient(
                     clientToNotify,
-                    '🎉 تم تسليم طلبك بنجاح',
-                    `تم إتمام جميع مهام الطلب بنجاح!`,
-                    { type: 'order_completed', orderId: String(effectiveOrderId) },
+                    compTitle,
+                    compBody,
+                    {
+                        type: 'order_completed',
+                        orderId: String(effectiveOrderId),
+                        isPassenger: String(isPassenger),
+                    },
                 ).catch(() => {});
             }
 
@@ -469,11 +522,20 @@ const deliverTask = [
             });
         } else {
             if (clientToNotify) {
+                const partTitle = isPassenger ? '📍 تم الوصول لمحطة من المشوار' : '✅ تم تسليم جزء من طلبك';
+                const partBody = isPassenger
+                    ? 'المندوب وصل إلى محطة من مسار الرحلة'
+                    : 'تم تسليم مهمة من الطلب';
+
                 notifyClient(
                     clientToNotify,
-                    '✅ تم تسليم جزء من طلبك',
-                    `تم تسليم مهمة من الطلب`,
-                    { type: 'task_delivered', orderId: String(effectiveOrderId) },
+                    partTitle,
+                    partBody,
+                    {
+                        type: 'task_delivered',
+                        orderId: String(effectiveOrderId),
+                        isPassenger: String(isPassenger),
+                    },
                 ).catch(() => {});
             }
         }

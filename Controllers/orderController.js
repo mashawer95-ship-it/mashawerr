@@ -3066,14 +3066,22 @@ const confirmArrival = asyncHandler(async (req, res) => {
     }
     await order.save();
 
+    const isPassenger = (order.orderCategory || order.orderType || '').toLowerCase().trim() === 'passenger' || order.is_ladies_only === true;
     const isReturn = order.isReturnOrder || (typeof order.status === 'string' && order.status.startsWith('return_'));
     const clientId = order.clientId || order.userId;
     if (clientId) {
+        const title = isPassenger ? '🚗 كابتن مشاوير وصل!' : (isReturn ? '🚶 مندوب الاسترجاع وصل!' : '🚶 المندوب وصل!');
+        const body = isPassenger
+            ? `الكابتن في انتظارك عند نقطة الانطلاق. لديك ${timerMinutes} دقائق للركوب.`
+            : (isReturn
+                ? `المندوب في نقطة الاستلام لاستلام المنتجات المرتجعة. لديك ${timerMinutes} دقيقة للنزول.`
+                : `المندوب في نقطة الاستلام. لديك ${timerMinutes} دقيقة للنزول.`);
+
         notifyClient(
             clientId,
-            isReturn ? '🚶 مندوب الاسترجاع وصل!' : '🚶 المندوب وصل!',
-            isReturn ? `المندوب في نقطة الاستلام لاستلام المنتجات المرتجعة. لديك ${timerMinutes} دقيقة للنزول.` : `المندوب في نقطة الاستلام. لديك ${timerMinutes} دقيقة للنزول.`,
-            { type: 'driver_arrived', orderId: String(order.orderId || req.params.id) },
+            title,
+            body,
+            { type: 'driver_arrived', orderId: String(order.orderId || req.params.id), isPassenger: String(isPassenger) },
         ).catch(() => { });
     }
 
