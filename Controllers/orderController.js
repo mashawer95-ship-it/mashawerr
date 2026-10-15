@@ -424,6 +424,9 @@ function formatOrder(req, order, commissionCfg) {
         delayedAt: order.delayedAt ? (order.delayedAt instanceof Date ? order.delayedAt.toISOString() : String(order.delayedAt)) : null,
         deliveredAt: (order.deliveredAt || order.completedAt) ? ((order.deliveredAt || order.completedAt) instanceof Date ? (order.deliveredAt || order.completedAt).toISOString() : String(order.deliveredAt || order.completedAt)) : null,
         completedAt: order.completedAt ? (order.completedAt instanceof Date ? order.completedAt.toISOString() : String(order.completedAt)) : null,
+        cancellationFeeApplied: Boolean(order.cancellationFeeApplied),
+        cancellationFeeFils: order.cancellationFeeFils || 0,
+        cancellationRewardFils: order.cancellationRewardFils || 0,
         createdAt: order.createdAt,
         updatedAt: order.updatedAt,
     };
@@ -2148,6 +2151,15 @@ const cancelOrder = asyncHandler(async (req, res) => {
         }
     }
 
+    order.cancellationFeeApplied = cancellationFeeApplied;
+    order.cancellationFeeFils = cancellationFeeFils;
+    order.cancellationRewardFils = cancellationRewardFils;
+    await Order.findByIdAndUpdate(order._id, {
+        cancellationFeeApplied,
+        cancellationFeeFils,
+        cancellationRewardFils,
+    }).catch(() => {});
+
     // ─── Payment-Aware Refund Handling (Phase 5) ───────────────────────────
     const rawPref = String(value.refundPreference || 'APP_WALLET').trim().toUpperCase();
     const isOriginalPayment = rawPref === 'ORIGINAL_PAYMENT' || rawPref === 'CARD';
@@ -3363,6 +3375,9 @@ const releaseOrder = asyncHandler(async (req, res) => {
     order.representativeId = null;
     order.acceptedAt = null;
     order.cancellationReason = cancelReason;
+    order.cancellationFeeApplied = cancellationFeeApplied;
+    order.cancellationFeeFils = cancellationFeeFils;
+    order.cancellationRewardFils = cancellationRewardFils;
     if (!order.clientId && (order.userId || order._doc?.userId)) {
         order.clientId = String(order.userId || order._doc?.userId);
     }

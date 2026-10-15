@@ -283,6 +283,33 @@ async function creditWallet({ userId, amountFils, type = 'credit', description =
         ).catch(() => {});
     }
 
+    // مزامنة فورية مع سجل المعاملات الدائم WalletLedger ليظهر الإيداع فوراً في كشف حساب العميل بالتطبيق
+    try {
+        const { WalletLedger } = require('./WalletLedger');
+        const ledgerRef = refId ? String(refId) : `CREDIT_${userId}_${Date.now()}`;
+        const source = (type === 'cancellation_reward' || type === 'delay_reward' || type === 'target_reward')
+            ? 'OTHER'
+            : (performedBy === 'admin' || type === 'admin_adjustment' ? 'ADMIN_ADJUSTMENT' : 'OTHER');
+        await WalletLedger.create({
+            walletId: updated._id,
+            userId: String(userId),
+            type: 'CREDIT',
+            source,
+            amountFils,
+            currency: 'EGP',
+            balanceBeforeFils: updated.balanceFils - amountFils,
+            balanceAfterFils: updated.balanceFils,
+            status: 'COMPLETED',
+            reference: ledgerRef,
+            description: description || 'إيداع في المحفظة',
+            performedBy,
+        });
+    } catch (ledgerErr) {
+        if (ledgerErr.code !== 11000) {
+            console.error('[creditWallet] WalletLedger insert error:', ledgerErr.message);
+        }
+    }
+
     dispatchWalletNotification({ userId, type, amountFils, balanceAfterFils: updated.balanceFils, description, refId });
     return updated;
 }
@@ -333,13 +360,37 @@ async function debitWallet({ userId, amountFils, description = '', refId = null,
         ).catch(() => {});
     }
 
+    // مزامنة فورية مع سجل المعاملات الدائم WalletLedger
+    try {
+        const { WalletLedger } = require('./WalletLedger');
+        const ledgerRef = refId ? String(refId) : `DEBIT_${userId}_${Date.now()}`;
+        await WalletLedger.create({
+            walletId: updated._id,
+            userId: String(userId),
+            type: 'DEBIT',
+            source: 'OTHER',
+            amountFils,
+            currency: 'EGP',
+            balanceBeforeFils: updated.balanceFils + amountFils,
+            balanceAfterFils: updated.balanceFils,
+            status: 'COMPLETED',
+            reference: ledgerRef,
+            description: description || 'خصم من المحفظة',
+            performedBy,
+        });
+    } catch (ledgerErr) {
+        if (ledgerErr.code !== 11000) {
+            console.error('[debitWallet] WalletLedger insert error:', ledgerErr.message);
+        }
+    }
+
     dispatchWalletNotification({ userId, type: 'debit', amountFils, balanceAfterFils: updated.balanceFils, description, refId });
     return updated;
 }
 
 // ─── Helper: Debit balance allowing negative down to dynamic limit ──────────────────
 // مخصص لخصم رسوم التأخير/الإلغاء من محفظة العميل (يسمح بالسالب حتى الحد الأقصى للمديونية المحدد)
-async function debitWalletAllowNegative({ userId, amountFils, type = 'debit', description = '', refId = null, performedBy = 'system' }) {
+async function debitWalletAllowNegative({ userId, amountFils, type = 'debit', description = '', refId = null, performedBy = 'system', enforceLimit = false }) {
     if (!amountFils || amountFils <= 0) throw new Error('amountFils must be positive');
     amountFils = Math.round(Number(amountFils));
     const wallet = await getOrCreateWallet(userId);
@@ -351,11 +402,15 @@ async function debitWalletAllowNegative({ userId, amountFils, type = 'debit', de
     const minAllowedFils = await getMinWalletBalanceFils();
     const requiredMinBalance = minAllowedFils + amountFils;
 
+    const query = { _id: wallet._id };
+    // لا يتم حظر رسوم الإلغاء ورسوم التأخير إطلاقاً، وتُحسم دائماً لتسجيل الغرامات وتراكم المديونية بدقة
+    const isPenaltyOrFee = type === 'cancellation_fee' || type === 'delay_fee';
+    if (enforceLimit && !isPenaltyOrFee) {
+        query.balanceFils = { $gte: requiredMinBalance };
+    }
+
     const updated = await Wallet.findOneAndUpdate(
-        {
-            _id: wallet._id,
-            balanceFils: { $gte: requiredMinBalance },
-        },
+        query,
         {
             $inc: { balanceFils: -amountFils },
             $push: {
@@ -385,6 +440,31 @@ async function debitWalletAllowNegative({ userId, amountFils, type = 'debit', de
             { _id: updated._id, 'transactions._id': lastTx._id },
             { $set: { 'transactions.$.balanceAfterFils': updated.balanceFils } }
         ).catch(() => {});
+    }
+
+    // مزامنة فورية مع سجل المعاملات الدائم WalletLedger ليظهر الخصم فوراً في كشف حساب العميل بالتطبيق
+    try {
+        const { WalletLedger } = require('./WalletLedger');
+        const ledgerRef = refId ? String(refId) : `DEBIT_${userId}_${Date.now()}`;
+        const source = isPenaltyOrFee ? 'OTHER' : (performedBy === 'admin' ? 'ADMIN_ADJUSTMENT' : 'OTHER');
+        await WalletLedger.create({
+            walletId: updated._id,
+            userId: String(userId),
+            type: 'DEBIT',
+            source,
+            amountFils,
+            currency: 'EGP',
+            balanceBeforeFils: updated.balanceFils + amountFils,
+            balanceAfterFils: updated.balanceFils,
+            status: 'COMPLETED',
+            reference: ledgerRef,
+            description: description || 'خصم من المحفظة',
+            performedBy,
+        });
+    } catch (ledgerErr) {
+        if (ledgerErr.code !== 11000) {
+            console.error('[debitWalletAllowNegative] WalletLedger insert error:', ledgerErr.message);
+        }
     }
 
     dispatchWalletNotification({ userId, type, amountFils, balanceAfterFils: updated.balanceFils, description, refId });

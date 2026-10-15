@@ -314,21 +314,6 @@ const creditUserWallet = asyncHandler(async (req, res) => {
         performedBy,
     });
 
-    // Also record in WalletLedger so it appears immediately in the customer ledger history as CREDIT
-    await WalletLedger.create({
-        walletId: wallet._id,
-        userId: String(userId),
-        type: 'CREDIT',
-        source: 'ADMIN_ADJUSTMENT',
-        amountFils: value.amountFils,
-        currency: 'EGP',
-        balanceAfterFils: wallet.balanceFils,
-        status: 'COMPLETED',
-        description: desc,
-        reference: `ADMIN_CREDIT_${userId}_${Date.now()}`,
-        performedBy,
-    }).catch((err) => console.error('[creditUserWallet] WalletLedger insert error:', err.message));
-
     return res.status(200).json({
         message: 'تم شحن الرصيد بنجاح',
         userId,
@@ -375,21 +360,6 @@ const debitUserWallet = asyncHandler(async (req, res) => {
             refId: value.refId || null,
             performedBy,
         });
-
-        // Also record in WalletLedger so it appears immediately in the customer ledger history as DEBIT
-        await WalletLedger.create({
-            walletId: wallet._id,
-            userId: String(userId),
-            type: 'DEBIT',
-            source: 'ADMIN_ADJUSTMENT',
-            amountFils: value.amountFils,
-            currency: 'EGP',
-            balanceAfterFils: wallet.balanceFils,
-            status: 'COMPLETED',
-            description: desc,
-            reference: `ADMIN_DEBIT_${userId}_${Date.now()}`,
-            performedBy,
-        }).catch((err) => console.error('[debitUserWallet] WalletLedger insert error:', err.message));
     } catch (err) {
         return res.status(400).json({ message: err.message });
     }

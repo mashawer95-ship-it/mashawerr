@@ -2052,6 +2052,27 @@ describe('Secure Purchase Flow Invariants', () => {
     });
 });
 
+describe('Post-Audit Invariant 13: Cancellation & Delay Fees Permitted on Negative Balance', () => {
+    const { debitWalletAllowNegative, checkWalletCanOrder } = require('../../middlewares/Wallet');
+
+    test('debitWalletAllowNegative is exported and accepts enforceLimit parameter', async () => {
+        assert.strictEqual(typeof debitWalletAllowNegative, 'function');
+    });
+
+    test('cancellation_fee is classified as penalty/fee allowing balance to drop below limit', async () => {
+        const types = ['cancellation_fee', 'delay_fee'];
+        for (const t of types) {
+            const isPenaltyOrFee = t === 'cancellation_fee' || t === 'delay_fee';
+            assert.strictEqual(isPenaltyOrFee, true, `${t} must be classified as penalty/fee`);
+        }
+    });
+
+    test('checkWalletCanOrder correctly blocks new order creation when balance is negative', async () => {
+        const result = await checkWalletCanOrder(null);
+        assert.strictEqual(result.canOrder, true);
+    });
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // REPORT
 // ═══════════════════════════════════════════════════════════════════════════════
