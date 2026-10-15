@@ -428,28 +428,58 @@ const deliverTask = [
                 targetStop = order.allLocationsInOrder[parseInt(rawStopIdx, 10)];
             }
             if (!targetStop) {
-                targetStop = order.allLocationsInOrder.find(l => l.isFrom === false && !l.isCompleted);
+                targetStop = order.allLocationsInOrder.find(l => (l.isFrom === false || l.isFrom === 'false') && !l.isCompleted);
             }
             if (targetStop) {
                 targetStop.isCompleted = true;
                 if (req.file) targetStop.deliveryPhoto = req.file.path;
                 targetStop.completedAt = now;
             }
+
+            // 🛡️ All pickup locations MUST be completed since we are delivering
+            for (const loc of order.allLocationsInOrder) {
+                if (loc.isFrom === true || loc.isFrom === 'true') {
+                    loc.isCompleted = true;
+                    loc.completedAt = loc.completedAt || now;
+                }
+            }
+
             order.markModified('allLocationsInOrder');
         }
 
         // هل جميع المهام اكتملت؟
+        const dropoffStops = Array.isArray(order.allLocationsInOrder) && order.allLocationsInOrder.length > 0
+            ? order.allLocationsInOrder.filter(l => l.isFrom === false || l.isFrom === 'false')
+            : [];
+        const allDropoffsDone = dropoffStops.length > 0 && dropoffStops.every(l => l.isCompleted === true);
+        const allTasksDone = Array.isArray(order.tasks) && order.tasks.length > 0 && order.tasks.every((t) => t.taskStatus === 'completed');
+        const isFinalStopParam = req.body?.isFinalStop === true || req.body?.isFinalStop === 'true' || req.query?.isFinalStop === 'true';
+
         let allDone = false;
-        if (Array.isArray(order.allLocationsInOrder) && order.allLocationsInOrder.length > 0) {
-            allDone = order.allLocationsInOrder.every(l => l.isCompleted === true);
+        if (isFinalStopParam) {
+            allDone = true;
+        } else if (dropoffStops.length > 0) {
+            allDone = allDropoffsDone || allTasksDone;
+        } else if (Array.isArray(order.tasks) && order.tasks.length > 0) {
+            allDone = allTasksDone;
         } else {
-            allDone = order.tasks.every((t) => t.taskStatus === 'completed');
+            allDone = true;
         }
 
         if (allDone) {
             order.status = 'completed';
             order.deliveredAt = order.deliveredAt || now;
             order.completedAt = order.completedAt || now;
+
+            // Make sure EVERY stop in allLocationsInOrder is marked completed
+            if (Array.isArray(order.allLocationsInOrder)) {
+                for (const loc of order.allLocationsInOrder) {
+                    loc.isCompleted = true;
+                    loc.completedAt = loc.completedAt || now;
+                }
+                order.markModified('allLocationsInOrder');
+            }
+
             const { processOrderCompletionWallet } = require('../middlewares/Wallet');
             await processOrderCompletionWallet(order).catch((e) => console.error('[taskController] Wallet error:', e.message));
         }
@@ -489,6 +519,14 @@ const deliverTask = [
                 status: 'completed',
                 message: isPassenger
                     ? 'تم إنهاء الرحلة بنجاح 🎉 نتمنى لك يوماً سعيداً!'
+                    : 'تم إتمام جميع مهام الطلب بنجاح 🎉',
+                track: trackData,
+            });
+            broadcastToOrderRooms(req, order, rawOrderId, 'order:status_changed', {
+                orderId: effectiveOrderId,
+                status: 'completed',
+                message: isPassenger
+                    ? 'تم إنهاء الرحلة بنجاح 🎉'
                     : 'تم إتمام جميع مهام الطلب بنجاح 🎉',
                 track: trackData,
             });

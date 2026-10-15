@@ -93,8 +93,20 @@ class DeliveryOrderTracker {
                     : (deliveryCounter > 1 ? `تسليم ${deliveryCounter}: ${name}` : `تسليم 1: ${name}`);
 
                 // Determine isCompleted status:
-                // When allLocationsInOrder exists, each stop's isCompleted flag is the single source of truth.
-                const isCompleted = Boolean(loc.isCompleted === true);
+                // When allLocationsInOrder exists, a pickup stop is completed if marked completed,
+                // OR if the order is already in delivering/delivered/completed status.
+                let isCompleted = Boolean(loc.isCompleted === true);
+                const orderStatus = String(order.status || '').toLowerCase();
+                if (!isCompleted && isPickup) {
+                    if (['delivering', 'delivered', 'completed', 'returned'].includes(orderStatus)) {
+                        isCompleted = true;
+                    }
+                }
+                if (!isCompleted && !isPickup) {
+                    if (['delivered', 'completed'].includes(orderStatus)) {
+                        isCompleted = true;
+                    }
+                }
 
                 stops.push({
                     stopIndex: i,
@@ -227,9 +239,11 @@ class DeliveryOrderTracker {
             });
         }
 
+        const orderStatus = String(order.status || '').toLowerCase();
+        const isOrderTerminal = ['delivered', 'completed'].includes(orderStatus);
         const firstIncompleteIdx = stops.findIndex(s => !s.isCompleted);
-        const isAllCompleted = firstIncompleteIdx === -1;
-        const allPickupsDone = stops.filter(s => s.type === 'PICKUP').every(s => s.isCompleted);
+        const isAllCompleted = firstIncompleteIdx === -1 || isOrderTerminal;
+        const allPickupsDone = stops.filter(s => s.type === 'PICKUP').every(s => s.isCompleted) || ['delivering', 'delivered', 'completed'].includes(orderStatus);
 
         const currentStopIndex = isAllCompleted ? (stops.length > 0 ? stops.length - 1 : 0) : firstIncompleteIdx;
         const currentStop = isAllCompleted ? null : stops[currentStopIndex];

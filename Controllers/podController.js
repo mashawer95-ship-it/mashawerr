@@ -582,7 +582,16 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
         }
 
         if (hasLocations) {
-            allDone = parentOrder.allLocationsInOrder.every(l => l.isCompleted === true);
+            const dropoffStops = parentOrder.allLocationsInOrder.filter(l => l.isFrom === false || l.isFrom === 'false');
+            const allDropoffsDone = dropoffStops.length > 0 && dropoffStops.every(l => l.isCompleted === true);
+            const allTasksDone = !Array.isArray(parentOrder.tasks) || parentOrder.tasks.length === 0 || parentOrder.tasks.every(t => t.taskStatus === 'completed');
+            allDone = allDropoffsDone || allTasksDone;
+            if (allDone) {
+                for (const loc of parentOrder.allLocationsInOrder) {
+                    loc.isCompleted = true;
+                }
+                parentOrder.markModified('allLocationsInOrder');
+            }
         } else if (Array.isArray(parentOrder.tasks) && parentOrder.tasks.length > 0) {
             allDone = parentOrder.tasks.every(t => t.taskStatus === 'completed');
         } else {
