@@ -69,6 +69,7 @@ class DeliveryOrderTracker {
         if (allLocs.length > 0) {
             let pickupCounter = 0;
             let deliveryCounter = 0;
+            const totalPickupStops = allLocs.filter(l => l && (l.isFrom === true || l.isFrom === 'true')).length;
 
             for (let i = 0; i < allLocs.length; i++) {
                 const loc = allLocs[i];
@@ -93,12 +94,14 @@ class DeliveryOrderTracker {
                     : (deliveryCounter > 1 ? `تسليم ${deliveryCounter}: ${name}` : `تسليم 1: ${name}`);
 
                 // Determine isCompleted status:
-                // When allLocationsInOrder exists, a pickup stop is completed if marked completed,
-                // OR if the order is already in delivering/delivered/completed status.
+                // In multi-destination routes, each pickup stop relies on its own isCompleted status.
+                // Single pickup routes can infer pickup completion from delivering status.
                 let isCompleted = Boolean(loc.isCompleted === true);
                 const orderStatus = String(order.status || '').toLowerCase();
                 if (!isCompleted && isPickup) {
-                    if (['delivering', 'delivered', 'completed', 'returned'].includes(orderStatus)) {
+                    if (['delivered', 'completed'].includes(orderStatus)) {
+                        isCompleted = true;
+                    } else if (totalPickupStops === 1 && ['delivering', 'returned'].includes(orderStatus)) {
                         isCompleted = true;
                     }
                 }
@@ -242,12 +245,35 @@ class DeliveryOrderTracker {
         const orderStatus = String(order.status || '').toLowerCase();
         const isOrderTerminal = ['delivered', 'completed'].includes(orderStatus);
         const firstIncompleteIdx = stops.findIndex(s => !s.isCompleted);
-        const isAllCompleted = firstIncompleteIdx === -1 || isOrderTerminal;
-        const allPickupsDone = stops.filter(s => s.type === 'PICKUP').every(s => s.isCompleted) || ['delivering', 'delivered', 'completed'].includes(orderStatus);
 
-        const currentStopIndex = isAllCompleted ? (stops.length > 0 ? stops.length - 1 : 0) : firstIncompleteIdx;
+        // 🔒 STRICT: An order in active delivery/transit status CANNOT be marked completed!
+        let isAllCompleted = false;
+        if (isOrderTerminal) {
+            isAllCompleted = true;
+        } else if (['delivering', 'accepted', 'waiting', 'assigned', 'processing'].includes(orderStatus)) {
+            isAllCompleted = false;
+        } else {
+            isAllCompleted = firstIncompleteIdx === -1;
+        }
+
+        const pickupStops = stops.filter(s => s.type === 'PICKUP');
+        const allPickupsDone = pickupStops.length > 0 && (
+            pickupStops.every(s => s.isCompleted) ||
+            (pickupStops.length === 1 && ['delivering', 'delivered', 'completed'].includes(orderStatus))
+        );
+
+        let currentStopIndex = 0;
+        if (isAllCompleted) {
+            currentStopIndex = stops.length > 0 ? stops.length - 1 : 0;
+        } else if (firstIncompleteIdx !== -1) {
+            currentStopIndex = firstIncompleteIdx;
+        } else {
+            const lastDropIdx = stops.map(s => s.type).lastIndexOf('DELIVERY');
+            currentStopIndex = lastDropIdx !== -1 ? lastDropIdx : (stops.length > 0 ? stops.length - 1 : 0);
+        }
+
         const currentStop = isAllCompleted ? null : stops[currentStopIndex];
-        const phase = isAllCompleted ? 'COMPLETED' : (currentStop ? currentStop.type : 'DELIVERY');
+        const phase = isAllCompleted ? 'COMPLETED' : (currentStop ? currentStop.type : (allPickupsDone ? 'DELIVERY' : 'PICKUP'));
 
         return {
             orderId: order.orderId,

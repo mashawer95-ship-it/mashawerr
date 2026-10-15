@@ -186,8 +186,12 @@ const markTaskPickedUp = asyncHandler(async (req, res) => {
     if (Array.isArray(order.allLocationsInOrder) && order.allLocationsInOrder.length > 0) {
         const rawStopIdx = req.body?.stopIndex ?? req.query?.stopIndex;
         let targetStop = null;
-        if (rawStopIdx !== undefined && rawStopIdx !== null && order.allLocationsInOrder[parseInt(rawStopIdx, 10)]) {
-            targetStop = order.allLocationsInOrder[parseInt(rawStopIdx, 10)];
+        if (rawStopIdx !== undefined && rawStopIdx !== null) {
+            const idx = parseInt(rawStopIdx, 10);
+            const candidate = order.allLocationsInOrder[idx];
+            if (candidate && (candidate.isFrom === true || candidate.isFrom === 'true')) {
+                targetStop = candidate;
+            }
         }
         if (!targetStop) {
             targetStop = order.allLocationsInOrder.find(l => (l.isFrom === true || l.isFrom === 'true') && !l.isCompleted);
@@ -325,11 +329,15 @@ const uploadPhotoBefore = [
         if (Array.isArray(order.allLocationsInOrder) && order.allLocationsInOrder.length > 0) {
             const rawStopIdx = req.body?.stopIndex ?? req.query?.stopIndex;
             let targetStop = null;
-            if (rawStopIdx !== undefined && rawStopIdx !== null && order.allLocationsInOrder[parseInt(rawStopIdx, 10)]) {
-                targetStop = order.allLocationsInOrder[parseInt(rawStopIdx, 10)];
+            if (rawStopIdx !== undefined && rawStopIdx !== null) {
+                const idx = parseInt(rawStopIdx, 10);
+                const candidate = order.allLocationsInOrder[idx];
+                if (candidate && (candidate.isFrom === true || candidate.isFrom === 'true')) {
+                    targetStop = candidate;
+                }
             }
             if (!targetStop) {
-                targetStop = order.allLocationsInOrder.find(l => l.isFrom === true && !l.isCompleted);
+                targetStop = order.allLocationsInOrder.find(l => (l.isFrom === true || l.isFrom === 'true') && !l.isCompleted);
             }
             if (targetStop) {
                 targetStop.pickupPhoto = req.file.path;
@@ -424,8 +432,12 @@ const deliverTask = [
         if (Array.isArray(order.allLocationsInOrder) && order.allLocationsInOrder.length > 0) {
             const rawStopIdx = req.body?.stopIndex ?? req.query?.stopIndex;
             let targetStop = null;
-            if (rawStopIdx !== undefined && rawStopIdx !== null && order.allLocationsInOrder[parseInt(rawStopIdx, 10)]) {
-                targetStop = order.allLocationsInOrder[parseInt(rawStopIdx, 10)];
+            if (rawStopIdx !== undefined && rawStopIdx !== null) {
+                const idx = parseInt(rawStopIdx, 10);
+                const candidate = order.allLocationsInOrder[idx];
+                if (candidate && (candidate.isFrom === false || candidate.isFrom === 'false')) {
+                    targetStop = candidate;
+                }
             }
             if (!targetStop) {
                 targetStop = order.allLocationsInOrder.find(l => (l.isFrom === false || l.isFrom === 'false') && !l.isCompleted);
@@ -436,9 +448,11 @@ const deliverTask = [
                 targetStop.completedAt = now;
             }
 
-            // 🛡️ All pickup locations MUST be completed since we are delivering
-            for (const loc of order.allLocationsInOrder) {
-                if (loc.isFrom === true || loc.isFrom === 'true') {
+            // 🛡️ Only pickup locations up to the delivered stop should be assumed completed
+            const deliveredIdx = targetStop ? order.allLocationsInOrder.indexOf(targetStop) : order.allLocationsInOrder.length;
+            for (let i = 0; i < deliveredIdx; i++) {
+                const loc = order.allLocationsInOrder[i];
+                if (loc && (loc.isFrom === true || loc.isFrom === 'true')) {
                     loc.isCompleted = true;
                     loc.completedAt = loc.completedAt || now;
                 }

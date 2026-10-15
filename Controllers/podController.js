@@ -263,11 +263,15 @@ exports.createAttempt = async (req, res) => {
                     if (Array.isArray(parentOrder.allLocationsInOrder) && parentOrder.allLocationsInOrder.length > 0) {
                         const rawStopIdx = attempt?.stopIndex ?? req.body?.stopIndex ?? req.query?.stopIndex;
                         let targetLoc = null;
-                        if (rawStopIdx !== undefined && rawStopIdx !== null && parentOrder.allLocationsInOrder[parseInt(rawStopIdx, 10)]) {
-                            targetLoc = parentOrder.allLocationsInOrder[parseInt(rawStopIdx, 10)];
+                        if (rawStopIdx !== undefined && rawStopIdx !== null) {
+                            const idx = parseInt(rawStopIdx, 10);
+                            const candidate = parentOrder.allLocationsInOrder[idx];
+                            if (candidate && (candidate.isFrom === true || candidate.isFrom === 'true')) {
+                                targetLoc = candidate;
+                            }
                         }
                         if (!targetLoc) {
-                            targetLoc = parentOrder.allLocationsInOrder.find(l => l.isFrom === true && !l.isCompleted);
+                            targetLoc = parentOrder.allLocationsInOrder.find(l => (l.isFrom === true || l.isFrom === 'true') && !l.isCompleted);
                         }
                         if (targetLoc) {
                             targetLoc.pickupPhoto = urlToSave;
@@ -330,11 +334,15 @@ exports.createAttempt = async (req, res) => {
                     if (Array.isArray(parentOrder.allLocationsInOrder) && parentOrder.allLocationsInOrder.length > 0) {
                         const rawStopIdx = attempt?.stopIndex ?? req.body?.stopIndex ?? req.query?.stopIndex;
                         let targetLoc = null;
-                        if (rawStopIdx !== undefined && rawStopIdx !== null && parentOrder.allLocationsInOrder[parseInt(rawStopIdx, 10)]) {
-                            targetLoc = parentOrder.allLocationsInOrder[parseInt(rawStopIdx, 10)];
+                        if (rawStopIdx !== undefined && rawStopIdx !== null) {
+                            const idx = parseInt(rawStopIdx, 10);
+                            const candidate = parentOrder.allLocationsInOrder[idx];
+                            if (candidate && (candidate.isFrom === false || candidate.isFrom === 'false')) {
+                                targetLoc = candidate;
+                            }
                         }
                         if (!targetLoc) {
-                            targetLoc = parentOrder.allLocationsInOrder.find(l => l.isFrom === false && !l.isCompleted);
+                            targetLoc = parentOrder.allLocationsInOrder.find(l => (l.isFrom === false || l.isFrom === 'false') && !l.isCompleted);
                         }
                         if (targetLoc) {
                             targetLoc.deliveryPhoto = urlToSave;
@@ -401,8 +409,12 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
 
             if (hasLocations) {
                 let targetStop = null;
-                if (completedStopIndex !== undefined && completedStopIndex !== null && parentOrder.allLocationsInOrder[parseInt(completedStopIndex, 10)]) {
-                    targetStop = parentOrder.allLocationsInOrder[parseInt(completedStopIndex, 10)];
+                if (completedStopIndex !== undefined && completedStopIndex !== null) {
+                    const idx = parseInt(completedStopIndex, 10);
+                    const candidate = parentOrder.allLocationsInOrder[idx];
+                    if (candidate && (candidate.isFrom === true || candidate.isFrom === 'true')) {
+                        targetStop = candidate;
+                    }
                 }
                 if (!targetStop) {
                     targetStop = parentOrder.allLocationsInOrder.find(l => (l.isFrom === true || l.isFrom === 'true') && !l.isCompleted);
@@ -542,8 +554,12 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
 
         if (hasLocations) {
             let targetStop = null;
-            if (completedStopIndex !== undefined && completedStopIndex !== null && parentOrder.allLocationsInOrder[parseInt(completedStopIndex, 10)]) {
-                targetStop = parentOrder.allLocationsInOrder[parseInt(completedStopIndex, 10)];
+            if (completedStopIndex !== undefined && completedStopIndex !== null) {
+                const idx = parseInt(completedStopIndex, 10);
+                const candidate = parentOrder.allLocationsInOrder[idx];
+                if (candidate && (candidate.isFrom === false || candidate.isFrom === 'false')) {
+                    targetStop = candidate;
+                }
             }
             if (!targetStop) {
                 targetStop = parentOrder.allLocationsInOrder.find(l => (l.isFrom === false || l.isFrom === 'false') && !l.isCompleted);
