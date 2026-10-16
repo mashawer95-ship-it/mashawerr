@@ -427,6 +427,27 @@ io.on('connection', (socket) => {
         logger.debug(`[Socket.IO] ${socket.id} left room ${room}`);
     });
 
+    // Live driver GPS update fallback on root socket
+    socket.on('driver:location:update', async (payload) => {
+        if (!payload) return;
+        try {
+            const { processLocationUpdate } = require('./services/trackingService');
+            const nsp = io.of('/tracking');
+            const normalizedPayload = {
+                tripId: payload.tripId || payload.orderId,
+                lat: payload.lat != null ? payload.lat : (payload.location?.latitude ?? payload.location?.lat),
+                lng: payload.lng != null ? payload.lng : (payload.location?.longitude ?? payload.location?.lng),
+                heading: payload.heading != null ? payload.heading : (payload.location?.heading ?? 0),
+                speed: payload.speed != null ? payload.speed : (payload.location?.speed ?? 0),
+            };
+            if (normalizedPayload.tripId && normalizedPayload.lat != null && normalizedPayload.lng != null) {
+                await processLocationUpdate(socket, nsp, normalizedPayload);
+            }
+        } catch (e) {
+            logger.error(`[RootSocket] Error processing driver:location:update: ${e.message}`);
+        }
+    });
+
     socket.on('disconnect', (reason) => {
         logger.debug(`[Socket.IO] Client disconnected: ${socket.id} — ${reason}`);
     });

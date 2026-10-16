@@ -288,18 +288,107 @@ async function processLocationUpdate(socket, nsp, payload) {
  * @param {string} tripId
  */
 async function driverJoinTrip(socket, tripId) {
-    const driverId = socket.user.id;
+    const driverId = socket.user?.id;
+    if (!driverId) return;
 
-    socket.join(tripRoom(tripId));
-    await setDriverTrip(driverId, tripId);
+    const idInfo = await resolveOrderIds(tripId);
+    const primaryTripId = idInfo.rawId || String(tripId).trim();
+    const allTripIds = idInfo.allIds.length > 0 ? idInfo.allIds : [primaryTripId];
 
-    logger.info(`[Tracking] Driver ${driverId} joined trip room: ${tripId}`);
+    for (const tid of allTripIds) {
+        socket.join(tripRoom(tid));
+        socket.join(`trip:${tid}`);
+        socket.join(`order:${tid}`);
+    }
 
-    socket.emit('tripJoined', {
-        tripId,
+    await setDriverOnline(driverId);
+    await setDriverTrip(driverId, primaryTripId);
+
+    logger.info(`[Tracking] Driver ${driverId} joined trip rooms: ${allTripIds.map(t => 'trip:' + t).join(', ')}`);
+
+    // Fetch active trip state for snapshot restoration
+    let trip = null;
+    try {
+        const { getTrip } = require('./tripService');
+        for (const tid of allTripIds) {
+            trip = await getTrip(tid);
+            if (trip && trip.encodedPolyline) break;
+        }
+
+        if (!trip || !trip.encodedPolyline) {
+            for (const tid of allTripIds) {
+                const activeRaw = await redisGet(`active_route:${tid}`);
+                if (activeRaw) {
+                    const parsed = typeof activeRaw === 'string' ? JSON.parse(activeRaw) : activeRaw;
+                    if (parsed && parsed.encodedPolyline) {
+                        trip = {
+                            tripId: primaryTripId,
+                            encodedPolyline: parsed.encodedPolyline,
+                            distanceMeters: parsed.distanceMeters,
+                            durationSeconds: parsed.durationSeconds,
+                            routeVersion: parsed.routeVersion,
+                            destination: parsed.destination,
+                        };
+                        break;
+                    }
+                }
+            }
+        }
+    } catch (err) {
+        logger.error(`[Tracking] Error fetching trip state in driverJoinTrip: ${err.message}`);
+    }
+
+    const tripStatePayload = {
+        tripId: primaryTripId,
         driverId,
+        role: 'driver',
+        currentState: trip ? {
+            encodedPolyline: trip.encodedPolyline,
+            distanceMeters: trip.distanceMeters || 0,
+            durationSeconds: trip.durationSeconds || 0,
+            routeVersion: trip.routeVersion || 1,
+        } : null,
+        timestamp: Date.now(),
+    };
+
+    // Acknowledge driver with full state
+    socket.emit('tripJoined', tripStatePayload);
+    socket.emit('trip_joined', tripStatePayload);
+
+    // Notify customers in the room that the driver has connected / reconnected
+    socket.to(tripRoom(primaryTripId)).emit('driverConnected', {
+        driverId,
+        tripId: primaryTripId,
         timestamp: Date.now(),
     });
+    socket.to(tripRoom(primaryTripId)).emit('driverReconnected', {
+        driverId,
+        tripId: primaryTripId,
+        timestamp: Date.now(),
+    });
+
+    // If an active route exists, broadcast it to all customers in the trip room immediately
+    if (trip && trip.encodedPolyline) {
+        const routePayload = {
+            routeVersion: trip.routeVersion || 1,
+            version: trip.routeVersion || 1,
+            tripId: primaryTripId,
+            numericOrderId: idInfo.numericId ? Number(idInfo.numericId) : null,
+            mongoOrderId: idInfo.mongoId || null,
+            encodedPolyline: trip.encodedPolyline,
+            distanceMeters: trip.distanceMeters || 0,
+            durationSeconds: trip.durationSeconds || 0,
+            destination: trip.destination || null,
+            reason: 'driver_reconnect_snapshot',
+            isLiveDriverRoute: true,
+        };
+        for (const tid of allTripIds) {
+            socket.to(tripRoom(tid)).emit('routeUpdated', routePayload);
+            socket.to(tripRoom(tid)).emit('trip.route.updated', routePayload);
+            socket.to(`order:${tid}`).emit('routeUpdated', routePayload);
+            socket.to(`order:${tid}`).emit('trip.route.updated', routePayload);
+        }
+    }
 }
 
 /**

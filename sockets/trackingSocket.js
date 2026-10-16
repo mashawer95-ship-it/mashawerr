@@ -156,29 +156,47 @@ function registerTrackingSocket(io) {
          * Payload: { tripId, lat, lng, heading?, speed? }
          * Response: server broadcasts 'driverLocationUpdated' to trip room
          */
-        socket.on('updateDriverLocation', async (payload) => {
+        const handleLocationUpdate = async (payload) => {
             if (!payload || typeof payload !== 'object') {
                 socket.emit('error', { message: 'Invalid payload' });
                 return;
             }
 
+            // Normalize payload from background task or legacy formats
+            const normalizedPayload = {
+                tripId: payload.tripId || payload.orderId,
+                lat: payload.lat != null ? payload.lat : (payload.location?.latitude ?? payload.location?.lat),
+                lng: payload.lng != null ? payload.lng : (payload.location?.longitude ?? payload.location?.lng),
+                heading: payload.heading != null ? payload.heading : (payload.location?.heading ?? 0),
+                speed: payload.speed != null ? payload.speed : (payload.location?.speed ?? 0),
+                forceReroute: payload.forceReroute === true,
+                isOffRoute: payload.isOffRoute === true,
+                destination: payload.destination,
+                destinationLat: payload.destinationLat,
+                destinationLng: payload.destinationLng,
+            };
+
+            if (!normalizedPayload.tripId || normalizedPayload.lat == null || normalizedPayload.lng == null) {
+                return;
+            }
+
             try {
-                const result = await processLocationUpdate(socket, nsp, payload);
+                const result = await processLocationUpdate(socket, nsp, normalizedPayload);
 
                 // If client requested forceReroute or reported off-route, recalculate route immediately
-                if (payload.forceReroute === true || payload.isOffRoute === true) {
+                if (normalizedPayload.forceReroute === true || normalizedPayload.isOffRoute === true) {
                     try {
-                        const destination = payload.destination || (payload.destinationLat != null && payload.destinationLng != null ? { lat: Number(payload.destinationLat), lng: Number(payload.destinationLng) } : null);
+                        const destination = normalizedPayload.destination || (normalizedPayload.destinationLat != null && normalizedPayload.destinationLng != null ? { lat: Number(normalizedPayload.destinationLat), lng: Number(normalizedPayload.destinationLng) } : null);
                         const { processLocationUpdate: tripReroute } = require('../services/tripService');
                         tripReroute(
-                            payload.tripId,
+                            normalizedPayload.tripId,
                             user.id,
                             {
-                                lat: Number(payload.lat),
-                                lng: Number(payload.lng),
-                                speed: payload.speed != null ? Number(payload.speed) : null
+                                lat: Number(normalizedPayload.lat),
+                                lng: Number(normalizedPayload.lng),
+                                speed: normalizedPayload.speed != null ? Number(normalizedPayload.speed) : null
                             },
-                            payload.heading != null ? Number(payload.heading) : null,
+                            normalizedPayload.heading != null ? Number(normalizedPayload.heading) : null,
                             io,
                             { forceReroute: true, destination }
                         ).catch(err => logger.error(`[Tracking] Socket forceReroute error: ${err.message}`));
@@ -187,7 +205,6 @@ function registerTrackingSocket(io) {
                     }
                 }
 
-                // Send lightweight ack back to driver (optional — can disable to save bandwidth)
                 if (process.env.SEND_LOCATION_ACK === 'true') {
                     socket.emit('locationAck', {
                         broadcasted: result.broadcasted,
@@ -199,7 +216,11 @@ function registerTrackingSocket(io) {
                 logger.error(`[Tracking] updateDriverLocation error for ${user.id}:`, err.message);
                 socket.emit('error', { message: 'Location update failed' });
             }
-        });
+        };
+
+        socket.on('updateDriverLocation', handleLocationUpdate);
+        socket.on('driver:location:update', handleLocationUpdate);
+        socket.on('driver_location_update', handleLocationUpdate);
 
         /**
          * Driver: explicit request to recalculate route (reroute)

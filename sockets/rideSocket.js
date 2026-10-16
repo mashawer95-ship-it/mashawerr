@@ -72,9 +72,10 @@ function registerRideSocket(io) {
                 if (process.env.DEBUG_NAVIGATION === 'true') {
                     logger.info('SOCKET_EMIT', { event: 'trip_joined', tripId, routeVersion: trip ? trip.routeVersion : null });
                 }
+                const currentRoom = `trip:${primaryTripId}`;
                 socket.emit('trip_joined', {
                     tripId,
-                    room,
+                    room: currentRoom,
                     role,
                     currentState: trip
                         ? {
@@ -94,7 +95,7 @@ function registerRideSocket(io) {
                 });
             } catch (err) {
                 logger.error(`[RideSocket] Error fetching trip state for join_trip:`, err.message);
-                socket.emit('trip_joined', { tripId, room, role, currentState: null });
+                socket.emit('trip_joined', { tripId, room: `trip:${primaryTripId}`, role, currentState: null });
             }
         });
 

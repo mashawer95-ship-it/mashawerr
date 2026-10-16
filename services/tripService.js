@@ -134,7 +134,8 @@ async function startTrip(tripId, driverId, origin, destination, options = {}) {
                     if (originDrift < ORIGIN_CACHE_MAX_M && destDrift < 15) {
                         logger.info(`[Trip] Active Route Cache HIT for tripId=${primaryTripId} (originDrift=${originDrift.toFixed(1)}m, destDrift=${destDrift.toFixed(1)}m)`);
                         metrics.increment('active_route_cache_hit');
-                        return {
+
+                        const cachedTripData = {
                             tripId: primaryTripId,
                             driverId,
                             encodedPolyline: active.encodedPolyline,
@@ -147,6 +148,50 @@ async function startTrip(tripId, driverId, origin, destination, options = {}) {
                             destination:     active.destination || destination,
                             fromCache:       true,
                         };
+
+                        // 🚀 Broadcast route to customer and driver rooms even on cache HIT!
+                        const io = options.io || (options.req && options.req.app ? options.req.app.get('io') : null);
+                        if (io) {
+                            try {
+                                broadcastRoute(cachedTripData, options.reason || 'start_trip_cache_hit', io);
+                                const socketPayload = {
+                                    tripId: primaryTripId,
+                                    numericOrderId: idInfo.numericId ? Number(idInfo.numericId) : null,
+                                    mongoOrderId: idInfo.mongoId || null,
+                                    encodedPolyline:  active.encodedPolyline,
+                                    distanceMeters:   active.distanceMeters,
+                                    durationSeconds:  active.durationSeconds,
+                                    reason:           options.reason || 'start_trip_cache_hit',
+                                    routeVersion:     active.routeVersion,
+                                    version:          active.routeVersion,
+                                    origin:           cachedTripData.origin,
+                                    destination:      cachedTripData.destination,
+                                    routeChanged:     true,
+                                    trafficChanged:   false,
+                                    etaChanged:       true,
+                                    distanceChanged:  true,
+                                    fromCache:        true,
+                                };
+
+                                for (const tid of allTripIds) {
+                                    io.to(`trip:${tid}`).emit('routeUpdated', socketPayload);
+                                    io.to(`order:${tid}`).emit('routeUpdated', socketPayload);
+                                    io.to(`trip:${tid}`).emit('trip.route.updated', socketPayload);
+                                    io.to(`order:${tid}`).emit('trip.route.updated', socketPayload);
+                                    if (io.of) {
+                                        io.of('/ride').to(`trip:${tid}`).emit('routeUpdated', socketPayload);
+                                        io.of('/tracking').to(`trip:${tid}`).emit('routeUpdated', socketPayload);
+                                        io.of('/tracking').to(`order:${tid}`).emit('routeUpdated', socketPayload);
+                                        io.of('/tracking').to(`trip:${tid}`).emit('trip.route.updated', socketPayload);
+                                        io.of('/tracking').to(`order:${tid}`).emit('trip.route.updated', socketPayload);
+                                    }
+                                }
+                            } catch (broadcastErr) {
+                                logger.error(`[Trip] Broadcast error in cache hit: ${broadcastErr.message}`);
+                            }
+                        }
+
+                        return cachedTripData;
                     }
 
                     logger.info(`[Trip] Route drifted (originDrift=${originDrift.toFixed(1)}m, destDrift=${destDrift.toFixed(1)}m) for tripId=${primaryTripId} — recalculating route`);
@@ -254,10 +299,14 @@ async function startTrip(tripId, driverId, origin, destination, options = {}) {
                 for (const tid of allTripIds) {
                     io.to(`trip:${tid}`).emit('routeUpdated', socketPayload);
                     io.to(`order:${tid}`).emit('routeUpdated', socketPayload);
+                    io.to(`trip:${tid}`).emit('trip.route.updated', socketPayload);
+                    io.to(`order:${tid}`).emit('trip.route.updated', socketPayload);
                     if (io.of) {
                         io.of('/ride').to(`trip:${tid}`).emit('routeUpdated', socketPayload);
                         io.of('/tracking').to(`trip:${tid}`).emit('routeUpdated', socketPayload);
                         io.of('/tracking').to(`order:${tid}`).emit('routeUpdated', socketPayload);
+                        io.of('/tracking').to(`trip:${tid}`).emit('trip.route.updated', socketPayload);
+                        io.of('/tracking').to(`order:${tid}`).emit('trip.route.updated', socketPayload);
                     }
                 }
             } catch (broadcastErr) {
@@ -446,10 +495,14 @@ async function processLocationUpdate(tripId, driverId, location, heading, io, op
                 for (const tid of allTripIds) {
                     io.to(`trip:${tid}`).emit('routeUpdated', socketPayload);
                     io.to(`order:${tid}`).emit('routeUpdated', socketPayload);
+                    io.to(`trip:${tid}`).emit('trip.route.updated', socketPayload);
+                    io.to(`order:${tid}`).emit('trip.route.updated', socketPayload);
                     if (io.of) {
                         io.of('/ride').to(`trip:${tid}`).emit('routeUpdated', socketPayload);
                         io.of('/tracking').to(`trip:${tid}`).emit('routeUpdated', socketPayload);
                         io.of('/tracking').to(`order:${tid}`).emit('routeUpdated', socketPayload);
+                        io.of('/tracking').to(`trip:${tid}`).emit('trip.route.updated', socketPayload);
+                        io.of('/tracking').to(`order:${tid}`).emit('trip.route.updated', socketPayload);
                     }
                 }
             } catch (broadcastErr) {
