@@ -77,7 +77,7 @@ async function startTrip(tripId, driverId, origin, destination, options = {}) {
                 cached = await redisGet(`active_route:${tid}`);
                 if (cached) break;
             }
-            if (cached) {
+            if (cached && !options.forceRefresh && !options.forceReroute) {
                 const data = typeof cached === 'string' ? JSON.parse(cached) : cached;
                 const cachedDest = data.destination || {};
                 if (cachedDest.lat != null && destination.lat != null) {
@@ -85,7 +85,7 @@ async function startTrip(tripId, driverId, origin, destination, options = {}) {
                         { lat: destination.lat, lng: destination.lng },
                         { lat: cachedDest.lat, lng: cachedDest.lng }
                     );
-                    if (dDiff < 80) {
+                    if (dDiff < 10) {
                         metrics.increment('duplicate_requests_prevented');
                         return { ...data, tripId: primaryTripId, driverId, fromCache: true };
                     }
@@ -104,9 +104,7 @@ async function startTrip(tripId, driverId, origin, destination, options = {}) {
         }
 
         if (options.forceRefresh || options.forceReroute) {
-            for (const tid of allTripIds) {
-                redisDel(`active_route:${tid}`).catch(() => {});
-            }
+            await Promise.all(allTripIds.map(tid => redisDel(`active_route:${tid}`)));
         } else if (activeRaw) {
             const active = typeof activeRaw === 'string' ? JSON.parse(activeRaw) : activeRaw;
 
@@ -160,7 +158,8 @@ async function startTrip(tripId, driverId, origin, destination, options = {}) {
         // ── Step 3: Memory → Redis → Google (3 Layers) ──────────────────────────
         const params   = buildRouteParams(origin, destination, options);
         const cacheKey = buildRouteCacheKey(params);
-        const routeData = await getRouteFromAllLayers(cacheKey, () => callGoogleRoutesAPI(params));
+        const mustForce = options.forceRefresh || options.forceReroute;
+        const routeData = await getRouteFromAllLayers(cacheKey, () => callGoogleRoutesAPI(params), mustForce);
 
         // ── Step 4: Save Active Route Cache ─────────────────────────────────────
         let existingTrip = null;

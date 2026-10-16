@@ -10,6 +10,29 @@ const { DeliveryOrderTracker } = require('../services/DeliveryOrderTracker');
 
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const cloudinary = require('../config/cloudinary');
+const { redisDel, getRedisClient } = require('../config/redis');
+const { resolveOrderIds } = require('../utils/orderIdResolver');
+const logger = require('../utils/logger');
+
+async function purgeOrderTripCaches(orderId) {
+    if (!orderId) return;
+    try {
+        const idInfo = await resolveOrderIds(orderId);
+        const allIds = idInfo.allIds.length > 0 ? idInfo.allIds : [String(orderId).trim()];
+        const redis = getRedisClient();
+        await Promise.all(allIds.map(async (id) => {
+            await redisDel(`active_route:${id}`);
+            if (redis) {
+                const keys = await redis.keys(`trip:start:${id}:*`);
+                if (keys && keys.length > 0) {
+                    await Promise.all(keys.map(k => redisDel(k)));
+                }
+            }
+        }));
+    } catch (e) {
+        logger.warn(`[TaskController] purgeOrderTripCaches error: ${e.message}`);
+    }
+}
 
 // ─── Multer — حفظ الصور في Cloudinary (mashawerr/order-photos/) ────────────────────────────
 const storage = new CloudinaryStorage({
@@ -213,6 +236,9 @@ const markTaskPickedUp = asyncHandler(async (req, res) => {
     const trackData = await DeliveryOrderTracker.getOrderTrack(order).catch(() => null);
     const effectiveOrderId = order.orderId ?? rawOrderId;
     const isPassenger = isPassengerOrder(order);
+
+    // 🧹 Purge Redis active route and trip start locks for fresh navigation to next stop
+    await purgeOrderTripCaches(effectiveOrderId);
 
     // 🎯 Broadcast to ALL order & user rooms
     const pickedUpPayload = {
@@ -503,6 +529,9 @@ const deliverTask = [
         const trackData = await DeliveryOrderTracker.getOrderTrack(order).catch(() => null);
         const effectiveOrderId = order.orderId ?? rawOrderId;
         const isPassenger = isPassengerOrder(order);
+
+        // 🧹 Purge Redis active route and trip start locks for fresh navigation to next stop
+        await purgeOrderTripCaches(effectiveOrderId);
 
         // إشعار: تم التسليم للتاسك
         broadcastToOrderRooms(req, order, rawOrderId, 'task:delivered', {

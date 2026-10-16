@@ -62,9 +62,9 @@ function buildRouteCacheKey(params) {
     // Origin uses high precision (9 ≈ 2.4m) so every distinct driver position
     // gets its own cache entry — prevents stale routes from nearby cells being
     // returned when driver has moved even a few metres.
-    // Destination uses lower precision (7 ≈ 150m) since small dest variations
-    // map to the same road point and don't need per-metre accuracy.
-    const destPrecision   = parseInt(process.env.ROUTE_CACHE_GEOHASH_PRECISION || '7', 10);
+    // Destination uses high precision (9 ≈ 4.8m) so consecutive delivery stops
+    // on the same street or neighboring buildings never collide into the same cache key.
+    const destPrecision   = parseInt(process.env.ROUTE_CACHE_GEOHASH_PRECISION || '9', 10);
     const originPrecision = parseInt(process.env.ROUTE_CACHE_ORIGIN_GEOHASH_PRECISION || '9', 10);
 
     const {

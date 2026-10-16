@@ -59,23 +59,26 @@ const logger = require('../utils/logger');
  * Resolve route from 3 layers: Memory LRU → Redis → Google Routes API.
  * @param {string} cacheKey
  * @param {Function} fetchFn - Function to call Google Routes API on cache miss
+ * @param {boolean} [forceRefresh=false] - Bypass memory and Redis geometry caches if true
  * @returns {Promise<object>} Route data with fromCache & cacheLayer metadata
  */
-async function getRouteFromAllLayers(cacheKey, fetchFn) {
-    // Layer 1: Memory LRU Cache (Node.js in-process, <1ms)
-    const memHit = memoryRouteCache.get(cacheKey);
-    if (memHit) {
-        metrics.increment('memory_cache_hit');
-        return { ...memHit, fromCache: true, cacheLayer: 'memory' };
-    }
+async function getRouteFromAllLayers(cacheKey, fetchFn, forceRefresh = false) {
+    if (!forceRefresh) {
+        // Layer 1: Memory LRU Cache (Node.js in-process, <1ms)
+        const memHit = memoryRouteCache.get(cacheKey);
+        if (memHit) {
+            metrics.increment('memory_cache_hit');
+            return { ...memHit, fromCache: true, cacheLayer: 'memory' };
+        }
 
-    // Layer 2: Redis Geometry Cache
-    const redisHit = await redisGet(cacheKey);
-    if (redisHit) {
-        const data = typeof redisHit === 'string' ? JSON.parse(redisHit) : redisHit;
-        memoryRouteCache.set(cacheKey, data); // Warm memory cache
-        metrics.increment('redis_cache_hit');
-        return { ...data, fromCache: true, cacheLayer: 'redis' };
+        // Layer 2: Redis Geometry Cache
+        const redisHit = await redisGet(cacheKey);
+        if (redisHit) {
+            const data = typeof redisHit === 'string' ? JSON.parse(redisHit) : redisHit;
+            memoryRouteCache.set(cacheKey, data); // Warm memory cache
+            metrics.increment('redis_cache_hit');
+            return { ...data, fromCache: true, cacheLayer: 'redis' };
+        }
     }
 
     // Layer 3: Google Routes API (Wrapped with Circuit Breaker)
