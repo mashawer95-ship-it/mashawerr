@@ -103,53 +103,57 @@ async function startTrip(tripId, driverId, origin, destination, options = {}) {
             if (activeRaw) break;
         }
 
-        if (activeRaw && !options.forceRefresh && !options.forceReroute) {
+        if (options.forceRefresh || options.forceReroute) {
+            for (const tid of allTripIds) {
+                redisDel(`active_route:${tid}`).catch(() => {});
+            }
+        } else if (activeRaw) {
             const active = typeof activeRaw === 'string' ? JSON.parse(activeRaw) : activeRaw;
 
             const activeDest = active.destination || {};
             const hasValidActiveDest = activeDest.lat != null && activeDest.lng != null;
             const hasValidLastOrigin = active.lastOriginLat != null && active.lastOriginLng != null;
 
-            if (hasValidActiveDest && hasValidLastOrigin) {
-                const originDrift = haversineDistance(
-                    { lat: origin.lat, lng: origin.lng },
-                    { lat: active.lastOriginLat, lng: active.lastOriginLng }
-                );
-
+            if (hasValidActiveDest) {
                 const destDrift = haversineDistance(
                     { lat: destination.lat, lng: destination.lng },
                     { lat: activeDest.lat, lng: activeDest.lng }
                 );
 
-                const ORIGIN_CACHE_MAX_M = parseInt(process.env.ORIGIN_DRIFT_CACHE_MAX_M || '25', 10);
-
-                if (originDrift < ORIGIN_CACHE_MAX_M && destDrift < 15) {
-                    logger.info(`[Trip] Active Route Cache HIT for tripId=${primaryTripId} (originDrift=${originDrift.toFixed(1)}m, destDrift=${destDrift.toFixed(1)}m)`);
-                    metrics.increment('active_route_cache_hit');
-                    return {
-                        tripId: primaryTripId,
-                        driverId,
-                        encodedPolyline: active.encodedPolyline,
-                        distanceMeters:  active.distanceMeters,
-                        durationSeconds: active.durationSeconds,
-                        routeToken:      active.routeToken,
-                        legs:            active.legs,
-                        routeVersion:    active.routeVersion,
-                        origin:          active.origin || { lat: active.lastOriginLat, lng: active.lastOriginLng },
-                        destination:     active.destination || destination,
-                        fromCache:       true,
-                    };
-                }
-
-                // If destination changed significantly, purge old active route immediately so pollers don't get stale destination
                 if (destDrift >= 20) {
                     for (const tid of allTripIds) {
                         redisDel(`active_route:${tid}`).catch(() => {});
                     }
-                }
+                    logger.info(`[Trip] Destination changed (${destDrift.toFixed(1)}m >= 20m) for tripId=${primaryTripId} — purged stale active_route`);
+                } else if (hasValidLastOrigin) {
+                    const originDrift = haversineDistance(
+                        { lat: origin.lat, lng: origin.lng },
+                        { lat: active.lastOriginLat, lng: active.lastOriginLng }
+                    );
 
-                logger.info(`[Trip] Route drifted (originDrift=${originDrift.toFixed(1)}m, destDrift=${destDrift.toFixed(1)}m) for tripId=${primaryTripId} — recalculating route`);
-                metrics.increment('origin_drift_reroute');
+                    const ORIGIN_CACHE_MAX_M = parseInt(process.env.ORIGIN_DRIFT_CACHE_MAX_M || '25', 10);
+
+                    if (originDrift < ORIGIN_CACHE_MAX_M && destDrift < 15) {
+                        logger.info(`[Trip] Active Route Cache HIT for tripId=${primaryTripId} (originDrift=${originDrift.toFixed(1)}m, destDrift=${destDrift.toFixed(1)}m)`);
+                        metrics.increment('active_route_cache_hit');
+                        return {
+                            tripId: primaryTripId,
+                            driverId,
+                            encodedPolyline: active.encodedPolyline,
+                            distanceMeters:  active.distanceMeters,
+                            durationSeconds: active.durationSeconds,
+                            routeToken:      active.routeToken,
+                            legs:            active.legs,
+                            routeVersion:    active.routeVersion,
+                            origin:          active.origin || { lat: active.lastOriginLat, lng: active.lastOriginLng },
+                            destination:     active.destination || destination,
+                            fromCache:       true,
+                        };
+                    }
+
+                    logger.info(`[Trip] Route drifted (originDrift=${originDrift.toFixed(1)}m, destDrift=${destDrift.toFixed(1)}m) for tripId=${primaryTripId} — recalculating route`);
+                    metrics.increment('origin_drift_reroute');
+                }
             }
         }
 
