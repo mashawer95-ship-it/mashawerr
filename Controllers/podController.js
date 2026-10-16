@@ -604,23 +604,28 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
         if (hasLocations) {
             const dropoffStops = parentOrder.allLocationsInOrder.filter(l => l.isFrom === false || l.isFrom === 'false');
             const allDropoffsDone = dropoffStops.length > 0 && dropoffStops.every(l => l.isCompleted === true);
-            const hasTasks = Array.isArray(parentOrder.tasks) && parentOrder.tasks.length > 0;
-            const allTasksDone = hasTasks ? parentOrder.tasks.every(t => t.taskStatus === 'completed') : true;
+            const isLastLocationStop = completedStopIndex != null && parseInt(completedStopIndex, 10) >= (parentOrder.allLocationsInOrder.length - 1);
 
-            // In multi-destination routes, ALL dropoff stops MUST be completed!
-            if (dropoffStops.length > 0) {
-                allDone = allDropoffsDone && (hasTasks ? allTasksDone : true);
-            } else if (hasTasks) {
-                allDone = allTasksDone;
-            } else {
+            // In multi-destination routes, if all dropoffs are done OR this is the final stop in route:
+            if (allDropoffsDone || isLastLocationStop) {
                 allDone = true;
-            }
-
-            if (allDone) {
                 for (const loc of parentOrder.allLocationsInOrder) {
                     loc.isCompleted = true;
                 }
                 parentOrder.markModified('allLocationsInOrder');
+                if (Array.isArray(parentOrder.tasks)) {
+                    const now = new Date();
+                    for (const t of parentOrder.tasks) {
+                        t.taskStatus = 'completed';
+                        t.deliveredAt = t.deliveredAt || now;
+                        t.completedAt = t.completedAt || now;
+                    }
+                    parentOrder.markModified('tasks');
+                }
+            } else {
+                const hasTasks = Array.isArray(parentOrder.tasks) && parentOrder.tasks.length > 0;
+                const allTasksDone = hasTasks ? parentOrder.tasks.every(t => t.taskStatus === 'completed') : true;
+                allDone = allDropoffsDone && allTasksDone;
             }
         } else if (Array.isArray(parentOrder.tasks) && parentOrder.tasks.length > 0) {
             allDone = parentOrder.tasks.every(t => t.taskStatus === 'completed');
@@ -669,20 +674,49 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
     const trackData = await DeliveryOrderTracker.getOrderTrack(parentOrder || orderId).catch(() => null);
 
     if (trackData) {
-        allDone = trackData.isAllCompleted;
+        allDone = Boolean(allDone || trackData.isAllCompleted);
     }
 
     const extraRooms = [`order:${orderId}`, session ? `order:${session.orderId}` : null].filter(Boolean);
 
     if (allDone) {
+        if (trackData) {
+            trackData.isAllCompleted = true;
+            trackData.phase = 'COMPLETED';
+            trackData.currentStop = null;
+            trackData.currentStopIndex = trackData.totalStops > 0 ? trackData.totalStops - 1 : 0;
+        }
+
         if (session) {
             session.state = 'COMPLETED';
             session.subState = 'NONE';
+            session.phase = 'COMPLETED';
             session.version = (session.version || 0) + 1;
             await safeSave(session, 'session [completed]');
         }
 
         if (parentOrder) {
+            if (parentOrder.status !== 'delivered' && parentOrder.status !== 'returned' && parentOrder.status !== 'completed') {
+                const now = new Date();
+                const isReturn = parentOrder.isReturnOrder === true || (typeof parentOrder.status === 'string' && parentOrder.status.startsWith('return_'));
+                parentOrder.status = isReturn ? 'returned' : 'delivered';
+                if (isReturn) parentOrder.returnedAt = parentOrder.returnedAt || now;
+                else {
+                    parentOrder.deliveredAt = parentOrder.deliveredAt || now;
+                    parentOrder.completedAt = parentOrder.completedAt || now;
+                }
+                await safeSave(parentOrder, 'parentOrder [ensure-delivered]');
+                await Order.updateOne({ _id: parentOrder._id }, {
+                    $set: {
+                        status: parentOrder.status,
+                        deliveredAt: parentOrder.deliveredAt,
+                        completedAt: parentOrder.completedAt,
+                        allLocationsInOrder: parentOrder.allLocationsInOrder,
+                        tasks: parentOrder.tasks
+                    }
+                }).catch(() => {});
+            }
+
             if (!parentOrder.deliveryPhoto || !parentOrder.itemPhotoAfter) {
                 try {
                     const deliveryAttempt = await DeliveryAttempt.findOne({ sessionId: session?.sessionId, phase: 'DELIVERY' }).sort({ createdAt: -1 });
@@ -722,12 +756,14 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
             isApproved: true,
             isPickup: false,
             isCompleted: true,
+            allTasksCompleted: true,
+            status: 'completed',
             completedStopIndex: completedStopIndex != null ? Number(completedStopIndex) : undefined,
             phase: 'COMPLETED',
             track: trackData,
-            currentStopIndex: trackData?.currentStopIndex ?? 0,
-            currentStop: trackData?.currentStop,
-            message: 'تم اعتماد صورة التسليم وإكمال الطلب بنجاح'
+            currentStopIndex: trackData?.currentStopIndex ?? (trackData?.totalStops ? trackData.totalStops - 1 : 0),
+            currentStop: null,
+            message: 'تم اعتماد صورة التسليم وإكمال الطلب بنجاح 🎉'
         };
     } else {
         if (session) {
