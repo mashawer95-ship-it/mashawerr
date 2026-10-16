@@ -12,22 +12,29 @@ const metrics = require('../utils/metrics');
  * @param {string} reason - The reason for the update (e.g., 'PendingRecovered', 'OffRoute', 'TrafficRefresh')
  * @param {Object} io - The global Socket.IO instance
  */
-function broadcastRoute(trip, reason, io) {
+function broadcastRoute(trip, reason, io, allTripIds = []) {
     if (!trip || !trip.tripId) return;
 
     const broadcastStartTime = Date.now();
+    const primaryId = String(trip.tripId).trim();
+    const ids = Array.isArray(allTripIds) && allTripIds.length > 0 
+        ? Array.from(new Set(allTripIds.map(id => String(id).trim()).filter(Boolean)))
+        : [primaryId];
+
+    const currentVersion = trip.routeVersion || trip.version || 1;
 
     // Standardized Payload required by Flutter
     const payload = {
-        version: trip.routeVersion || 1,
+        routeVersion: currentVersion,
+        version: currentVersion,
         checksum: trip.routeChecksum || '',
         generatedAt: Date.now(),
         source: trip.routeSource || 'UNKNOWN',
         reason: reason,
         
         // V1 legacy fields
-        tripId: trip.tripId,
-        routeChanged: ['PendingRecovered', 'off_route', 'initial'].includes(reason),
+        tripId: primaryId,
+        routeChanged: ['PendingRecovered', 'off_route', 'off_route_forced', 'off_route_immediate', 'initial', 'start_trip', 'start_trip_cache_hit'].includes(reason),
         trafficChanged: true,
         etaChanged: true,
         distanceChanged: true,
@@ -36,23 +43,29 @@ function broadcastRoute(trip, reason, io) {
         encodedPolyline: trip.encodedPolyline || '',
         distanceMeters: trip.distanceMeters || 0,
         durationSeconds: trip.durationSeconds || 0,
+        origin: trip.origin || null,
+        destination: trip.destination || null,
         trafficSegments: trip.trafficSegments || [],
-        trafficDataVersion: trip.trafficDataVersion || 1,
+        trafficDataVersion: trip.trafficDataVersion || currentVersion,
+        fromCache: trip.fromCache === true,
     };
 
-    // Broadcast to V1 old driver app
-    io.of('/ride').to(`trip:${trip.tripId}`).emit('routeUpdated', payload);
-    
-    // Broadcast to V5 new tracking flutter app
-    io.of('/tracking').to(`trip:${trip.tripId}`).emit('trip.route.updated', payload);
-    
-    // Broadcast to customer fallback order room
-    io.to(`order:${trip.tripId}`).emit('trip.route.updated', payload);
+    // Clean, non-redundant broadcast per ID
+    for (const tid of ids) {
+        if (io.of) {
+            io.of('/ride').to(`trip:${tid}`).emit('routeUpdated', payload);
+            io.of('/tracking').to(`trip:${tid}`).emit('trip.route.updated', payload);
+            io.of('/tracking').to(`order:${tid}`).emit('trip.route.updated', payload);
+        } else {
+            io.to(`trip:${tid}`).emit('routeUpdated', payload);
+            io.to(`order:${tid}`).emit('trip.route.updated', payload);
+        }
+    }
 
     metrics.timing('broadcast_time', Date.now() - broadcastStartTime);
     metrics.increment('socketRouteUpdates');
     
-    console.log(`[BROADCAST_ROUTE] tripId=${trip.tripId} reason=${reason} version=${payload.version}`);
+    console.log(`[BROADCAST_ROUTE] tripId=${primaryId} reason=${reason} version=${payload.version}`);
 }
 
 module.exports = {
