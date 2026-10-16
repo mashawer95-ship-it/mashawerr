@@ -429,7 +429,7 @@ const resolveImageUrl = (url) => {
 
 /**
  * Build HTML Email Template for Delivery Order Completion (RTL Senior Arabic Pure Black Design)
- * Brand Color: #C19418 (Golden Amber) | Pure Black Background (#000000) & Pure White Text (#ffffff)
+ * Brand Color: #99140B | Pure Black Background (#000000) & Pure White Text (#ffffff)
  */
 const getDeliveryOrderCompletionEmailHtml = (order, client = {}) => {
     const appName = process.env.CLINIC_NAME || 'مشاوير | Mashawerr';
@@ -492,10 +492,10 @@ const getDeliveryOrderCompletionEmailHtml = (order, client = {}) => {
             const photoAfter = resolveImageUrl(task.itemPhotoAfter || task.deliveryPhoto || order.deliveryPhoto);
 
             return `
-            <div style="background-color: #000000; border: 1px solid #C19418; border-radius: 12px; padding: 18px; margin-bottom: 16px;">
-                <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px dashed #C19418; padding-bottom: 10px; margin-bottom: 12px;">
-                    <span style="font-weight: 700; color: #C19418; font-size: 15px;">📌 المهمة #${idx + 1}</span>
-                    <span style="background-color: #000000; color: #C19418; font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 20px; border: 1px solid #C19418;">مكتملة</span>
+            <div style="background-color: #000000; border: 1px solid #99140B; border-radius: 12px; padding: 18px; margin-bottom: 16px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px dashed #99140B; padding-bottom: 10px; margin-bottom: 12px;">
+                    <span style="font-weight: 700; color: #99140B; font-size: 15px;">📌 المهمة #${idx + 1}</span>
+                    <span style="background-color: #000000; color: #99140B; font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 20px; border: 1px solid #99140B;">مكتملة</span>
                 </div>
                 
                 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="font-size: 14px; color: #ffffff; line-height: 1.6;">
@@ -509,7 +509,7 @@ const getDeliveryOrderCompletionEmailHtml = (order, client = {}) => {
                             ${pickupAddr}
                             ${pickupMapUrl ? `
                                 <div style="margin-top: 6px;">
-                                    <a href="${pickupMapUrl}" target="_blank" style="display: inline-block; background-color: #C19418; color: #ffffff; text-decoration: none; font-size: 12px; font-weight: 700; padding: 5px 12px; border-radius: 6px; border: 1px solid #ffffff;">🗺️ فتح في خرائط جوجل</a>
+                                    <a href="${pickupMapUrl}" target="_blank" style="display: inline-block; background-color: #99140B; color: #ffffff; text-decoration: none; font-size: 12px; font-weight: 700; padding: 5px 12px; border-radius: 6px; border: 1px solid #ffffff;">🗺️ فتح في خرائط جوجل</a>
                                 </div>
                             ` : ''}
                         </td>
@@ -520,7 +520,7 @@ const getDeliveryOrderCompletionEmailHtml = (order, client = {}) => {
                             ${deliveryAddr}
                             ${deliveryMapUrl ? `
                                 <div style="margin-top: 6px;">
-                                    <a href="${deliveryMapUrl}" target="_blank" style="display: inline-block; background-color: #C19418; color: #ffffff; text-decoration: none; font-size: 12px; font-weight: 700; padding: 5px 12px; border-radius: 6px; border: 1px solid #ffffff;">🗺️ فتح في خرائط جوجل</a>
+                                    <a href="${deliveryMapUrl}" target="_blank" style="display: inline-block; background-color: #99140B; color: #ffffff; text-decoration: none; font-size: 12px; font-weight: 700; padding: 5px 12px; border-radius: 6px; border: 1px solid #ffffff;">🗺️ فتح في خرائط جوجل</a>
                                 </div>
                             ` : ''}
                         </td>
@@ -528,15 +528,15 @@ const getDeliveryOrderCompletionEmailHtml = (order, client = {}) => {
                 </table>
 
                 ${(photoBefore || photoAfter) ? `
-                <div style="margin-top: 14px; padding-top: 12px; border-top: 1px solid #C19418;">
-                    <div style="font-size: 13px; font-weight: 700; color: #C19418; margin-bottom: 8px;">📷 صور إثبات التوصيل:</div>
+                <div style="margin-top: 14px; padding-top: 12px; border-top: 1px solid #99140B;">
+                    <div style="font-size: 13px; font-weight: 700; color: #99140B; margin-bottom: 8px;">📷 صور إثبات التوصيل:</div>
                     <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
                         <tr>
                             ${photoBefore ? `
                             <td align="center" style="width: 50%; padding-left: 6px;">
                                 <div style="font-size: 11px; color: #ffffff; margin-bottom: 4px; font-weight: 600;">صورة الاستلام (قبل)</div>
                                 <a href="${photoBefore}" target="_blank" style="text-decoration: none;">
-                                    <img src="${photoBefore}" alt="صورة الاستلام" style="width: 100%; max-width: 180px; height: 120px; object-fit: cover; border-radius: 8px; border: 1px solid #C19418;" />
+                                    <img src="${photoBefore}" alt="صورة الاستلام" style="width: 100%; max-width: 180px; height: 120px; object-fit: cover; border-radius: 8px; border: 1px solid #99140B;" />
                                 </a>
                             </td>
                             ` : ''}
@@ -544,7 +544,7 @@ const getDeliveryOrderCompletionEmailHtml = (order, client = {}) => {
                             <td align="center" style="width: 50%; padding-right: 6px;">
                                 <div style="font-size: 11px; color: #ffffff; margin-bottom: 4px; font-weight: 600;">صورة التسليم (بعد)</div>
                                 <a href="${photoAfter}" target="_blank" style="text-decoration: none;">
-                                    <img src="${photoAfter}" alt="صورة التسليم" style="width: 100%; max-width: 180px; height: 120px; object-fit: cover; border-radius: 8px; border: 1px solid #C19418;" />
+                                    <img src="${photoAfter}" alt="صورة التسليم" style="width: 100%; max-width: 180px; height: 120px; object-fit: cover; border-radius: 8px; border: 1px solid #99140B;" />
                                 </a>
                             </td>
                             ` : ''}
@@ -558,14 +558,14 @@ const getDeliveryOrderCompletionEmailHtml = (order, client = {}) => {
         const rootBefore = resolveImageUrl(order.pickupPhoto || order.itemPhotoBefore);
         const rootAfter = resolveImageUrl(order.deliveryPhoto || order.itemPhotoAfter);
         tasksHtml = `
-        <div style="background-color: #000000; border: 1px solid #C19418; border-radius: 12px; padding: 18px; margin-bottom: 16px;">
+        <div style="background-color: #000000; border: 1px solid #99140B; border-radius: 12px; padding: 18px; margin-bottom: 16px;">
             <p style="margin: 0 0 10px; font-weight: 600; color: #ffffff;">تفاصيل التوصيل مكتملة بنجاح.</p>
             ${(rootBefore || rootAfter) ? `
-            <div style="font-size: 13px; font-weight: 700; color: #C19418; margin-bottom: 8px;">📷 صور إثبات التوصيل:</div>
+            <div style="font-size: 13px; font-weight: 700; color: #99140B; margin-bottom: 8px;">📷 صور إثبات التوصيل:</div>
             <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
                 <tr>
-                    ${rootBefore ? `<td align="center"><a href="${rootBefore}" target="_blank"><img src="${rootBefore}" style="max-width:180px; height:120px; object-fit:cover; border-radius:8px; border: 1px solid #C19418;" /></a></td>` : ''}
-                    ${rootAfter ? `<td align="center"><a href="${rootAfter}" target="_blank"><img src="${rootAfter}" style="max-width:180px; height:120px; object-fit:cover; border-radius:8px; border: 1px solid #C19418;" /></a></td>` : ''}
+                    ${rootBefore ? `<td align="center"><a href="${rootBefore}" target="_blank"><img src="${rootBefore}" style="max-width:180px; height:120px; object-fit:cover; border-radius:8px; border: 1px solid #99140B;" /></a></td>` : ''}
+                    ${rootAfter ? `<td align="center"><a href="${rootAfter}" target="_blank"><img src="${rootAfter}" style="max-width:180px; height:120px; object-fit:cover; border-radius:8px; border: 1px solid #99140B;" /></a></td>` : ''}
                 </tr>
             </table>
             ` : ''}
@@ -584,21 +584,21 @@ const getDeliveryOrderCompletionEmailHtml = (order, client = {}) => {
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #000000; padding: 30px 10px;">
     <tr>
       <td align="center">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 600px; background-color: #000000; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 30px rgba(193,148,24,0.15); border: 1px solid #C19418;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 600px; background-color: #000000; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 30px rgba(153, 20, 11, 0.15); border: 1px solid #99140B;">
           
-          <!-- Header Banner with Brand Color #C19418 -->
+          <!-- Header Banner with Brand Color #99140B -->
           <tr>
-            <td style="padding: 32px 28px; background-color: #C19418; text-align: center;">
+            <td style="padding: 32px 28px; background-color: #99140B; text-align: center;">
               <h1 style="margin: 0; color: #ffffff; font-size: 26px; font-weight: 800; letter-spacing: -0.5px; text-shadow: 0 2px 4px rgba(0,0,0,0.3);">${appName}</h1>
               <p style="margin: 6px 0 0; color: #ffffff; font-size: 14px; font-weight: 600;">فاتورة وتفاصيل طلب التوصيل المكتمل</p>
             </td>
           </tr>
 
-          <!-- Success Alert Header (Pure Black background, Gold Border, White Text) -->
+          <!-- Success Alert Header (Pure Black background, Red/Brand Border, White Text) -->
           <tr>
             <td style="padding: 24px 28px 12px;">
-              <div style="background-color: #000000; border: 1px solid #C19418; border-radius: 12px; padding: 18px; text-align: center;">
-                <h2 style="margin: 0 0 6px; color: #C19418; font-size: 20px; font-weight: 800;">تم توصيل طلبك بنجاح</h2>
+              <div style="background-color: #000000; border: 1px solid #99140B; border-radius: 12px; padding: 18px; text-align: center;">
+                <h2 style="margin: 0 0 6px; color: #99140B; font-size: 20px; font-weight: 800;">تم توصيل طلبك بنجاح</h2>
                 <p style="margin: 0; color: #ffffff; font-size: 14px; line-height: 1.5;">مرحبًا ${clientName}، شكراً لاستخدامك خدماتنا. إليك جميع تفاصيل الطلب:</p>
               </div>
             </td>
@@ -607,9 +607,9 @@ const getDeliveryOrderCompletionEmailHtml = (order, client = {}) => {
           <!-- Order Summary Header Info -->
           <tr>
             <td style="padding: 12px 28px 20px;">
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #000000; border-radius: 10px; padding: 14px; font-size: 13px; color: #ffffff; border: 1px solid #C19418;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #000000; border-radius: 10px; padding: 14px; font-size: 13px; color: #ffffff; border: 1px solid #99140B;">
                 <tr>
-                  <td style="font-weight: 700; color: #ffffff;">رقم الطلب: <span style="color: #C19418;">#${orderId}</span></td>
+                  <td style="font-weight: 700; color: #ffffff;">رقم الطلب: <span style="color: #99140B;">#${orderId}</span></td>
                   <td align="left" style="color: #ffffff; font-weight: 500;">تاريخ الإتمام: <span style="color: #ffffff;">${dateStr}</span></td>
                 </tr>
               </table>
@@ -619,7 +619,7 @@ const getDeliveryOrderCompletionEmailHtml = (order, client = {}) => {
           <!-- Tasks & Delivery Details -->
           <tr>
             <td style="padding: 0 28px 16px;">
-              <h3 style="margin: 0 0 14px; color: #C19418; font-size: 16px; font-weight: 700; border-bottom: 2px solid #C19418; padding-bottom: 6px; display: inline-block;">🚚 تفاصيل التوصيل والمواقع</h3>
+              <h3 style="margin: 0 0 14px; color: #99140B; font-size: 16px; font-weight: 700; border-bottom: 2px solid #99140B; padding-bottom: 6px; display: inline-block;">🚚 تفاصيل التوصيل والمواقع</h3>
               ${tasksHtml}
             </td>
           </tr>
@@ -627,8 +627,8 @@ const getDeliveryOrderCompletionEmailHtml = (order, client = {}) => {
           <!-- Price & Payment Summary -->
           <tr>
             <td style="padding: 0 28px 28px;">
-              <h3 style="margin: 0 0 14px; color: #C19418; font-size: 16px; font-weight: 700; border-bottom: 2px solid #C19418; padding-bottom: 6px; display: inline-block;">💳 الملخص المالي</h3>
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #000000; border: 1px solid #C19418; border-radius: 12px; padding: 18px; font-size: 14px; color: #ffffff;">
+              <h3 style="margin: 0 0 14px; color: #99140B; font-size: 16px; font-weight: 700; border-bottom: 2px solid #99140B; padding-bottom: 6px; display: inline-block;">💳 الملخص المالي</h3>
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #000000; border: 1px solid #99140B; border-radius: 12px; padding: 18px; font-size: 14px; color: #ffffff;">
                 <tr>
                   <td style="padding: 8px 0; color: #ffffff; font-weight: 700;">سعر التوصيل:</td>
                   <td align="left" style="padding: 8px 0; color: #ffffff; font-weight: 600;">${deliveryFeeStr}</td>
@@ -639,9 +639,9 @@ const getDeliveryOrderCompletionEmailHtml = (order, client = {}) => {
                   <td align="left" style="padding: 8px 0; color: #ffffff; font-weight: 600;">- ${discountStr}</td>
                 </tr>
                 ` : ''}
-                <tr style="border-top: 1px dashed #C19418;">
+                <tr style="border-top: 1px dashed #99140B;">
                   <td style="padding: 14px 0 4px; font-weight: 700; color: #ffffff; font-size: 16px;">الإجمالي المدفوع:</td>
-                  <td align="left" style="padding: 14px 0 4px; font-weight: 800; color: #C19418; font-size: 20px;">${totalFeeStr}</td>
+                  <td align="left" style="padding: 14px 0 4px; font-weight: 800; color: #99140B; font-size: 20px;">${totalFeeStr}</td>
                 </tr>
               </table>
             </td>
@@ -649,7 +649,7 @@ const getDeliveryOrderCompletionEmailHtml = (order, client = {}) => {
 
           <!-- Footer -->
           <tr>
-            <td style="padding: 24px 28px; background-color: #000000; text-align: center; border-top: 1px solid #C19418;">
+            <td style="padding: 24px 28px; background-color: #000000; text-align: center; border-top: 1px solid #99140B;">
               <p style="margin: 0 0 6px; color: #ffffff; font-size: 12px;">إذا كان لديك أي استفسار، يسعدنا تواصلك معنا دائمًا عبر الدعم الفني.</p>
               <p style="margin: 0; color: #ffffff; font-size: 11px;">&copy; ${new Date().getFullYear()} ${appName}. جميع الحقوق محفوظة.</p>
             </td>

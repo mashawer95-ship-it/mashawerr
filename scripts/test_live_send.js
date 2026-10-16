@@ -22,8 +22,8 @@ async function testLiveEmail() {
             to: targetEmail,
             subject: 'Test Email from Mashawerr API - OTP Verification Test',
             html: `
-            <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #C19418; border-radius: 8px;">
-                <h2 style="color: #C19418;">Mashawerr Email Test</h2>
+            <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #99140B; border-radius: 8px;">
+                <h2 style="color: #99140B;">Mashawerr Email Test</h2>
                 <p>If you see this email, your Brevo email integration is <strong>100% operational</strong>!</p>
                 <div style="background: #f4f4f4; padding: 15px; border-radius: 6px; font-size: 24px; font-weight: bold; text-align: center; letter-spacing: 4px; color: #111;">
                     123456

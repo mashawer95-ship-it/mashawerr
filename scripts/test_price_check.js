@@ -19,5 +19,5 @@ const html = getDeliveryOrderCompletionEmailHtml(mockOrder, { firstName: 'مبت
 console.log('Price test check:');
 console.log('Includes 2.50 ج.م:', html.includes('2.50 ج.م'));
 console.log('Includes 2.00 ج.م (Total):', html.includes('2.00 ج.م'));
-console.log('Includes #C19418:', html.includes('#C19418'));
+console.log('Includes #99140B:', html.includes('#99140B'));
 console.log('Includes Emoji 🎉:', html.includes('🎉'));
