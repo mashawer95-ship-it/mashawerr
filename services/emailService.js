@@ -716,6 +716,79 @@ const sendDeliveryOrderCompletionEmail = async (orderIdOrDoc) => {
         return { success: false, reason: 'no_client_email' };
     }
 
+    // ─── STEP 2.5: SAFETY CHECK & DEDUPLICATION (PREVENT DUPLICATE EMAILS) ──
+    // 1. Verify all dropoff stops and tasks are genuinely completed before sending final invoice email
+    const dropoffStops = Array.isArray(order.allLocationsInOrder)
+        ? order.allLocationsInOrder.filter(l => l && (l.isFrom === false || l.isFrom === 'false'))
+        : [];
+    if (dropoffStops.length > 0 && !dropoffStops.every(l => l.isCompleted === true)) {
+        console.warn(`[EmailService] ⚠️ Delivery order completion email skipped: Order #${order.orderId || order._id} still has pending dropoff stop(s).`);
+        return { success: false, reason: 'order_not_fully_completed' };
+    }
+
+    if (Array.isArray(order.tasks) && order.tasks.length > 0 && !order.tasks.every(t => t.taskStatus === 'completed')) {
+        console.warn(`[EmailService] ⚠️ Delivery order completion email skipped: Order #${order.orderId || order._id} still has pending task(s).`);
+        return { success: false, reason: 'order_not_fully_completed' };
+    }
+
+    // 2. Fast in-memory check
+    if (order.completionEmailSent === true) {
+        console.log(`[EmailService] ℹ️ Delivery order completion email already sent for Order #${order.orderId || order._id}. Skipping duplicate.`);
+        return { success: true, reason: 'already_sent' };
+    }
+
+    // 3. Redis distributed single-flight lock
+    const { getRedisClient, isRedisReady } = require('../config/redis');
+    const redis = getRedisClient();
+    const redisKey = `email:completion:order:${order.orderId || order._id}`;
+    if (redis && isRedisReady()) {
+        try {
+            const acquired = await redis.set(redisKey, '1', 'EX', 86400 * 7, 'NX');
+            if (!acquired) {
+                console.log(`[EmailService] ℹ️ Delivery order completion email locked in Redis for Order #${order.orderId || order._id}. Skipping duplicate.`);
+                return { success: true, reason: 'already_sent' };
+            }
+        } catch (_) {}
+    }
+
+    // 4. Atomic MongoDB claim
+    try {
+        const query = {
+            $and: [
+                {
+                    $or: [
+                        ...(order._id ? [{ _id: order._id }] : []),
+                        ...(order.orderId ? [{ orderId: order.orderId }] : [])
+                    ]
+                },
+                {
+                    $or: [
+                        { completionEmailSent: { $exists: false } },
+                        { completionEmailSent: false },
+                        { completionEmailSent: null }
+                    ]
+                }
+            ]
+        };
+        const claimed = await Order.findOneAndUpdate(
+            query,
+            {
+                $set: {
+                    completionEmailSent: true,
+                    completionEmailSentAt: new Date()
+                }
+            },
+            { new: true }
+        );
+
+        if (!claimed && (order._id || order.orderId)) {
+            console.log(`[EmailService] ℹ️ Delivery order completion email already claimed in MongoDB for Order #${order.orderId || order._id}. Skipping duplicate.`);
+            return { success: true, reason: 'already_sent' };
+        }
+    } catch (claimErr) {
+        console.warn('[EmailService] Warning during atomic completionEmailSent claim:', claimErr.message);
+    }
+
     // ─── STEP 3: RESOLVE PICKUP & DELIVERY PROOF PHOTOS (POD & TASKS) ────────
     try {
         const { DeliverySession } = require('../models/DeliverySession');
@@ -809,6 +882,21 @@ const sendDeliveryOrderCompletionEmail = async (orderIdOrDoc) => {
         });
     } catch (err) {
         console.error('[EmailService] ❌ Failed to send delivery order completion email:', err.message);
+        // Rollback atomic claim so a retry is possible
+        try {
+            await Order.updateOne(
+                {
+                    $or: [
+                        ...(order._id ? [{ _id: order._id }] : []),
+                        ...(order.orderId ? [{ orderId: order.orderId }] : [])
+                    ]
+                },
+                { $set: { completionEmailSent: false, completionEmailSentAt: null } }
+            );
+            if (redis && isRedisReady()) {
+                await redis.del(redisKey);
+            }
+        } catch (_) {}
         throw err;
     }
 };

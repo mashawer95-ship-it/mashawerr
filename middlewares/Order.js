@@ -215,6 +215,10 @@ const OrderSchema = new mongoose.Schema(
         
         allLocationsInOrder: { type: [mongoose.Schema.Types.Mixed], default: [] },
         
+        // ─── Email Completion Safeguards ─────────────────────────────────────────
+        completionEmailSent: { type: Boolean, default: false },
+        completionEmailSentAt: { type: Date, default: null },
+        
         // ─── PoD V2 ─────────────────────────────────────────────────────────────
         activeDeliverySessionId: { type: String, default: null },
         isWalletProcessed: { type: Boolean, default: false },

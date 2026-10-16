@@ -571,6 +571,10 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
                 targetStop.isCompleted = true;
                 targetStop.completedAt = new Date();
                 if (photoUrl) targetStop.deliveryPhoto = photoUrl;
+                if (attempt && (attempt.stopIndex === null || attempt.stopIndex === undefined || attempt.stopIndex === 0)) {
+                    attempt.stopIndex = completedStopIndex;
+                    await safeSave(attempt, 'attempt [stopIndex-sync]');
+                }
             }
             parentOrder.markModified('allLocationsInOrder');
         }
@@ -600,8 +604,18 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
         if (hasLocations) {
             const dropoffStops = parentOrder.allLocationsInOrder.filter(l => l.isFrom === false || l.isFrom === 'false');
             const allDropoffsDone = dropoffStops.length > 0 && dropoffStops.every(l => l.isCompleted === true);
-            const allTasksDone = !Array.isArray(parentOrder.tasks) || parentOrder.tasks.length === 0 || parentOrder.tasks.every(t => t.taskStatus === 'completed');
-            allDone = allDropoffsDone || allTasksDone;
+            const hasTasks = Array.isArray(parentOrder.tasks) && parentOrder.tasks.length > 0;
+            const allTasksDone = hasTasks ? parentOrder.tasks.every(t => t.taskStatus === 'completed') : true;
+
+            // In multi-destination routes, ALL dropoff stops MUST be completed!
+            if (dropoffStops.length > 0) {
+                allDone = allDropoffsDone && (hasTasks ? allTasksDone : true);
+            } else if (hasTasks) {
+                allDone = allTasksDone;
+            } else {
+                allDone = true;
+            }
+
             if (allDone) {
                 for (const loc of parentOrder.allLocationsInOrder) {
                     loc.isCompleted = true;
@@ -1160,20 +1174,37 @@ exports.getSessionStatus = async (req, res) => {
             });
         }
 
+        const reqStopIndex = req.query.stopIndex != null ? Number(req.query.stopIndex) : (req.body?.stopIndex != null ? Number(req.body.stopIndex) : null);
+        const reqPhase = req.query.phase ? String(req.query.phase).toUpperCase() : null;
+
         const attempts = await DeliveryAttempt.find({ sessionId: session.sessionId }).sort({ attemptNumber: -1 }).lean();
 
         const currentPhase = session.phase || 'DELIVERY';
 
+        // Select the most relevant attempt:
+        // 1. If a specific stopIndex was requested by client, find that attempt first
+        // 2. Otherwise find the latest attempt matching the requested phase or currentPhase
+        // 3. Fallback to latest attempt overall
+        let targetAttempt = null;
+        if (reqStopIndex != null) {
+            targetAttempt = attempts.find(a => a.stopIndex === reqStopIndex);
+        }
+        if (!targetAttempt && reqPhase) {
+            targetAttempt = attempts.find(a => a.phase === reqPhase);
+        }
+        if (!targetAttempt) {
+            targetAttempt = attempts.find(a => a.phase === currentPhase) || attempts[0] || null;
+        }
+
         const latestAttempt = attempts[0] || null;
-        const latestAttemptForPhase = attempts.find(a => a.phase === currentPhase) || latestAttempt;
-        const latestAttemptState = latestAttemptForPhase?.state || null;
-        const latestAttemptPhase = latestAttemptForPhase?.phase || currentPhase;
+        const latestAttemptState = targetAttempt?.state || latestAttempt?.state || null;
+        const latestAttemptPhase = targetAttempt?.phase || latestAttempt?.phase || currentPhase;
 
         const pickupAttempt = attempts.find(a => a.phase === 'PICKUP');
         const isOrderDone = ['delivered', 'completed', 'returned', 'finished'].includes(order?.status?.toLowerCase()) || session.state === 'COMPLETED';
 
         // Strictly evaluate approval for current active phase attempt: MUST be explicitly APPROVED or order already completed
-        const isApproved = latestAttemptForPhase?.state === 'APPROVED' || (pickupAttempt?.state === 'APPROVED') || isOrderDone;
+        const isApproved = latestAttemptState === 'APPROVED' || (pickupAttempt?.state === 'APPROVED') || isOrderDone;
         const isPickupApproved = isOrderDone || (pickupAttempt?.state === 'APPROVED') || (isApproved && latestAttemptPhase === 'PICKUP');
         const isDeliveryApproved = (session.state === 'COMPLETED' || isOrderDone || (isApproved && latestAttemptPhase === 'DELIVERY')) && latestAttemptState !== 'WAITING_CUSTOMER_REVIEW' && latestAttemptState !== 'AI_VALIDATION';
 
@@ -1189,6 +1220,8 @@ exports.getSessionStatus = async (req, res) => {
         try {
             trackData = await DeliveryOrderTracker.getOrderTrack(orderRef);
         } catch (_) { }
+
+        const activeAttempt = targetAttempt || latestAttempt;
 
         res.json({
             success: true,
@@ -1211,18 +1244,18 @@ exports.getSessionStatus = async (req, res) => {
             orderStatus: order?.status,
             allTasksCompleted: isOrderDone || trackData?.isAllCompleted === true,
             isRejected,
-            rejectionReason: latestAttempt?.rejectionReason || null,
+            rejectionReason: activeAttempt?.rejectionReason || null,
             track: trackData,
             currentStopIndex: trackData?.currentStopIndex ?? 0,
             currentStop: trackData?.currentStop,
-            attempt: latestAttempt ? {
-                attemptId: latestAttempt.attemptId,
-                attemptNumber: latestAttempt.attemptNumber,
-                stopIndex: latestAttempt.stopIndex,
-                phase: latestAttemptPhase,
-                state: isOrderDone && latestAttemptState !== 'APPROVED' ? 'APPROVED' : latestAttemptState,
-                photoUrl: latestAttempt.photo?.cdnUrl || (latestAttempt.photo?.objectKey ? `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME || 'dvhjawii0'}/image/upload/${latestAttempt.photo.objectKey}` : null),
-                uploadedAt: latestAttempt.createdAt,
+            attempt: activeAttempt ? {
+                attemptId: activeAttempt.attemptId,
+                attemptNumber: activeAttempt.attemptNumber,
+                stopIndex: activeAttempt.stopIndex,
+                phase: activeAttempt.phase || latestAttemptPhase,
+                state: isOrderDone && latestAttemptState !== 'APPROVED' ? 'APPROVED' : (activeAttempt.state || latestAttemptState),
+                photoUrl: activeAttempt.photo?.cdnUrl || (activeAttempt.photo?.objectKey ? `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME || 'dvhjawii0'}/image/upload/${activeAttempt.photo.objectKey}` : null),
+                uploadedAt: activeAttempt.createdAt,
             } : null,
             otp: {
                 code: otpCode,

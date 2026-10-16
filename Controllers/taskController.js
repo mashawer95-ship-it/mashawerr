@@ -492,15 +492,17 @@ const deliverTask = [
             ? order.allLocationsInOrder.filter(l => l.isFrom === false || l.isFrom === 'false')
             : [];
         const allDropoffsDone = dropoffStops.length > 0 && dropoffStops.every(l => l.isCompleted === true);
-        const allTasksDone = Array.isArray(order.tasks) && order.tasks.length > 0 && order.tasks.every((t) => t.taskStatus === 'completed');
+        const hasTasks = Array.isArray(order.tasks) && order.tasks.length > 0;
+        const allTasksDone = hasTasks && order.tasks.every((t) => t.taskStatus === 'completed');
         const isFinalStopParam = req.body?.isFinalStop === true || req.body?.isFinalStop === 'true' || req.query?.isFinalStop === 'true';
 
         let allDone = false;
         if (isFinalStopParam) {
             allDone = true;
         } else if (dropoffStops.length > 0) {
-            allDone = allDropoffsDone || allTasksDone;
-        } else if (Array.isArray(order.tasks) && order.tasks.length > 0) {
+            // In multi-destination routes, ALL dropoff stops MUST be completed!
+            allDone = allDropoffsDone && (hasTasks ? allTasksDone : true);
+        } else if (hasTasks) {
             allDone = allTasksDone;
         } else {
             allDone = true;
