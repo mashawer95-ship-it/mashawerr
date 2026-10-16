@@ -47,7 +47,7 @@ const phase = (req.query.phase || req.body?.phase || 'DELIVERY').toUpperCase();
 
         if (!session || session.state === 'COMPLETED' || session.state === 'EXPIRED') {
             const sessionId = crypto.randomUUID();
-            const custId = order.userId || order.clientId || order.user || req.user?.id;
+            const custId = order.clientId || order.userId || order.user;
             session = new DeliverySession({
                 sessionId,
                 orderId: id,
@@ -355,10 +355,9 @@ exports.createAttempt = async (req, res) => {
         } catch (_) { }
 
         if (!session.customerId) {
-            const isStore = req.baseUrl.includes('store') || String(session.orderId).length > 20;
-            const parentOrder = await getParentOrder(session.orderId, isStore);
+            const parentOrder = await getParentOrder(session.orderId);
             if (parentOrder) {
-                const resolvedCustId = parentOrder.userId || parentOrder.clientId || parentOrder.user;
+                const resolvedCustId = parentOrder.clientId || parentOrder.userId || parentOrder.user;
                 if (resolvedCustId) {
                     session.customerId = resolvedCustId.toString();
                     await session.save();
@@ -553,16 +552,17 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
         const hasLocations = Array.isArray(parentOrder.allLocationsInOrder) && parentOrder.allLocationsInOrder.length > 0;
 
         if (hasLocations) {
+            const isPickupStop = (l) => l && (l.isFrom === true || l.isFrom === 'true' || l.type === 'PICKUP' || l.isPickup === true);
             let targetStop = null;
             if (completedStopIndex !== undefined && completedStopIndex !== null) {
                 const idx = parseInt(completedStopIndex, 10);
                 const candidate = parentOrder.allLocationsInOrder[idx];
-                if (candidate && (candidate.isFrom === false || candidate.isFrom === 'false')) {
+                if (candidate && !isPickupStop(candidate)) {
                     targetStop = candidate;
                 }
             }
             if (!targetStop) {
-                targetStop = parentOrder.allLocationsInOrder.find(l => (l.isFrom === false || l.isFrom === 'false') && !l.isCompleted);
+                targetStop = parentOrder.allLocationsInOrder.find(l => !isPickupStop(l) && !l.isCompleted);
                 if (targetStop) {
                     completedStopIndex = parentOrder.allLocationsInOrder.indexOf(targetStop);
                 }
@@ -602,18 +602,26 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
         }
 
         if (hasLocations) {
-            const dropoffStops = parentOrder.allLocationsInOrder.filter(l => l.isFrom === false || l.isFrom === 'false');
+            const isPickupStop = (l) => l && (l.isFrom === true || l.isFrom === 'true' || l.type === 'PICKUP' || l.isPickup === true);
+            const dropoffStops = parentOrder.allLocationsInOrder.filter(l => l && !isPickupStop(l));
+            const pickupStops = parentOrder.allLocationsInOrder.filter(l => isPickupStop(l));
+
             const allDropoffsDone = dropoffStops.length > 0 && dropoffStops.every(l => l.isCompleted === true);
+            const allPickupsDone = pickupStops.length > 0 && pickupStops.every(l => l.isCompleted === true);
             const isLastLocationStop = completedStopIndex != null && parseInt(completedStopIndex, 10) >= (parentOrder.allLocationsInOrder.length - 1);
 
-            // In multi-destination routes, if all dropoffs are done OR this is the final stop in route:
-            if (allDropoffsDone || isLastLocationStop) {
+            const hasTasks = Array.isArray(parentOrder.tasks) && parentOrder.tasks.length > 0;
+            const allTasksDone = hasTasks ? parentOrder.tasks.every(t => t.taskStatus === 'completed') : true;
+
+            // 🔒 STRICT: Multi-stop/Multi-task orders can ONLY complete if ALL stops (pickups & dropoffs)
+            // and tasks are genuinely complete AND we have reached the last stop in the sequence!
+            if (isLastLocationStop && allDropoffsDone && allPickupsDone && allTasksDone) {
                 allDone = true;
                 for (const loc of parentOrder.allLocationsInOrder) {
                     loc.isCompleted = true;
                 }
                 parentOrder.markModified('allLocationsInOrder');
-                if (Array.isArray(parentOrder.tasks)) {
+                if (hasTasks) {
                     const now = new Date();
                     for (const t of parentOrder.tasks) {
                         t.taskStatus = 'completed';
@@ -623,9 +631,7 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
                     parentOrder.markModified('tasks');
                 }
             } else {
-                const hasTasks = Array.isArray(parentOrder.tasks) && parentOrder.tasks.length > 0;
-                const allTasksDone = hasTasks ? parentOrder.tasks.every(t => t.taskStatus === 'completed') : true;
-                allDone = allDropoffsDone && allTasksDone;
+                allDone = false;
             }
         } else if (Array.isArray(parentOrder.tasks) && parentOrder.tasks.length > 0) {
             allDone = parentOrder.tasks.every(t => t.taskStatus === 'completed');

@@ -105,6 +105,40 @@ class DeliveryEventBus {
             ? 'قام المندوب برفع صورة استلام البضاعة. يرجى الدخول لمراجعة الصورة وتأكيد الاستلام.'
             : 'قام المندوب برفع صورة التسليم. يرجى الدخول لمراجعة الصورة وتأكيد التسليم.';
 
+        const roomsSet = new Set();
+        if (session.customerId) roomsSet.add(`user:${session.customerId}`);
+        if (session.orderId) {
+            roomsSet.add(`order:${session.orderId}`);
+            roomsSet.add(`trip:${session.orderId}`);
+        }
+
+        let resolvedCustomerId = session.customerId;
+        try {
+            const { Order } = require('../middlewares/Order');
+            const mongoose = require('mongoose');
+            let orderDoc = null;
+            if (mongoose.isValidObjectId(session.orderId)) {
+                orderDoc = await Order.findById(session.orderId).lean();
+            } else if (!isNaN(Number(session.orderId))) {
+                orderDoc = await Order.findOne({ orderId: Number(session.orderId) }).lean();
+            }
+            if (orderDoc) {
+                if (orderDoc.orderId) {
+                    roomsSet.add(`order:${orderDoc.orderId}`);
+                    roomsSet.add(`trip:${orderDoc.orderId}`);
+                }
+                if (orderDoc._id) {
+                    roomsSet.add(`order:${orderDoc._id.toString()}`);
+                    roomsSet.add(`trip:${orderDoc._id.toString()}`);
+                }
+                const custId = orderDoc.clientId || orderDoc.userId || orderDoc.user;
+                if (custId) {
+                    resolvedCustomerId = custId.toString();
+                    roomsSet.add(`user:${resolvedCustomerId}`);
+                }
+            }
+        } catch (_) {}
+
         return this._dispatch({
             sessionId: session.sessionId,
             traceId,
@@ -119,11 +153,11 @@ class DeliveryEventBus {
             },
             socketConfig: {
                 io,
-                rooms: [`user:${session.customerId}`, `order:${session.orderId}`, `trip:${session.orderId}`],
+                rooms: Array.from(roomsSet),
                 eventNames: eventNames,
             },
             fcmConfig: {
-                targetUserId: session.customerId,
+                targetUserId: resolvedCustomerId,
                 title: title,
                 body: body,
                 notificationData: {
