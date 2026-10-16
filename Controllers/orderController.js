@@ -326,10 +326,19 @@ function formatOrder(req, order, commissionCfg) {
 
         const taskArrived = t.arrivedAt || t.pickedUpAt || (order.arrivedAt || order.arrivalConfirmedAt || null);
         const taskDelivered = t.deliveredAt || t.completedAt || (t.taskStatus === 'completed' || status === 'completed' || status === 'delivered' ? (order.deliveredAt || order.completedAt || null) : null);
+        const isTaskDelivered = Boolean(t.isDelivered || t.isDelevered || t.deliveredAt || t.completedAt || taskDelivered || status === 'completed' || status === 'delivered');
+        const isTaskPickedUp = Boolean(t.isPickedUp || t.pickedUp || t.pickedUpAt || isTaskDelivered || status === 'delivering');
+        const derivedTaskStatus = isTaskDelivered ? 'completed' : (isTaskPickedUp ? 'picked_up' : (taskArrived ? 'arrived' : (t.taskStatus || t.status || 'pending')));
 
         return {
             ...t,
             taskId: t.taskId,
+            taskStatus: derivedTaskStatus,
+            status: derivedTaskStatus,
+            isPickedUp: isTaskPickedUp,
+            pickedUp: isTaskPickedUp,
+            isDelivered: isTaskDelivered,
+            isDelevered: isTaskDelivered,
             itemPhotoBefore: beforeUrl,
             itemPhotoAfter: afterUrl,
             pickupPhoto: beforeUrl,
@@ -343,6 +352,11 @@ function formatOrder(req, order, commissionCfg) {
             delayedAt: t.delayedAt ? (t.delayedAt instanceof Date ? t.delayedAt.toISOString() : String(t.delayedAt)) : (order.delayedAt ? (order.delayedAt instanceof Date ? order.delayedAt.toISOString() : String(order.delayedAt)) : null),
         };
     });
+
+    const anyOrAllTasksPickedUp = tasksWithIds.length > 0 && tasksWithIds.every(t => t.isPickedUp);
+    const orderIsPickedUp = Boolean(order.isPickedUp || anyOrAllTasksPickedUp || order.pickedUpAt || status === 'delivering' || status === 'delivered' || status === 'completed');
+    const orderIsDelivered = Boolean(order.isDelivered || (tasksWithIds.length > 0 && tasksWithIds.every(t => t.isDelivered)) || order.deliveredAt || status === 'delivered' || status === 'completed');
+    const orderPhase = orderIsDelivered ? 'COMPLETED' : (orderIsPickedUp ? 'DELIVERY' : (order.representativeId ? 'PICKUP' : 'WAITING'));
 
     const hasDiscount = order.discountAmount > 0;
     const vName = order.vehicleName || order.vehicleTypeName || null;
@@ -410,10 +424,14 @@ function formatOrder(req, order, commissionCfg) {
         isReturnOrder: Boolean(order.isReturnOrder || order.status === 'returned' || (typeof order.status === 'string' && order.status.startsWith('return_'))),
         pickupPhoto: pickupPhotoUrl,
         deliveryPhoto: deliveryPhotoUrl,
-        pickupPhotoUrl: pickupPhotoUrl,
-        deliveryPhotoUrl: deliveryPhotoUrl,
+        pickupPhotoUrl,
+        deliveryPhotoUrl,
         itemPhotoBefore: pickupPhotoUrl,
         itemPhotoAfter: deliveryPhotoUrl,
+        phase: orderPhase,
+        isPickedUp: orderIsPickedUp,
+        isDelivered: orderIsDelivered,
+        allPickupsDone: orderIsPickedUp,
         tasks: tasksWithIds,
         allLocationsInOrder: order.allLocationsInOrder || [],
         acceptedAt: order.acceptedAt ? (order.acceptedAt instanceof Date ? order.acceptedAt.toISOString() : String(order.acceptedAt)) : null,

@@ -248,25 +248,28 @@ async function processLocationUpdate(socket, nsp, payload) {
         timestamp: newLoc.timestamp
     };
 
-    // Emit to all customers in this trip's rooms
-    const globalIo = nsp.server || socket.server || socket.client?.conn?.server;
+    // Emit to all customers in this trip's rooms cleanly without duplicate emissions
+    const trackingRooms = new Set();
     for (const tid of allTripIds) {
-        nsp.to(tripRoom(tid)).emit('driverLocationUpdated', fullLocationPayload);
-        nsp.to(tripRoom(tid)).emit('trip.driver.location', fullLocationPayload);
-        nsp.to(tripRoom(tid)).emit('updateDriverLocation', fullLocationPayload);
-        nsp.to(`trip:${tid}`).emit('driverLocationUpdated', fullLocationPayload);
-        nsp.to(`order:${tid}`).emit('driverLocationUpdated', fullLocationPayload);
+        trackingRooms.add(tripRoom(tid));
+        trackingRooms.add(`trip:${tid}`);
+        trackingRooms.add(`order:${tid}`);
+    }
+    let nspChain = nsp;
+    for (const room of trackingRooms) {
+        nspChain = nspChain.to(room);
+    }
+    nspChain.emit('driverLocationUpdated', fullLocationPayload);
 
-        if (globalIo) {
-            globalIo.to(`order:${tid}`).emit('driverLocationUpdated', fullLocationPayload);
-            globalIo.to(`order:${tid}`).emit('driver:location:updated', fullLocationPayload);
-            globalIo.to(`order:${tid}`).emit('trip.driver.location', fullLocationPayload);
-            globalIo.to(`trip:${tid}`).emit('driverLocationUpdated', fullLocationPayload);
-            if (globalIo.of) {
-                globalIo.of('/tracking').to(tripRoom(tid)).emit('driverLocationUpdated', fullLocationPayload);
-                globalIo.of('/tracking').to(`order:${tid}`).emit('driverLocationUpdated', fullLocationPayload);
-            }
+    // Root namespace broadcast for general order listeners
+    const globalIo = nsp.server || socket.server || socket.client?.conn?.server;
+    if (globalIo) {
+        let rootChain = globalIo;
+        for (const tid of allTripIds) {
+            rootChain = rootChain.to(`order:${tid}`).to(`trip:${tid}`);
         }
+        rootChain.emit('driverLocationUpdated', fullLocationPayload);
+        rootChain.emit('driver:location:updated', fullLocationPayload);
     }
 
     markBroadcast(driverId);
@@ -486,8 +489,6 @@ async function customerSubscribeToTrip(socket, tripId, driverId) {
             timestamp: lastLoc.timestamp || Date.now(),
         };
         socket.emit('driverLocationUpdated', payload);
-        socket.emit('updateDriverLocation', payload);
-        socket.emit('trip.driver.location', payload);
     }
 
     logger.debug(`[Tracking] Customer ${socket.user?.id} subscribed to trip ${primaryTripId}`);

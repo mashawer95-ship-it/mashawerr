@@ -200,6 +200,8 @@ const markTaskPickedUp = asyncHandler(async (req, res) => {
 
     const now = new Date();
     task.taskStatus = 'picked_up';
+    task.status     = 'picked_up';
+    task.isPickedUp = true;
     task.arrivedAt  = task.arrivedAt || now;
     task.pickedUpAt = now;
     if (!order.arrivalConfirmedAt) order.arrivalConfirmedAt = task.arrivedAt;
@@ -226,8 +228,8 @@ const markTaskPickedUp = asyncHandler(async (req, res) => {
         order.markModified('allLocationsInOrder');
     }
 
-    const allPickupsDone = !Array.isArray(order.tasks) || order.tasks.every(t => t.taskStatus === 'picked_up' || t.taskStatus === 'completed' || t.isPickedUp);
-    if (allPickupsDone && (order.status === 'accepted' || order.status === 'waiting' || order.status === 'assigned')) {
+    const allPickupsDone = !Array.isArray(order.tasks) || order.tasks.every(t => t.taskStatus === 'picked_up' || t.status === 'picked_up' || t.taskStatus === 'completed' || t.isPickedUp);
+    if (allPickupsDone && (order.status === 'accepted' || order.status === 'waiting' || order.status === 'assigned' || order.status === 'processing' || order.status === 'confirmed' || order.status === '1')) {
         order.status = 'delivering';
     }
 

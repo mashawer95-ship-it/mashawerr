@@ -441,6 +441,8 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
                 if (targetTask) {
                     const now = new Date();
                     targetTask.isPickedUp = true;
+                    targetTask.taskStatus = 'picked_up';
+                    targetTask.status     = 'picked_up';
                     targetTask.pickedUpAt = now;
                     targetTask.arrivedAt = targetTask.arrivedAt || now;
                     if (!parentOrder.arrivalConfirmedAt) parentOrder.arrivalConfirmedAt = now;

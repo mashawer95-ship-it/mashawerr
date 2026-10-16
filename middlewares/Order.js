@@ -107,6 +107,10 @@ const TaskSchema = new mongoose.Schema(
         taskId: { type: Number, required: true },
         type: { type: String, enum: [...TASK_TYPES], required: true },
         // حالة التاسك — pending | picked_up | completed
+        taskStatus: { type: String, default: 'pending' },
+        status: { type: String, default: 'pending' },
+        isPickedUp: { type: Boolean, default: false },
+        isDelivered: { type: Boolean, default: false },
         arrivedAt: { type: Date, default: null },    // وقت وصول المندوب لنقطة الاستلام
         pickedUpAt: { type: Date, default: null },   // وقت تأكيد الاستلام
         delayedAt: { type: Date, default: null },    // وقت تسجيل تأخير العميل
