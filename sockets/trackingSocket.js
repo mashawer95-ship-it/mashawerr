@@ -239,10 +239,13 @@ function registerTrackingSocket(io) {
          *
          * Payload: { tripId: string, driverId: string }
          */
-        const handleSubscribeToTrip = async ({ tripId, driverId } = {}) => {
+        const handleSubscribeToTrip = async ({ tripId, driverId, role } = {}) => {
             if (!tripId) {
                 socket.emit('error', { message: 'subscribeToTrip requires tripId' });
                 return;
+            }
+            if (role === 'driver') {
+                return await driverJoinTrip(socket, tripId);
             }
             try {
                 if (!driverId) {
