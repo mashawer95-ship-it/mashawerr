@@ -539,6 +539,21 @@ async function payOrderFromWallet({ checkoutSessionId, userId, requestId }) {
         completedAt:        new Date(),
     }).catch(() => {});
 
+    // ── Step 9.1: Consume discount if applicable ────────────────────────────
+    if (session.discountCode || (session.discountAmountFils && session.discountAmountFils > 0)) {
+        const { consumeDiscountAfterSuccessfulOrder } = require('../../middlewares/Discount');
+        consumeDiscountAfterSuccessfulOrder({
+            clientId:       session.userId,
+            discountCode:   session.discountCode,
+            discountType:   session.discountType,
+            discountAmount: session.discountAmountFils,
+        }).catch((err) => {
+            logger.warn('[WalletPaymentService] Could not consume discount after wallet payment', {
+                requestId, err: err.message,
+            });
+        });
+    }
+
     // ── Step 10: Audit events ───────────────────────────────────────────────
     await _recordPaymentEvent({
         paymentId:         paymentDoc._id,

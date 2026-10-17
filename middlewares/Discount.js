@@ -211,6 +211,149 @@ async function consumeDiscountAfterSuccessfulOrder({ clientId, discountCode, dis
     }
 }
 
+/**
+ * Authoritatively resolve and calculate the applicable discount for an order.
+ * Strictly prevents client price tampering or fake discount amounts.
+ *
+ * @param {object} params
+ * @param {string} params.userId
+ * @param {string|null} [params.discountCode] - Optional promo code
+ * @param {string|null} [params.discountType] - Optional type hint ('user_discount', 'global_discount', 'percentage', 'fixed')
+ * @param {number} params.originalPriceFils - Authoritative server-computed original price in fils
+ * @returns {Promise<{
+ *   applied: boolean,
+ *   error?: string,
+ *   status?: number,
+ *   discountType: 'percentage'|'fixed'|'user_discount'|'global_discount'|null,
+ *   discountCode: string|null,
+ *   discountPercentage: number|null,
+ *   discountAmountFils: number,
+ *   finalDeliveryPriceFils: number,
+ * }>}
+ */
+async function resolveAuthoritativeDiscount({ userId, discountCode, discountType, originalPriceFils }) {
+    const uid = String(userId || '').trim();
+    const cleanCode = discountCode ? String(discountCode).trim().toUpperCase() : null;
+    const cleanType = discountType ? String(discountType).trim().toLowerCase() : null;
+    const origFils = Math.max(0, Number(originalPriceFils) || 0);
+
+    if (origFils <= 0) {
+        return {
+            applied: false,
+            discountType: null,
+            discountCode: null,
+            discountPercentage: null,
+            discountAmountFils: 0,
+            finalDeliveryPriceFils: 0,
+        };
+    }
+
+    // ── 1. If Promo Code is provided ─────────────────────────────────────────
+    if (cleanCode && mongoose.connection.readyState === 1) {
+        const check = await assertUserCanUseDiscountCode(uid, cleanCode);
+        if (!check.ok) {
+            return {
+                applied: false,
+                error: check.message,
+                status: check.status,
+                discountType: null,
+                discountCode: cleanCode,
+                discountPercentage: null,
+                discountAmountFils: 0,
+                finalDeliveryPriceFils: origFils,
+            };
+        }
+
+        const disc = check.discount;
+        let discountAmountFils = 0;
+        let discountPercentage = null;
+
+        if (disc.type === 'percentage') {
+            discountPercentage = Number(disc.value) || 0;
+            discountAmountFils = Math.round((origFils * discountPercentage) / 100);
+        } else {
+            // Fixed discount (stored in KD/EGP units in disc.value)
+            discountAmountFils = Math.min(origFils, Math.round(Number(disc.value) * 1000));
+        }
+
+        // Align to integer piastres (10 fils)
+        discountAmountFils = Math.round(discountAmountFils / 10) * 10;
+        discountAmountFils = Math.min(discountAmountFils, origFils);
+        const finalDeliveryPriceFils = Math.max(0, origFils - discountAmountFils);
+
+        return {
+            applied: discountAmountFils > 0,
+            discountType: disc.type,
+            discountCode: disc.code,
+            discountPercentage,
+            discountAmountFils,
+            finalDeliveryPriceFils,
+        };
+    }
+
+    // ── 2. Automatic or Hinted: Personal vs Global Discount ──────────────────
+    let personalPct = 0;
+    if (uid && mongoose.connection.readyState === 1) {
+        const uDoc = await UserDiscount.findOne({ userId: uid });
+        if (uDoc && uDoc.isActive && isDiscountValid(uDoc)) {
+            personalPct = Number(uDoc.discountPercentage) || 0;
+        }
+    }
+
+    let globalPct = 0;
+    if (mongoose.connection.readyState === 1) {
+        const globalCheck = await assertUserCanUseGlobalDiscount(uid);
+        if (globalCheck.ok && globalCheck.globalDiscount) {
+            globalPct = Number(globalCheck.globalDiscount.discountPercentage) || 0;
+        }
+    }
+
+    let selectedType = null;
+    let selectedPct = 0;
+
+    if (cleanType === 'user_discount' && personalPct > 0) {
+        selectedType = 'user_discount';
+        selectedPct = personalPct;
+    } else if (cleanType === 'global_discount' && globalPct > 0) {
+        selectedType = 'global_discount';
+        selectedPct = globalPct;
+    } else {
+        // Automatic best discount selection
+        if (personalPct > 0 && personalPct >= globalPct) {
+            selectedType = 'user_discount';
+            selectedPct = personalPct;
+        } else if (globalPct > 0) {
+            selectedType = 'global_discount';
+            selectedPct = globalPct;
+        }
+    }
+
+    if (selectedType && selectedPct > 0) {
+        let discountAmountFils = Math.round((origFils * selectedPct) / 100);
+        discountAmountFils = Math.round(discountAmountFils / 10) * 10;
+        discountAmountFils = Math.min(discountAmountFils, origFils);
+        const finalDeliveryPriceFils = Math.max(0, origFils - discountAmountFils);
+
+        return {
+            applied: discountAmountFils > 0,
+            discountType: selectedType,
+            discountCode: null,
+            discountPercentage: selectedPct,
+            discountAmountFils,
+            finalDeliveryPriceFils,
+        };
+    }
+
+    return {
+        applied: false,
+        discountType: null,
+        discountCode: null,
+        discountPercentage: null,
+        discountAmountFils: 0,
+        finalDeliveryPriceFils: origFils,
+    };
+}
+
 // ─── Joi Validators ───────────────────────────────────────────────────────────
 
 function validateCreateDiscountCode(obj) {
@@ -345,4 +488,5 @@ module.exports = {
     GlobalDiscount,
     getOrCreateGlobalDiscount,
     validateUpdateGlobalDiscount,
+    resolveAuthoritativeDiscount,
 };

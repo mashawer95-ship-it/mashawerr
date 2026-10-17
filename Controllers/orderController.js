@@ -17,6 +17,7 @@ const {
     assertUserCanUseDiscountCode,
     assertUserCanUseGlobalDiscount,
     consumeDiscountAfterSuccessfulOrder,
+    resolveAuthoritativeDiscount,
 } = require('../middlewares/Discount');
 
 const { buildUrl } = require('../config/urlBuilder');
@@ -1156,16 +1157,8 @@ const createOrder = asyncHandler(async (req, res) => {
         }
     }
 
-    const amt = Number(value.discountAmount) || 0;
-    const dtype = value.discountType ? String(value.discountType).trim() : '';
-    if (amt > 0 && (dtype === 'percentage' || dtype === 'fixed') && value.discountCode) {
+    if (value.discountCode) {
         const check = await assertUserCanUseDiscountCode(value.clientId, value.discountCode);
-        if (!check.ok) {
-            await releaseLockOnFailure();
-            return res.status(check.status).json({ message: check.message });
-        }
-    } else if (amt > 0 && dtype === 'global_discount') {
-        const check = await assertUserCanUseGlobalDiscount(value.clientId);
         if (!check.ok) {
             await releaseLockOnFailure();
             return res.status(check.status).json({ message: check.message });
@@ -1348,16 +1341,21 @@ const createOrder = asyncHandler(async (req, res) => {
         }
 
         const originalFils = kdToFils(calculatedKd);
-        backendDeliveryPriceFils = originalFils;
+        const discountRes = await resolveAuthoritativeDiscount({
+            userId: value.clientId,
+            discountCode: value.discountCode,
+            discountType: value.discountType,
+            originalPriceFils: originalFils,
+        });
 
-        if (amt > 0) {
-            if ((dtype === 'percentage' || dtype === 'global_discount') && (value.discountPercentage || 0) > 0) {
-                const perc = value.discountPercentage || 0;
-                const discountVal = (backendDeliveryPriceFils * perc) / 100;
-                backendDeliveryPriceFils = Math.max(5000, backendDeliveryPriceFils - discountVal);
-            } else {
-                backendDeliveryPriceFils = Math.max(5000, backendDeliveryPriceFils - amt);
-            }
+        if (value.discountCode && !discountRes.applied && discountRes.error) {
+            await releaseLockOnFailure();
+            return res.status(discountRes.status || 400).json({ message: discountRes.error });
+        }
+
+        backendDeliveryPriceFils = discountRes.finalDeliveryPriceFils;
+        if (backendDeliveryPriceFils < 1000) {
+            backendDeliveryPriceFils = 1000;
         }
 
     } catch (pricingErr) {
@@ -1407,12 +1405,12 @@ const createOrder = asyncHandler(async (req, res) => {
 
     const order = new Order({
         clientId: value.clientId,
-        originalDeliveryPrice: value.originalDeliveryPrice || (amt > 0 ? originalFils : null),
+        originalDeliveryPrice: discountRes.applied ? originalFils : (value.originalDeliveryPrice || null),
         totalDeliveryPrice: backendDeliveryPriceFils,
-        discountAmount: value.discountAmount || 0,
-        discountPercentage: value.discountPercentage ?? null,
-        discountCode: value.discountCode || null,
-        discountType: value.discountType || null,
+        discountAmount: discountRes.discountAmountFils || 0,
+        discountPercentage: discountRes.discountPercentage ?? null,
+        discountCode: discountRes.discountCode || null,
+        discountType: discountRes.discountType || null,
         totalPrice: finalTotalPriceKd,
         totalDistanceKm: distanceMeters / 1000,
         vehicleTypeId: value.vehicleTypeId,
@@ -1487,10 +1485,10 @@ const createOrder = asyncHandler(async (req, res) => {
     }
 
     await consumeDiscountAfterSuccessfulOrder({
-        clientId: value.clientId,
-        discountCode: value.discountCode,
-        discountType: value.discountType,
-        discountAmount: value.discountAmount,
+        clientId: order.clientId,
+        discountCode: order.discountCode,
+        discountType: order.discountType,
+        discountAmount: order.discountAmount,
     });
 
     const commissionCfg = await getCachedRepCommission().catch(() => null);

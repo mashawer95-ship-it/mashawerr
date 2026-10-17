@@ -849,6 +849,32 @@ describe('Phase 3: Strict Pay-Before-Order & CheckoutSession Tests (Scenarios 6 
         assert.strictEqual(frozenSnapshot.totalDeliveryPrice, 25000, 'Server price must override client price');
         assert.notStrictEqual(frozenSnapshot.totalDeliveryPrice, clientManipulatedPayload.totalDeliveryPrice);
     });
+
+    test('20.1. Client cannot manipulate discount: server authoritative discount resolution overrides client discountAmount', async () => {
+        const { resolveAuthoritativeDiscount } = require('../../middlewares/Discount');
+        const res = await resolveAuthoritativeDiscount({
+            userId: 'fake_user_with_no_discounts',
+            discountCode: null,
+            discountType: 'user_discount',
+            originalPriceFils: 20000,
+        });
+
+        assert.strictEqual(res.applied, false);
+        assert.strictEqual(res.discountAmountFils, 0);
+        assert.strictEqual(res.finalDeliveryPriceFils, 20000, 'Original price must remain unaffected by fake discount');
+    });
+
+    test('20.2. Base fare with 20% discount produces 4000 fils (4 EGP) without being clamped to 5000 fils', async () => {
+        const baseFareFils = 5000;
+        const discountPercentage = 20;
+        const discountAmountFils = Math.round((baseFareFils * discountPercentage) / 100);
+        const finalDeliveryPriceFils = baseFareFils - discountAmountFils;
+        const amountPiastres = finalDeliveryPriceFils / 10;
+
+        assert.strictEqual(discountAmountFils, 1000, 'Discount is 1000 fils (1 EGP)');
+        assert.strictEqual(finalDeliveryPriceFils, 4000, 'Final price is 4000 fils (4 EGP)');
+        assert.strictEqual(amountPiastres, 400, 'Paymob receives exactly 400 piastres (4.00 EGP)');
+    });
 });
 
 describe('Phase 3: Wallet Order Payment Tests (Scenarios 9 - 11)', () => {

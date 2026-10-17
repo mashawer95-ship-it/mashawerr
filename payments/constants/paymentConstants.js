@@ -89,8 +89,8 @@ const WALLET_MIN_TOPUP_FILS = parseInt(
     10
 );
 
-/** Minimum order payment amount. Default: 5 EGP (خمسة جنيه مصري) */
-const ORDER_MIN_PAYMENT_EGP = parseFloat(process.env.ORDER_MIN_PAYMENT_EGP || '5');
+/** Minimum order payment amount. Default: 1 EGP (واحد جنيه مصري) */
+const ORDER_MIN_PAYMENT_EGP = parseFloat(process.env.ORDER_MIN_PAYMENT_EGP || '1');
 const ORDER_MIN_PAYMENT_FILS = parseInt(
     process.env.ORDER_MIN_PAYMENT_FILS || String(Math.round(ORDER_MIN_PAYMENT_EGP * 1000)),
     10

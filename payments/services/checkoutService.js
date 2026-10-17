@@ -26,6 +26,7 @@ const { detectGovernorateFromText } = require('../../utils/governorateHelper');
 const {
     assertUserCanUseDiscountCode,
     assertUserCanUseGlobalDiscount,
+    resolveAuthoritativeDiscount,
 } = require('../../middlewares/Discount');
 const walletPaymentService = require('./walletPaymentService');
 const paymobService = require('../providers/paymob/paymob.service');
@@ -118,16 +119,8 @@ async function createCheckoutSession({ userId, orderPayload, requestId }) {
     }
 
     // ── 4. Validate Discounts ────────────────────────────────────────────────
-    const requestedDiscountAmt = Number(value.discountAmount) || 0;
-    const dtype = value.discountType ? String(value.discountType).trim() : '';
-
-    if (requestedDiscountAmt > 0 && (dtype === 'percentage' || dtype === 'fixed') && value.discountCode) {
+    if (value.discountCode) {
         const check = await assertUserCanUseDiscountCode(userIdStr, value.discountCode);
-        if (!check.ok) {
-            throw new ApiError(check.status, check.message, 'DISCOUNT_INVALID');
-        }
-    } else if (requestedDiscountAmt > 0 && dtype === 'global_discount') {
-        const check = await assertUserCanUseGlobalDiscount(userIdStr);
         if (!check.ok) {
             throw new ApiError(check.status, check.message, 'DISCOUNT_INVALID');
         }
@@ -259,23 +252,31 @@ async function createCheckoutSession({ userId, orderPayload, requestId }) {
     if (computedOriginalPriceFils < minFareFils) {
         computedOriginalPriceFils = minFareFils;
     }
-    if (computedOriginalPriceFils < ORDER_MIN_PAYMENT_FILS) {
-        computedOriginalPriceFils = ORDER_MIN_PAYMENT_FILS;
+    // Floor before discount: vehicle base fare cannot be less than 5000 fils (5 EGP)
+    const BASE_MIN_FARE_FILS = Math.max(5000, minFareFils);
+    if (computedOriginalPriceFils < BASE_MIN_FARE_FILS) {
+        computedOriginalPriceFils = BASE_MIN_FARE_FILS;
     }
 
-    // Apply discount
-    let discountAmountFils = 0;
-    if (requestedDiscountAmt > 0) {
-        if (dtype === 'percentage' && value.discountPercentage > 0) {
-            discountAmountFils = Math.round((computedOriginalPriceFils * value.discountPercentage) / 100);
-        } else {
-            discountAmountFils = Math.min(requestedDiscountAmt, computedOriginalPriceFils);
-        }
-        discountAmountFils = Math.round(discountAmountFils / 10) * 10;
+    // ── Authoritative Server Discount Resolution (Single Source of Truth) ──
+    const discountRes = await resolveAuthoritativeDiscount({
+        userId: userIdStr,
+        discountCode: value.discountCode,
+        discountType: value.discountType,
+        originalPriceFils: computedOriginalPriceFils,
+    });
+
+    if (value.discountCode && !discountRes.applied && discountRes.error) {
+        throw new ApiError(discountRes.status || 400, discountRes.error, 'DISCOUNT_INVALID');
     }
 
-    let totalDeliveryPriceFils = Math.max(ORDER_MIN_PAYMENT_FILS, computedOriginalPriceFils - discountAmountFils);
-    // Ensure final amount is always clean integer piastres (multiple of 10 fils)
+    const discountAmountFils = discountRes.discountAmountFils;
+    let totalDeliveryPriceFils = discountRes.finalDeliveryPriceFils;
+
+    // Minimum delivery price after discount is floored at ORDER_MIN_PAYMENT_FILS (1 EGP / 1000 fils)
+    if (totalDeliveryPriceFils < ORDER_MIN_PAYMENT_FILS) {
+        totalDeliveryPriceFils = ORDER_MIN_PAYMENT_FILS;
+    }
     totalDeliveryPriceFils = Math.round(totalDeliveryPriceFils / 10) * 10;
 
     if (!isValidFils(totalDeliveryPriceFils)) {
@@ -329,7 +330,10 @@ async function createCheckoutSession({ userId, orderPayload, requestId }) {
     }
 
     const purchaseAmountFils = isPurchase ? Math.round(rawPurchaseAmountEgp * 1000) : 0;
-    const totalAmountFils = totalDeliveryPriceFils + purchaseAmountFils;
+    let totalAmountFils = totalDeliveryPriceFils + purchaseAmountFils;
+    if (totalAmountFils < ORDER_MIN_PAYMENT_FILS && totalAmountFils > 0) {
+        totalAmountFils = ORDER_MIN_PAYMENT_FILS;
+    }
 
     // ── 9. Freeze Commercial Snapshot in CheckoutSession ─────────────────────
     const orderSnapshot = {
@@ -337,6 +341,9 @@ async function createCheckoutSession({ userId, orderPayload, requestId }) {
         totalDeliveryPrice: totalDeliveryPriceFils,
         originalDeliveryPrice: computedOriginalPriceFils,
         discountAmount: discountAmountFils,
+        discountCode: discountRes.discountCode || null,
+        discountType: discountRes.discountType || null,
+        discountPercentage: discountRes.discountPercentage || null,
         representativeWillPay: isPurchase ? true : Boolean(value.representativeWillPay),
         representativePaymentAmount: isPurchase ? rawPurchaseAmountEgp : (Number(value.representativePaymentAmount) || 0),
         totalPrice: Number((totalAmountFils / 1000).toFixed(3)),
@@ -368,9 +375,9 @@ async function createCheckoutSession({ userId, orderPayload, requestId }) {
         totalAmountFils,
         originalDeliveryPriceFils: computedOriginalPriceFils,
         discountAmountFils,
-        discountCode:             value.discountCode || null,
-        discountType:             value.discountType || null,
-        discountPercentage:       value.discountPercentage || null,
+        discountCode:             discountRes.discountCode || null,
+        discountType:             discountRes.discountType || null,
+        discountPercentage:       discountRes.discountPercentage || null,
         orderSnapshot,
         vehicleTypeId:            value.vehicleTypeId ? String(value.vehicleTypeId) : null,
         orderCategory:            value.orderCategory || (value.orderType === 'passenger' ? 'passenger' : (value.orderType === 'purchase' ? 'purchase' : 'delivery')),
