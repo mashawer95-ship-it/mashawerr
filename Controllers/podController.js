@@ -1244,13 +1244,12 @@ exports.getSessionStatus = async (req, res) => {
         const latestAttemptState = targetAttempt?.state || latestAttempt?.state || null;
         const latestAttemptPhase = targetAttempt?.phase || latestAttempt?.phase || currentPhase;
 
-        const pickupAttempt = attempts.find(a => a.phase === 'PICKUP');
         const isOrderDone = ['delivered', 'completed', 'returned', 'finished'].includes(order?.status?.toLowerCase()) || session.state === 'COMPLETED';
 
         // Strictly evaluate approval for current active phase attempt: MUST be explicitly APPROVED or order already completed
-        const isApproved = latestAttemptState === 'APPROVED' || (pickupAttempt?.state === 'APPROVED') || isOrderDone;
-        const isPickupApproved = isOrderDone || (pickupAttempt?.state === 'APPROVED') || (isApproved && latestAttemptPhase === 'PICKUP');
-        const isDeliveryApproved = (session.state === 'COMPLETED' || isOrderDone || (isApproved && latestAttemptPhase === 'DELIVERY')) && latestAttemptState !== 'WAITING_CUSTOMER_REVIEW' && latestAttemptState !== 'AI_VALIDATION';
+        const isApproved = isOrderDone || (latestAttemptState === 'APPROVED');
+        const isPickupApproved = isOrderDone || (latestAttemptPhase === 'PICKUP' && latestAttemptState === 'APPROVED');
+        const isDeliveryApproved = isOrderDone || (session.state === 'COMPLETED') || (latestAttemptPhase === 'DELIVERY' && latestAttemptState === 'APPROVED' && latestAttemptState !== 'WAITING_CUSTOMER_REVIEW' && latestAttemptState !== 'AI_VALIDATION');
 
         const isRejected = !isOrderDone && (latestAttemptState === 'REJECTED' || latestAttemptState === 'AI_REJECTED');
 
@@ -1259,7 +1258,7 @@ exports.getSessionStatus = async (req, res) => {
             otpCode = await getPlainOTP(session.sessionId, session.otpVersion);
         }
 
-        const orderRef = order?._id || order?.orderId || session.orderId || id;
+        const orderRef = order?.orderId || order?._id || session.orderId || id;
         let trackData = null;
         try {
             trackData = await DeliveryOrderTracker.getOrderTrack(orderRef);

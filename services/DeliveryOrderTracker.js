@@ -17,8 +17,10 @@ class DeliveryOrderTracker {
 
         let order = null;
 
-        if (typeof orderId === 'object' && (orderId._id || orderId.orderId != null || Array.isArray(orderId.allLocationsInOrder))) {
-            order = orderId;
+        if (orderId instanceof mongoose.Types.ObjectId) {
+            order = await Order.findById(orderId).lean();
+        } else if (orderId && typeof orderId === 'object' && !(orderId instanceof mongoose.Types.ObjectId) && (orderId.orderId != null || Array.isArray(orderId.allLocationsInOrder) || Array.isArray(orderId.tasks))) {
+            order = typeof orderId.toObject === 'function' ? orderId.toObject() : orderId;
         } else {
             const strId = String(orderId).trim();
             if (mongoose.isValidObjectId(strId)) {
