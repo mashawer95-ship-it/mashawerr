@@ -173,25 +173,59 @@ class DeliveryEventBus {
         });
     }
 
-    static async emitAttemptRejected(io, session, attempt, reason, traceId) {
+    static async emitAttemptRejected(io, session, attempt, reason, traceId, parentOrder = null) {
         const isPickup = (attempt.phase === 'PICKUP' || session.phase === 'PICKUP');
-        const title = isPickup ? 'تم تحفظ العميل على صورة الاستلام ❌' : 'تم تحفظ العميل على صورة التسليم ❌';
+        const title = isPickup ? 'تم تحفظ العميل على صورة الاستلام ❌' : 'تم تحويل الطلب للمراجعة ❌';
         const body = isPickup
             ? `العميل تحفظ على صورة الاستلام (${reason || 'بدون سبب'}). يرجى التواصل أو إعادة الرفع.`
-            : `العميل تحفظ على صورة التسليم (${reason || 'بدون سبب'}). يرجى التواصل أو إعادة الرفع.`;
-        const eventNames = isPickup
-            ? ['pickup_session:attempt_rejected', 'pickup_session:rejected', 'order:pickup_rejected', 'delivery_session:attempt_rejected', 'delivery_session:rejected', 'order:pod_rejected']
-            : ['delivery_session:attempt_rejected', 'delivery_session:rejected', 'order:pod_rejected'];
+            : `قام العميل برفض استلام الطلب وتحويله للمراجعة: (${reason || 'رفض العميل الاستلام'}). سيتم التواصل معك.`;
+
+        const ordId = parentOrder?.orderId != null ? String(parentOrder.orderId) : null;
+        const mongoId = parentOrder?._id != null ? String(parentOrder._id) : (session.orderId ? String(session.orderId) : null);
+
+        const rooms = new Set([
+            `user:${session.driverId}`,
+            session.customerId ? `user:${session.customerId}` : null,
+            mongoId ? `order:${mongoId}` : null,
+            mongoId ? `trip:${mongoId}` : null,
+            session.orderId ? `order:${session.orderId}` : null,
+            session.orderId ? `trip:${session.orderId}` : null,
+            ordId ? `order:${ordId}` : null,
+            ordId ? `trip:${ordId}` : null,
+        ].filter(Boolean));
+
+        const eventNames = [
+            'delivery_session:attempt_rejected',
+            'delivery_session:rejected',
+            'order:pod_rejected',
+            'order:review',
+            'order:status_changed',
+            'order:rejected'
+        ];
+        if (isPickup) {
+            eventNames.push('pickup_session:attempt_rejected', 'pickup_session:rejected', 'order:pickup_rejected');
+        }
 
         return this._dispatch({
             sessionId: session.sessionId,
             traceId,
             actor: 'CUSTOMER',
             action: isPickup ? 'PICKUP_ATTEMPT_REJECTED' : 'ATTEMPT_REJECTED',
-            payload: { attemptId: attempt.attemptId, reason, orderId: session.orderId, phase: isPickup ? 'PICKUP' : 'DELIVERY' },
+            payload: {
+                attemptId: attempt.attemptId,
+                reason: reason || 'رفض العميل الاستلام',
+                reviewReason: reason || 'رفض العميل الاستلام',
+                status: 'review',
+                orderId: mongoId || session.orderId,
+                _id: mongoId,
+                id: mongoId,
+                numericOrderId: ordId,
+                orderNumber: parentOrder?.orderNumber || ordId,
+                phase: isPickup ? 'PICKUP' : 'DELIVERY'
+            },
             socketConfig: {
                 io,
-                rooms: [`user:${session.driverId}`, `order:${session.orderId}`, `trip:${session.orderId}`],
+                rooms: Array.from(rooms),
                 eventNames: eventNames,
             },
             fcmConfig: {
@@ -200,9 +234,12 @@ class DeliveryEventBus {
                 body: body,
                 notificationData: {
                     type: isPickup ? 'PICKUP_REJECTED' : 'POD_REJECTED',
-                    orderId: String(session.orderId),
+                    status: 'review',
+                    orderId: String(mongoId || session.orderId),
+                    numericOrderId: ordId ? String(ordId) : '',
                     sessionId: session.sessionId,
                     phase: isPickup ? 'PICKUP' : 'DELIVERY',
+                    reason: String(reason || 'رفض العميل الاستلام'),
                 },
             },
         });

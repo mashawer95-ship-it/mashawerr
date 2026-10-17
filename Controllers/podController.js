@@ -889,27 +889,37 @@ exports.reviewAttempt = async (req, res) => {
         if (decision === 'NO') {
             if (attempt) {
                 attempt.state = 'REJECTED';
-                attempt.rejectionReason = 'OTHER';
+                attempt.rejectionReason = reason || 'رفض العميل الاستلام';
                 try { await attempt.save(); } catch(e) { logger.error(`[PoD] attempt reject save error [${traceId}]:`, e.message); }
             }
 
             if (session) {
+                session.state = 'REJECTED';
                 session.subState = 'WAITING_DRIVER_UPLOAD';
                 session.version = (session.version || 0) + 1;
                 try { await session.save(); } catch(e) { logger.error(`[PoD] session rejection save error [${traceId}]:`, e.message); }
             }
 
-            // Update order status to 'review'
-            await Order.findOneAndUpdate(
-                { orderId: isNaN(Number(effectiveOrderId)) ? effectiveOrderId : Number(effectiveOrderId) },
-                { $set: { status: 'review', reviewReason: reason || 'رفض العميل الاستلام' } }
-            ).catch(() => {});
+            // Update order status to 'review' supporting both numeric orderId and Mongo ObjectId
+            const mongoose = require('mongoose');
+            const isHex = mongoose.isValidObjectId(effectiveOrderId);
+            const orderQuery = {
+                $or: [
+                    { orderId: isNaN(Number(effectiveOrderId)) ? -1 : Number(effectiveOrderId) },
+                    ...(isHex ? [{ _id: new mongoose.Types.ObjectId(effectiveOrderId) }] : [])
+                ]
+            };
+            const updatedOrder = await Order.findOneAndUpdate(
+                orderQuery,
+                { $set: { status: 'review', reviewReason: reason || 'رفض العميل الاستلام' } },
+                { new: true }
+            ).catch(() => null);
 
             if (session && attempt) {
-                await DeliveryEventBus.emitAttemptRejected(req.app.get('io'), session, attempt, reason, traceId).catch(() => {});
+                await DeliveryEventBus.emitAttemptRejected(req.app.get('io'), session, attempt, reason, traceId, updatedOrder).catch(() => {});
             }
 
-            return res.json({ success: true, message: 'Rejected successfully', phase: isPickup ? 'PICKUP' : 'DELIVERY' });
+            return res.json({ success: true, message: 'Rejected successfully', status: 'review', phase: isPickup ? 'PICKUP' : 'DELIVERY' });
         }
 
         if (decision === 'YES' || !decision) {
