@@ -54,6 +54,20 @@ const VehicleTypeSchema = new mongoose.Schema(
             type: Boolean,
             default: false,
         },
+        // نسبة عمولة المندوب المخصصة لهذه المركبة في توصيل الطلبات (0-100)
+        deliveryCommissionPct: {
+            type: Number,
+            min: 0,
+            max: 100,
+            default: null,
+        },
+        // نسبة عمولة المندوب المخصصة لهذه المركبة في توصيل الأفراد (0-100)
+        passengerCommissionPct: {
+            type: Number,
+            min: 0,
+            max: 100,
+            default: null,
+        },
     },
     { versionKey: false, timestamps: true }
 );
@@ -85,6 +99,8 @@ function validateCreateVehicleType(object) {
         isActive: joi.boolean().empty('').default(true).optional(),
         is_ladies_only: joi.boolean().empty('').default(false).optional(),
         isLadiesOnly: joi.boolean().empty('').default(false).optional(),
+        deliveryCommissionPct: joi.number().min(0).max(100).allow(null).optional(),
+        passengerCommissionPct: joi.number().min(0).max(100).allow(null).optional(),
     });
     return schema.validate(object, { allowUnknown: true });
 }
@@ -104,6 +120,8 @@ function validateUpdateVehicleType(object) {
         isActive: joi.boolean().empty('').optional(),
         is_ladies_only: joi.boolean().empty('').optional(),
         isLadiesOnly: joi.boolean().empty('').optional(),
+        deliveryCommissionPct: joi.number().min(0).max(100).allow(null).optional(),
+        passengerCommissionPct: joi.number().min(0).max(100).allow(null).optional(),
     }).min(1);
     return schema.validate(object, { allowUnknown: true });
 }

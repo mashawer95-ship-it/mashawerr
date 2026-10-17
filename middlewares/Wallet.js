@@ -514,17 +514,8 @@ async function checkCompanyCommissionSufficient({ order, repId, wallet: walletOv
     const deliveryPriceFils = extractDeliveryPriceFils(order);
     if (deliveryPriceFils <= 0) return { allowed: true, companyFeeFils: 0 };
 
-    const { getCachedRepCommission } = require('./RepCommission');
-    const commissionCfg = await getCachedRepCommission().catch(() => null);
-
-    const isPassenger = (order.orderCategory || '').toLowerCase().trim() === 'passenger';
-    let repCommissionPct = 100;
-    if (commissionCfg) {
-        repCommissionPct = isPassenger
-            ? (commissionCfg.passengerRepCommissionPct ?? 100)
-            : (commissionCfg.deliveryRepCommissionPct ?? 100);
-    }
-    repCommissionPct = Math.max(0, Math.min(100, Number(repCommissionPct)));
+    const { resolveOrderRepCommissionPct } = require('./RepCommission');
+    const repCommissionPct = await resolveOrderRepCommissionPct({ order, repId });
 
     const companyPct = 100 - repCommissionPct;
     const companyFeeFils = Math.round((deliveryPriceFils * companyPct) / 100);
@@ -583,17 +574,8 @@ async function deductCompanyCommissionOnAccept({ order, repId, isBusiness = fals
     const deliveryPriceFils = extractDeliveryPriceFils(order);
     if (deliveryPriceFils <= 0) return { allowed: true, companyFeeFils: 0 };
 
-    const { getCachedRepCommission } = require('./RepCommission');
-    const commissionCfg = await getCachedRepCommission().catch(() => null);
-
-    const isPassenger = (order.orderCategory || '').toLowerCase().trim() === 'passenger';
-    let repCommissionPct = 100;
-    if (commissionCfg) {
-        repCommissionPct = isPassenger
-            ? (commissionCfg.passengerRepCommissionPct ?? 100)
-            : (commissionCfg.deliveryRepCommissionPct ?? 100);
-    }
-    repCommissionPct = Math.max(0, Math.min(100, Number(repCommissionPct)));
+    const { resolveOrderRepCommissionPct } = require('./RepCommission');
+    const repCommissionPct = await resolveOrderRepCommissionPct({ order, repId });
 
     const companyPct = 100 - repCommissionPct;
     const companyFeeFils = Math.round((deliveryPriceFils * companyPct) / 100);
@@ -619,7 +601,9 @@ async function deductCompanyCommissionOnAccept({ order, repId, isBusiness = fals
 
     wallet.balanceFils = potentialBalance;
     const orderNum = order.orderId || order._id || '';
-    const transDesc = `خصم نسبة الشركة (${companyPct}%) عند قبول الطلب #${orderNum}`;
+    const vehicleName = order.vehicleTypeName || order.vehicleName || '';
+    const vehicleLabel = vehicleName ? ` (${vehicleName})` : '';
+    const transDesc = `خصم نسبة الشركة (${companyPct}%)${vehicleLabel} عند قبول الطلب #${orderNum}`;
     wallet.transactions.push({
         type: 'company_commission',
         amountFils: companyFeeFils,
@@ -743,18 +727,8 @@ async function processOrderCompletionWallet(order) {
     const isCashOrder = String(order.paymentMethod || 'cash').toLowerCase().trim() === 'cash';
     if (order.representativeId && !isCashOrder) {
         try {
-            const { getCachedRepCommission } = require('./RepCommission');
-            const commissionCfg = await getCachedRepCommission().catch(() => null);
-
-            const isPassenger = (order.orderCategory || '').toLowerCase().trim() === 'passenger';
-            let repCommissionPct = 100;
-            if (commissionCfg) {
-                repCommissionPct = isPassenger
-                    ? (commissionCfg.passengerRepCommissionPct ?? 100)
-                    : (commissionCfg.deliveryRepCommissionPct ?? 100);
-            }
-            repCommissionPct = Math.max(0, Math.min(100, Number(repCommissionPct)));
-
+            const { resolveOrderRepCommissionPct } = require('./RepCommission');
+            const repCommissionPct = await resolveOrderRepCommissionPct({ order, repId: order.representativeId });
             const repEarningsFils = Math.round((deliveryPriceFils * repCommissionPct) / 100);
 
             if (repEarningsFils > 0) {

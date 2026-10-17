@@ -1431,7 +1431,7 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
     }
 
     const { Order } = require('../middlewares/Order');
-    const { getCachedRepCommission, calcRepEarnings } = require('../middlewares/RepCommission');
+    const { getCachedRepCommission, calcRepEarnings, resolveOrderRepCommissionPctSync } = require('../middlewares/RepCommission');
     const commissionCfg = await getCachedRepCommission().catch(() => ({ deliveryRepCommissionPct: 100, passengerRepCommissionPct: 100, businessRepCommissionPct: 100 }));
 
     // Helper to normalize any raw numeric price to fils integer
@@ -1517,10 +1517,7 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
         const discountAmountKD = Number((discountAmountFils / 1000).toFixed(3));
         const totalPriceKD = Number((totalPriceFils / 1000).toFixed(3));
 
-        const isPassenger = (orderDoc.orderCategory || '').toLowerCase().trim() === 'passenger';
-        const commissionPct = isPassenger
-            ? (commissionCfg?.passengerRepCommissionPct ?? 100)
-            : (commissionCfg?.deliveryRepCommissionPct ?? 100);
+        const commissionPct = resolveOrderRepCommissionPctSync({ order: orderDoc, commissionCfg });
 
         const repEarningsKD = calcRepEarnings(deliveryPriceKD, commissionPct);
         const repEarningsFils = Math.round(repEarningsKD * 1000);
@@ -1668,10 +1665,7 @@ const getRepresentativeOrders = asyncHandler(async (req, res) => {
         let tPriceFils = normalizeFils(o.totalPrice);
         if (tPriceFils === 0) tPriceFils = dPriceFils;
 
-        const isPassenger = (o.orderCategory || '').toLowerCase().trim() === 'passenger';
-        const commPct = isPassenger
-            ? (commissionCfg?.passengerRepCommissionPct ?? 100)
-            : (commissionCfg?.deliveryRepCommissionPct ?? 100);
+        const commPct = resolveOrderRepCommissionPctSync({ order: o, commissionCfg });
 
         const dPriceKD = Number((dPriceFils / 1000).toFixed(3));
         const profitKD = calcRepEarnings(dPriceKD, commPct);

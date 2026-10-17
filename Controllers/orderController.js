@@ -37,7 +37,7 @@ const zlib = require('zlib');
 const util = require('util');
 const gzipAsync = util.promisify(zlib.gzip);
 const gunzipAsync = util.promisify(zlib.gunzip);
-const { getCachedRepCommission, calcRepEarnings } = require('../middlewares/RepCommission');
+const { getCachedRepCommission, calcRepEarnings, resolveOrderRepCommissionPctSync } = require('../middlewares/RepCommission');
 const { checkAndRewardTarget } = require('../utils/targetRewardHelper');
 const { sanitizeErrorResponse, isOwnerOrAuthorized } = require('../middlewares/objectAuthorization');
 const { normalizeGovernorate, detectGovernorateFromText, EGYPT_GOVERNORATES } = require('../utils/governorateHelper');
@@ -314,7 +314,7 @@ function sanitizeImageUrl(url) {
     return str;
 }
 
-function formatOrder(req, order, commissionCfg) {
+function formatOrder(req, order, commissionCfg, repUser = null) {
     const status = normalizeOrderStatus(order.status);
     const tasksWithIds = (order.tasks || []).map((task) => {
         const t = typeof task.toObject === 'function' ? task.toObject() : { ...task };
@@ -365,7 +365,7 @@ function formatOrder(req, order, commissionCfg) {
     const isPassengerOrder = (order.orderCategory || '').toLowerCase().trim() === 'passenger';
     const deliveryPct = commissionCfg?.deliveryRepCommissionPct ?? 100;
     const passengerPct = commissionCfg?.passengerRepCommissionPct ?? 100;
-    const activePct = isPassengerOrder ? passengerPct : deliveryPct;
+    const activePct = resolveOrderRepCommissionPctSync({ order, repUser, commissionCfg });
     const repEarnings = calcRepEarnings(deliveryPriceKD, activePct);
 
     const rootPickupRaw = order.pickupPhoto || order.pickupPhotoUrl || order.itemPhotoBefore || (tasksWithIds[0] ? (tasksWithIds[0].itemPhotoBefore || tasksWithIds[0].pickupPhoto) : null);
@@ -2717,7 +2717,7 @@ const listWaitingOrders = asyncHandler(async (req, res) => {
 
     const commissionCfg = await getCachedRepCommission().catch(() => null);
     const formatted = pagedOrders.map((o) => {
-        const item = formatOrder(req, o, commissionCfg);
+        const item = formatOrder(req, o, commissionCfg, repUser);
         if (o.distanceToPickup != null) {
             item.distanceToPickup = Number(o.distanceToPickup.toFixed(2));
             item.distanceFromRepKm = Number(o.distanceToPickup.toFixed(2));
@@ -2823,17 +2823,38 @@ const acceptOrder = asyncHandler(async (req, res) => {
     // and both save successfully — the findOneAndUpdate with status condition
     // ensures only ONE captain can win the atomic transition.
     const repIdToAssign = value.representativeId || req.user?.id;
+
+    // استخراج بيانات مركبة المندوب لربطها بالطلب إذا لم تكن محددة مسبقاً
+    let assignedVehicleTypeId = order.vehicleTypeId || null;
+    let assignedVehicleTypeName = order.vehicleTypeName || order.vehicleName || null;
+    if (!assignedVehicleTypeId && repIdToAssign) {
+        try {
+            const repDoc = await User.findById(repIdToAssign).select('vehicleTypeId vehicleTypeName').lean();
+            if (repDoc?.vehicleTypeId) {
+                assignedVehicleTypeId = repDoc.vehicleTypeId.toString();
+                assignedVehicleTypeName = repDoc.vehicleTypeName || '';
+            }
+        } catch (_) {}
+    }
+
+    const atomicUpdatePayload = {
+        status:             'accepted',
+        representativeId:   repIdToAssign,
+        acceptedAt:         new Date(),
+    };
+    if (!order.vehicleTypeId && assignedVehicleTypeId) {
+        atomicUpdatePayload.vehicleTypeId = assignedVehicleTypeId;
+        atomicUpdatePayload.vehicleTypeName = assignedVehicleTypeName;
+        atomicUpdatePayload.vehicleName = assignedVehicleTypeName;
+    }
+
     const acceptedOrder = await Order.findOneAndUpdate(
         {
             _id: order._id,
             status: 'waiting',   // Only accept if STILL waiting (atomic guard)
         },
         {
-            $set: {
-                status:             'accepted',
-                representativeId:   repIdToAssign,
-                acceptedAt:         new Date(),
-            },
+            $set: atomicUpdatePayload,
         },
         { new: true }
     );
