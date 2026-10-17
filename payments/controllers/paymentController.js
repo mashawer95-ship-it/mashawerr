@@ -407,10 +407,344 @@ async function _handleTransactionCallback({ req, res, receivedHmac, requestId })
     return res.status(200).json({ success: true, message: 'Processed' });
 }
 
+// ─── Helpers: Arabic Translation for Payment & Refund Audit ──────────────────
+
+function _translateOrderStatus(status) {
+    const s = String(status || '').toLowerCase();
+    switch (s) {
+        case 'pending': return 'قيد الانتظار';
+        case 'accepted': return 'تم قبول الطلب';
+        case 'delivering': return 'جاري التوصيل';
+        case 'confirmed': return 'تم التأكيد';
+        case 'processing': return 'قيد التجهيز';
+        case 'completed':
+        case 'delivered': return 'تم التسليم بنجاح';
+        case 'cancelled': return 'ملغي';
+        case 'deleted': return 'محذوف';
+        default: return status || 'غير محدد';
+    }
+}
+
+function _translatePaymentStatus(status) {
+    const s = String(status || '').toUpperCase();
+    switch (s) {
+        case 'PAID': return 'مدفوع بنجاح';
+        case 'REFUNDED': return 'مسترد بالكامل (Refunded)';
+        case 'PARTIALLY_REFUNDED': return 'مسترد جزئياً';
+        case 'REFUND_PENDING': return 'الاسترداد قيد المعالجة البنكية (24-72 ساعة)';
+        case 'PENDING': return 'بانتظار الدفع';
+        case 'FAILED': return 'فشل الدفع';
+        case 'CANCELLED': return 'ملغي';
+        default: return status || 'غير محدد';
+    }
+}
+
+function _translateRefundMethod(method, isVoided) {
+    if (isVoided) return 'إلغاء حجز فوري بالبطاقة (VOID - فك الحجز اللحظي)';
+    const m = String(method || '').toUpperCase();
+    switch (m) {
+        case 'CARD_GATEWAY':
+        case 'ORIGINAL_PAYMENT':
+        case 'CARD': return 'استرداد للبطاقة البنكية الأصلية عبر Paymob';
+        case 'APP_WALLET':
+        case 'WALLET':
+        case 'WALLET_FALLBACK': return 'استرداد لمحفظة التطبيق (App Wallet)';
+        default: return method ? String(method) : 'غير محدد';
+    }
+}
+
+function _translateEventType(type) {
+    const t = String(type || '').toUpperCase();
+    switch (t) {
+        case 'PAYMENT_CHECKOUT_STARTED': return 'بدء عملية الدفع';
+        case 'PAYMENT_INTENTION_CREATED': return 'إنشاء نية الدفع لدى Paymob';
+        case 'PAYMENT_WEBHOOK_RECEIVED': return 'استلام إشعار الدفع من Paymob';
+        case 'ORDER_CREATED_AFTER_PAYMENT': return 'تأكيد إنشاء الطلب بعد الدفع';
+        case 'PAYMENT_REFUND_REQUESTED': return 'بدء طلب الاسترداد المالي';
+        case 'PAYMENT_REFUND_SUCCEEDED': return 'اكتمال الاسترداد المالي بنجاح';
+        case 'WALLET_TOPUP_CREATED': return 'إنشاء طلب شحن محفظة';
+        case 'WALLET_TOPUP_COMPLETED': return 'اكتمال شحن المحفظة';
+        case 'WALLET_CREDIT': return 'إيداع رصيد بالمحفظة';
+        case 'WALLET_DEBIT': return 'خصم رصيد من المحفظة';
+        default: return type ? String(type) : 'حدث دفع';
+    }
+}
+
+// ─── GET /api/payments/admin/audit ───────────────────────────────────────────
+
+/**
+ * Diagnostic Payment & Refund Audit for Admins.
+ * Accepts:
+ *   - Order numeric ID (e.g., 117)
+ *   - Order Mongo ObjectId
+ *   - Paymob Transaction ID (e.g., 551586508)
+ *   - Paymob Order ID (e.g., 629453479)
+ *
+ * Returns authoritative payment, refund, wallet, and events audit details.
+ */
+const auditPaymentByOrder = asyncHandler(async (req, res) => {
+    const rawQuery = String(req.query.query || req.query.orderId || req.query.transactionId || '').trim();
+    if (!rawQuery) {
+        return res.status(400).json({
+            success: false,
+            message: 'برجاء إدخال رقم الطلب أو رقم المعاملة للبحث',
+        });
+    }
+
+    const mongoose = require('mongoose');
+    const { Payment, PaymentEvent } = require('../../middlewares/Payment');
+    const { Order } = require('../../middlewares/Order');
+    const { User } = require('../../middlewares/User');
+    const { Wallet } = require('../../middlewares/Wallet');
+    const { WalletLedger } = require('../../middlewares/WalletLedger');
+
+    const isNumeric = /^\d+$/.test(rawQuery);
+    const numericVal = isNumeric ? parseInt(rawQuery, 10) : null;
+    const isMongoId = mongoose.Types.ObjectId.isValid(rawQuery);
+
+    // 1. Search Order directly
+    let order = null;
+    const orderOr = [];
+    if (numericVal !== null) {
+        orderOr.push({ orderId: numericVal }, { globalOrderId: numericVal });
+    }
+    if (isMongoId) {
+        orderOr.push({ _id: rawQuery });
+    }
+    if (orderOr.length > 0) {
+        order = await Order.findOne({ $or: orderOr }).lean();
+    }
+
+    // 2. Search Payment
+    let payment = null;
+    const paymentOr = [
+        { providerTransactionId: rawQuery },
+        { providerOrderId: rawQuery },
+        { specialReference: rawQuery },
+        { providerIntentionId: rawQuery },
+    ];
+    if (numericVal !== null) {
+        paymentOr.push({ orderNumericId: numericVal });
+    }
+    if (isMongoId) {
+        paymentOr.push({ _id: rawQuery }, { orderId: rawQuery }, { checkoutSessionId: rawQuery });
+    }
+    if (order && order._id) {
+        paymentOr.push({ orderId: order._id }, { orderId: String(order._id) });
+    }
+
+    payment = await Payment.findOne({ $or: paymentOr }).sort({ createdAt: -1 }).lean();
+
+    // 3. If Payment not found by direct fields, search via PaymentEvents (e.g. Paymob internal order_id)
+    if (!payment) {
+        const matchingEvent = await PaymentEvent.findOne({
+            $or: [
+                { providerEventId: rawQuery },
+                { 'payloadSummary.order_id': rawQuery },
+                { 'payloadSummary.id': rawQuery },
+                { 'payloadSummary.transactionId': rawQuery },
+            ],
+            paymentId: { $ne: null },
+        }).lean();
+
+        if (matchingEvent && matchingEvent.paymentId) {
+            payment = await Payment.findById(matchingEvent.paymentId).lean();
+        }
+    }
+
+    // 4. If payment was found first, resolve Order
+    if (!order && payment) {
+        if (payment.orderId) {
+            order = await Order.findById(payment.orderId).lean();
+        }
+        if (!order && payment.orderNumericId) {
+            order = await Order.findOne({ orderId: payment.orderNumericId }).lean();
+        }
+    }
+
+    if (!order && !payment) {
+        return res.status(404).json({
+            success: false,
+            message: `لم يتم العثور على أي سجل طلب أو دفع مطابق للقيمة "${rawQuery}"`,
+        });
+    }
+
+    // 5. Payment Events Timeline
+    let paymentEvents = [];
+    const eventQueryOr = [];
+    if (payment?._id) eventQueryOr.push({ paymentId: payment._id });
+    if (payment?.providerTransactionId) eventQueryOr.push({ providerEventId: payment.providerTransactionId });
+    if (order?._id) eventQueryOr.push({ orderId: order._id });
+
+    if (eventQueryOr.length > 0) {
+        paymentEvents = await PaymentEvent.find({ $or: eventQueryOr }).sort({ createdAt: 1 }).lean();
+    }
+
+    // 6. Fetch Client & Representative Details
+    const clientId = order?.clientId || payment?.userId;
+    const repId = order?.representativeId;
+
+    let clientUser = null;
+    let repUser = null;
+    if (clientId && mongoose.Types.ObjectId.isValid(clientId)) {
+        clientUser = await User.findById(clientId).select('firstName lastName fullName phone governorate').lean();
+    }
+    if (repId && mongoose.Types.ObjectId.isValid(repId)) {
+        repUser = await User.findById(repId).select('firstName lastName fullName phone vehicleNumber vehicleModel').lean();
+    }
+
+    // 7. Wallet & Ledger Inspection (Double Refund Check)
+    let clientWallet = null;
+    let relevantLedgers = [];
+    if (clientId) {
+        clientWallet = await Wallet.findOne({ userId: String(clientId) }).select('balanceFils').lean();
+        relevantLedgers = await WalletLedger.find({
+            $or: [
+                { orderId: order?._id },
+                { paymentId: payment?._id },
+                { reference: new RegExp(String(order?.orderId || payment?.providerTransactionId || rawQuery), 'i') },
+            ],
+        }).sort({ createdAt: -1 }).lean();
+    }
+
+    // 8. Financial & Refund Analysis
+    const paymentStatus = payment?.status || (order?.paymentStatus === 'paid' ? 'PAID' : (order?.paymentStatus || 'PENDING'));
+    const isPaid = paymentStatus === 'PAID' || paymentStatus === 'REFUNDED' || paymentStatus === 'PARTIALLY_REFUNDED' || order?.paymentStatus === 'paid' || order?.paymentStatus === 'refunded';
+
+    const refundedPiastres = payment?.refundedAmountPiastres || 0;
+    const isRefunded = paymentStatus === 'REFUNDED' || refundedPiastres > 0 || order?.paymentStatus === 'refunded';
+    const isFullRefund = payment ? (refundedPiastres >= (payment.amountPiastres || 0) && refundedPiastres > 0) : (order?.paymentStatus === 'refunded');
+
+    // Extract Paymob Order ID
+    let paymobOrderId = payment?.providerOrderId || null;
+    if (!paymobOrderId && paymentEvents.length > 0) {
+        for (const ev of paymentEvents) {
+            if (ev.payloadSummary?.order_id) {
+                paymobOrderId = String(ev.payloadSummary.order_id);
+                break;
+            }
+        }
+    }
+
+    let refundMethod = payment?.metadata?.refundMethod || null;
+    let refundPreference = payment?.metadata?.refundPreference || null;
+    let isVoided = false;
+
+    // Detect if VOID was executed
+    if (paymentEvents.some(ev => ev.payloadSummary?.is_voided === true || ev.message?.includes('VOID') || payment?.metadata?.refundMethod === 'CARD_GATEWAY')) {
+        if (payment?.metadata?.refundMethod === 'CARD_GATEWAY') {
+            isVoided = true;
+        }
+    }
+
+    // Double refund verification
+    const walletRefundCredit = relevantLedgers.find(l => l.type === 'CREDIT' && (l.source === 'ORDER_REFUND' || l.source === 'ORDER_RECOVERY_REFUND'));
+    const cancellationFeeDebit = relevantLedgers.find(l => l.type === 'DEBIT' && l.reference?.includes('CANCEL_FEE'));
+    const hasDoubleRefundRisk = Boolean(isRefunded && refundMethod === 'CARD_GATEWAY' && walletRefundCredit);
+
+    let verdict = '';
+    if (isRefunded) {
+        if (refundMethod === 'CARD_GATEWAY' || isVoided) {
+            verdict = 'تم إلغاء العملية واسترداد كامل المبلغ بنجاح عبر فك حجز البطاقة البنكية (VOID / Card Gateway) دون إيداع بالمحفظة.';
+        } else if (refundMethod === 'APP_WALLET' || payment?.provider === 'app_wallet') {
+            verdict = 'تم استرداد المبلغ بنجاح وإيداعه في محفظة العميل داخل التطبيق.';
+        } else {
+            verdict = 'تم استرداد المبلغ بنجاح للعميل.';
+        }
+    } else if (isPaid) {
+        verdict = 'الطلب مدفوع بنجاح بالكامل ولم يتم استرداد أو إلغاء الدفعة.';
+    } else {
+        verdict = 'الطلب غير مدفوع أو بانتظار إتمام عملية الدفع.';
+    }
+
+    return res.status(200).json({
+        success: true,
+        data: {
+            searchQuery: rawQuery,
+            verdict,
+            order: order ? {
+                orderId: order.orderId,
+                mongoId: String(order._id),
+                status: order.status,
+                statusArabic: _translateOrderStatus(order.status),
+                paymentStatus: order.paymentStatus || 'unknown',
+                paymentStatusArabic: _translatePaymentStatus(order.paymentStatus),
+                paymentMethod: order.paymentMethod || 'cash',
+                totalPriceEgp: order.totalPrice != null ? Number(order.totalPrice) : (order.totalDeliveryPrice ? order.totalDeliveryPrice / 1000 : 0),
+                cancellationReason: order.cancellationReason || null,
+                cancellationFeeApplied: Boolean(order.cancellationFeeApplied),
+                cancellationFeeEgp: (order.cancellationFeeFils || 0) / 1000,
+                createdAt: order.createdAt,
+                updatedAt: order.updatedAt,
+                client: clientUser ? {
+                    name: `${clientUser.firstName || ''} ${clientUser.lastName || ''}`.trim() || clientUser.fullName || 'عميل',
+                    phone: clientUser.phone || '',
+                    governorate: clientUser.governorate || '',
+                } : null,
+                representative: repUser ? {
+                    name: `${repUser.firstName || ''} ${repUser.lastName || ''}`.trim() || repUser.fullName || 'مندوب',
+                    phone: repUser.phone || '',
+                    vehicleNumber: repUser.vehicleNumber || '',
+                } : null,
+            } : null,
+            payment: payment ? {
+                paymentId: String(payment._id),
+                status: payment.status,
+                statusArabic: _translatePaymentStatus(payment.status),
+                isPaid,
+                amountEgp: (payment.amountPiastres || 0) / 100,
+                amountPiastres: payment.amountPiastres,
+                paymentMethod: payment.paymentMethod || 'CARD',
+                provider: payment.provider || 'paymob',
+                providerTransactionId: payment.providerTransactionId || null,
+                paymobOrderId: paymobOrderId,
+                providerIntentionId: payment.providerIntentionId || null,
+                integrationId: payment.integrationId || null,
+                sourceType: payment.metadata?.sourceType || null,
+                sourceSubType: payment.metadata?.sourceSubType || null,
+                paidAt: payment.paidAt,
+                createdAt: payment.createdAt,
+            } : null,
+            refund: {
+                isRefunded,
+                isFullRefund,
+                refundStatus: payment?.metadata?.refundStatus || (isRefunded ? 'CONFIRMED' : 'NONE'),
+                refundedAmountEgp: refundedPiastres / 100,
+                refundedAmountPiastres: refundedPiastres,
+                refundMethod: refundMethod || (isRefunded ? 'CARD_GATEWAY' : null),
+                refundMethodArabic: _translateRefundMethod(refundMethod, isVoided),
+                refundPreference: refundPreference || null,
+                isVoided,
+                refundedAt: payment?.refundedAt || null,
+                refundPendingSettlement: Boolean(payment?.metadata?.refundPendingSettlement),
+            },
+            walletAudit: {
+                clientBalanceEgp: clientWallet ? clientWallet.balanceFils / 1000 : null,
+                hasCancellationFee: Boolean(cancellationFeeDebit),
+                cancellationFeeEgp: cancellationFeeDebit ? (cancellationFeeDebit.amountFils || 0) / 1000 : 0,
+                hasWalletRefundCredited: Boolean(walletRefundCredit),
+                walletRefundAmountEgp: walletRefundCredit ? (walletRefundCredit.amountFils || 0) / 1000 : 0,
+                hasDoubleRefundRisk,
+            },
+            events: paymentEvents.map(e => ({
+                id: String(e._id),
+                eventType: e.eventType,
+                eventTypeArabic: _translateEventType(e.eventType),
+                message: e.message,
+                provider: e.provider,
+                providerEventId: e.providerEventId,
+                createdAt: e.createdAt,
+                details: e.payloadSummary || null,
+            })),
+        },
+    });
+});
+
 module.exports = {
     createPayment,
     paymobWebhook,
     paymobRedirect,
     getPaymentStatus,
     refundPayment,
+    auditPaymentByOrder,
 };

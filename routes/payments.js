@@ -23,6 +23,7 @@ const {
     paymobRedirect,
     getPaymentStatus,
     refundPayment,
+    auditPaymentByOrder,
 } = require('../payments/controllers/paymentController');
 
 // ─── Order-scoped payment routes ─────────────────────────────────────────────
@@ -83,6 +84,13 @@ paymentsRouter.post('/webhook',         webhookRateLimiter, paymobWebhook);
 paymentsRouter.get('/paymob/redirect',  paymobRedirect);
 paymentsRouter.get('/redirect',         paymobRedirect);
 paymentsRouter.get('/callback',         paymobRedirect);
+
+/**
+ * GET /api/payments/admin/audit
+ * Admin diagnostic endpoint for payment & refund status.
+ * Search by orderId, transactionId, or Paymob order ID.
+ */
+paymentsRouter.get('/admin/audit', authenticate, authorize('admin', 'administration', 'agent'), auditPaymentByOrder);
 
 /**
  * POST /api/payments/:paymentId/refund
