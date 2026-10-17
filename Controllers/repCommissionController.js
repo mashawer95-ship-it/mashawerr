@@ -41,6 +41,7 @@ async function buildEnrichedVehicleCommissions(config) {
                 icon_key: vt.icon_key || 'motorcycle',
                 image: vt.image || null,
                 category: vt.category || 'delivery',
+                is_ladies_only: Boolean(vt.is_ladies_only),
                 commissionPct: pct !== null ? pct : (config.deliveryRepCommissionPct ?? 100),
                 hasCustomPct: pct !== null,
             };
@@ -66,6 +67,7 @@ async function buildEnrichedVehicleCommissions(config) {
                 icon_key: vt.icon_key || 'sedan',
                 image: vt.image || null,
                 category: vt.category || 'passenger',
+                is_ladies_only: Boolean(vt.is_ladies_only),
                 commissionPct: pct !== null ? pct : (config.passengerRepCommissionPct ?? 100),
                 hasCustomPct: pct !== null,
             };
