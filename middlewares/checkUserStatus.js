@@ -1,6 +1,25 @@
 const mongoose = require('mongoose');
 const { User } = require('./User');
 const { isBanned } = require('../services/bannedDeviceService');
+const { redisGet, redisSet } = require('../config/redis');
+
+// Short TTL cache for the NEGATIVE ban-check result (scale: avoids 2 Mongo queries per request).
+// Only "not banned" is cached; a banned result is always re-verified against MongoDB.
+const BAN_CHECK_CACHE_TTL_SEC = Number(process.env.BAN_CHECK_CACHE_TTL_SEC) || 20;
+
+async function isBannedCached({ phone, fcmToken, deviceId, email }) {
+    const key = `ban_ok:${phone || ''}|${fcmToken || ''}|${deviceId || ''}|${email || ''}`;
+    try {
+        const cached = await redisGet(key);
+        if (cached) return { isBanned: false };
+    } catch (_) { /* fall through to DB */ }
+
+    const result = await isBanned({ phone, fcmToken, deviceId, email });
+    if (!result.isBanned) {
+        redisSet(key, '1', BAN_CHECK_CACHE_TTL_SEC).catch(() => {});
+    }
+    return result;
+}
 
 /**
  * Normalizes user role string for reliable comparison
@@ -67,7 +86,7 @@ const checkUserStatus = async (req, res, next) => {
         }
 
         // Master BannedDevice System Check (Device ID / Phone / Email / FCM Token)
-        const banCheck = await isBanned({ phone: user.phone, fcmToken, deviceId: user.deviceId || deviceId, email: user.email });
+        const banCheck = await isBannedCached({ phone: user.phone, fcmToken, deviceId: user.deviceId || deviceId, email: user.email });
 
         if (banCheck.isBanned) {
             return res.status(403).json({

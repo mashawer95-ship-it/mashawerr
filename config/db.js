@@ -10,17 +10,28 @@ async function connectToDB() {
     }
     try {
         await mongoose.connect(uri, {
-            serverSelectionTimeoutMS: 30000,
-            connectTimeoutMS: 30000,
+            // Pool: size per instance. Total = instances x maxPoolSize must stay below the Atlas tier limit.
+            maxPoolSize: Number(process.env.MONGO_MAX_POOL_SIZE) || 50,
+            minPoolSize: Number(process.env.MONGO_MIN_POOL_SIZE) || 5,
+            maxIdleTimeMS: 60000,
+            serverSelectionTimeoutMS: 15000,
+            connectTimeoutMS: 15000,
             socketTimeoutMS: 45000,
             heartbeatFrequencyMS: 10000,
             bufferCommands: true,
-            bufferTimeoutMS: 20000,
+            bufferTimeoutMS: 10000,
             retryWrites: true,
             retryReads: true,
         });
         logger.info('MONGODB_CONNECTED');
-        try {
+        const runMigrations = process.env.RUN_STARTUP_MIGRATIONS !== 'false';
+        let gotLock = false;
+        if (runMigrations) {
+            const { redisLock } = require('./redis');
+            gotLock = await redisLock('startup_migrations', 5 * 60 * 1000);
+            if (!gotLock) logger.info('[DB] Startup migrations already running on another instance – skipping');
+        }
+        if (runMigrations && gotLock) try {
             const { migrateOrderStatusFromNumbersToStrings, migrateUnifiedOrderIds } = require('../middlewares/Order');
             await migrateOrderStatusFromNumbersToStrings();
             await migrateUnifiedOrderIds();
@@ -42,10 +53,10 @@ async function connectToDB() {
     }
 }
 
-// Auto-reconnect whenever mongoose loses the connection
+// The MongoDB driver reconnects automatically after a drop; calling connect() again here
+// would open duplicate connections and re-run startup migrations. Just log.
 mongoose.connection.on('disconnected', () => {
-    logger.warn('MONGODB_DISCONNECTED', { reason: 'connection lost' });
-    setTimeout(() => connectToDB(), 3000);
+    logger.warn('MONGODB_DISCONNECTED', { reason: 'connection lost (driver will auto-reconnect)' });
 });
 
 mongoose.connection.on('error', (err) => {

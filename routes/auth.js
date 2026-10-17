@@ -16,25 +16,25 @@ const {
 
 const { googleSignIn, completeGoogleProfile } = require('../Controllers/googleAuthController');
 const { authenticate } = require('../middlewares/verifytoken');
-const { passwordResetLimiter, emailVerificationLimiter } = require('../middlewares/rateLimiter');
+const { passwordResetLimiter, emailVerificationLimiter, authLimiter, refreshTokenLimiter } = require('../middlewares/rateLimiter');
 
-router.post('/register', register);
-router.post('/login', login);
+router.post('/register', authLimiter, register);
+router.post('/login', authLimiter, login);
 router.post('/verify-email', emailVerificationLimiter, verifyEmail);
 router.post('/resend-otp', emailVerificationLimiter, resendOtp);
 router.post('/change-password', changePassword);
 router.post('/forgot-password', passwordResetLimiter, forgotPassword);
 router.get('/verify-reset-token/:token', verifyResetToken);
-router.post('/verify-reset-code', verifyResetCode);
+router.post('/verify-reset-code', authLimiter, verifyResetCode);
 router.post('/reset-password', resetPassword);
-router.post('/google-signin', googleSignIn);
+router.post('/google-signin', authLimiter, googleSignIn);
 router.post('/complete-google-profile', completeGoogleProfile);
 
 // ─── Refresh Token Rotation ─────────────────────────────────────────────────
 // POST /api/auth/refresh-token
 //   Body: { refreshToken: "<raw-refresh-token>" }
 //   Returns: { accessToken, refreshToken } (old token is invalidated = Rotation)
-router.post('/refresh-token', refreshToken);
+router.post('/refresh-token', refreshTokenLimiter, refreshToken);
 
 // POST /api/auth/logout  (requires valid accessToken in Authorization header)
 //   Body: { refreshToken: "<raw-refresh-token>" }  (optional – revokes it in DB)

@@ -36,6 +36,10 @@ process.on('unhandledRejection', (reason, promise) => {
 const app = express();
 const isDev = process.env.NODE_ENV !== 'production';
 
+// ── Behind Render / load balancer: trust the first proxy so req.ip is the real
+//    client IP (required for correct per-IP rate limiting).
+app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS) || 1);
+
 // ── Attach Request Correlation ID ───────────────────────────────────────────
 app.use(requestId);
 
@@ -53,6 +57,13 @@ app.use(helmet({
     crossOriginResourcePolicy: { policy: 'cross-origin' },
 }));
 
+// ── Gzip responses (large JSON lists) — skipped gracefully if not installed ──
+try {
+    app.use(require('compression')());
+} catch (_) {
+    logger.warn('[app] compression not installed – responses will not be gzipped');
+}
+
 // ── HTTP request logging (Morgan → Winston) ──────────────────────────────────
 app.use(morgan(isDev ? 'dev' : 'combined', {
     stream: { write: (msg) => logger.http(msg.trim()) },
@@ -65,8 +76,11 @@ app.use(cors({
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'token', 'x-api-key', 'x-admin-key'],
 }));
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+// Body size caps (was 50mb on every route → trivial memory-exhaustion DoS).
+// Binary uploads go through multer with its own limits. Override via env if needed.
+const BODY_LIMIT = process.env.BODY_LIMIT || '10mb';
+app.use(express.json({ limit: BODY_LIMIT }));
+app.use(express.urlencoded({ limit: BODY_LIMIT, extended: true }));
 
 
 // Static files: profile images at /uploads/...
@@ -113,7 +127,7 @@ app.all('/api/test-email', verifyTokenAndAdmin, async (req, res) => {
 app.use('/api', async (req, res, next) => {
     if (isDbReady()) return next();
 
-    const MAX_WAIT_MS = 25000;
+    const MAX_WAIT_MS = Number(process.env.DB_WARMUP_MAX_WAIT_MS) || 10000;
     const POLL_MS = 500;
     let waited = 0;
 
@@ -129,7 +143,7 @@ app.use('/api', async (req, res, next) => {
 });
 
 // ── Maintenance route: clean googleId null & ensure sparse index ────────────
-app.get('/api/maintenance/fix-google-index', async (req, res) => {
+app.get('/api/maintenance/fix-google-index', verifyTokenAndAdmin, async (req, res) => {
     try {
         const { fixGoogleIdIndex } = require('./middlewares/User');
         await fixGoogleIdIndex();
@@ -238,6 +252,24 @@ const io = new SocketIOServer(httpServer, {
     pingTimeout: 20000,
 });
 
+// ─── Socket.IO Redis adapter (horizontal scaling) ────────────────────────────
+// Lets rooms / io.to(room).emit() work across several API instances.
+// (websocket-only transport, so no sticky sessions are required.)
+if (process.env.REDIS_URL) {
+    try {
+        const { createAdapter } = require('@socket.io/redis-adapter');
+        const IORedis = require('ioredis');
+        const pubClient = new IORedis(process.env.REDIS_URL, { maxRetriesPerRequest: null });
+        const subClient = pubClient.duplicate();
+        pubClient.on('error', (e) => logger.warn(`[Socket.IO adapter] pub error: ${e.message}`));
+        subClient.on('error', (e) => logger.warn(`[Socket.IO adapter] sub error: ${e.message}`));
+        io.adapter(createAdapter(pubClient, subClient));
+        logger.info('[Socket.IO] Redis adapter enabled');
+    } catch (e) {
+        logger.warn(`[Socket.IO] Redis adapter unavailable (${e.message}) – single-instance mode`);
+    }
+}
+
 // ─── Socket.IO: Default namespace (order events) ─────────────────────────────
 // Flutter client connects, then emits:
 //   socket.emit('join_order', { orderId: '42' })
@@ -297,8 +329,10 @@ io.on('connection', (socket) => {
                 return;
             }
         } catch (err) {
+            // SECURITY: fail CLOSED. Previously an auth-check error let the join proceed.
             logger.error(`[Socket.IO] join_order auth check failed: ${err.message}`);
-            // Do NOT block the join on auth check failure — allow it to proceed
+            socket.emit('error', { message: 'Unable to verify order access, please retry' });
+            return;
         }
 
         const room = `order:${orderId}`;
@@ -488,6 +522,27 @@ connectToDB().catch((err) => {
     console.error('DB connection failed:', err.message);
     process.exit(1);
 });
+
+// ─── Graceful shutdown (rolling deploys / autoscaling) ───────────────────────
+let shuttingDown = false;
+async function gracefulShutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.warn(`[Shutdown] ${signal} received – draining connections...`);
+    const force = setTimeout(() => process.exit(1), 15000);
+    if (force.unref) force.unref();
+    try {
+        io.close();
+        httpServer.close(async () => {
+            try { await require('mongoose').connection.close(false); } catch (_) {}
+            process.exit(0);
+        });
+    } catch (_) {
+        process.exit(1);
+    }
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 // Keep-alive: ping the server every 8 minutes so Render never spins it down
 const renderUrl = process.env.RENDER_EXTERNAL_URL || process.env.HOST || (process.env.NODE_ENV === 'production' ? 'https://mashawerr.onrender.com' : null);

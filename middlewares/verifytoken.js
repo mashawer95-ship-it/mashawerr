@@ -105,7 +105,6 @@ async function authenticate(req, res, next) {
         return res.status(401).json({
             code:    'TOKEN_INVALID',
             message: 'Invalid access token.',
-            error:   err.message,
         });
     }
 }

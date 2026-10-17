@@ -3,6 +3,7 @@ const { Feedback } = require('../models/Feedback');
 const { User } = require('../middlewares/User');
 const { notifyClient } = require('../services/notifyClient');
 const { normalizePagination, buildPaginationMetadata, setPaginationHeaders } = require('../utils/pagination');
+const { escapeRegex } = require('../utils/escapeRegex');
 
 /**
  * @description Submit user feedback/opinion/issue
@@ -84,7 +85,7 @@ const getAllFeedback = asyncHandler(async (req, res) => {
     }
 
     if (search && search.trim().length > 0) {
-        const searchRegex = new RegExp(search.trim(), 'i');
+        const searchRegex = new RegExp(escapeRegex(search.trim().slice(0, 100)), 'i');
         filter.$or = [
             { description: searchRegex },
             { userName: searchRegex },

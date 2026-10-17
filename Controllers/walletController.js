@@ -4,6 +4,7 @@ const { Wallet, getOrCreateWallet, creditWallet, debitWallet, debitWalletAllowNe
 const { WalletLedger } = require('../middlewares/WalletLedger');
 const { User } = require('../middlewares/User');
 const { normalizePagination, buildPaginationMetadata, setPaginationHeaders } = require('../utils/pagination');
+const { escapeRegex } = require('../utils/escapeRegex');
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
 function filsToKwd(fils) {
@@ -66,19 +67,19 @@ const getAllWallets = asyncHandler(async (req, res) => {
             });
         } else {
             conditions.push({
-                userType: { $regex: typeClean, $options: 'i' },
+                userType: { $regex: escapeRegex(typeClean), $options: 'i' },
             });
         }
     }
 
     if (governorate && governorate.trim() !== '') {
         conditions.push({
-            governorate: { $regex: governorate.trim(), $options: 'i' },
+            governorate: { $regex: escapeRegex(governorate.trim()), $options: 'i' },
         });
     }
 
     if (search && search.trim() !== '') {
-        const term = search.trim();
+        const term = escapeRegex(search.trim().slice(0, 100));
         conditions.push({
             $or: [
                 { firstName: { $regex: term, $options: 'i' } },

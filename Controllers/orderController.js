@@ -8,6 +8,8 @@ const {
     validateCreateOrder,
     validateCancelOrder,
 } = require('../middlewares/Order');
+const { buildGovernorateConditions } = require('../utils/governorateFilter');
+const { escapeRegex } = require('../utils/escapeRegex');
 const { User } = require('../middlewares/User');
 // StoreOrder removed – delivery-only
 const { RepTargetAchievement } = require('../middlewares/RepTarget');
@@ -550,8 +552,8 @@ const listOrders = asyncHandler(async (req, res) => {
     if (value.address) {
         // Search in pickup or delivery location
         filter.$or = [
-            { 'tasks.pickupLocation.streetName': { $regex: value.address, $options: 'i' } },
-            { 'tasks.deliveryLocation.streetName': { $regex: value.address, $options: 'i' } }
+            { 'tasks.pickupLocation.streetName': { $regex: escapeRegex(value.address), $options: 'i' } },
+            { 'tasks.deliveryLocation.streetName': { $regex: escapeRegex(value.address), $options: 'i' } }
         ];
     }
 
@@ -575,20 +577,7 @@ const listOrders = asyncHandler(async (req, res) => {
     if (value.governorate && value.governorate.trim()) {
         const govTerm = value.governorate.trim();
         if (govTerm !== 'الكل' && govTerm !== 'كل المحافظات' && govTerm !== 'جميع المحافظات') {
-            const matchingUsers = await User.find({
-                governorate: { $regex: new RegExp(govTerm, 'i') }
-            }).select('_id phone').lean();
-            const userIds = matchingUsers.map((u) => u._id.toString());
-            const userPhones = matchingUsers.map((u) => u.phone).filter(Boolean);
-            const govConditions = [
-                { governorate: { $regex: new RegExp(govTerm, 'i') } },
-                { clientId: { $in: userIds } },
-                { userId: { $in: userIds } },
-            ];
-            if (userPhones.length > 0) {
-                govConditions.push({ clientId: { $in: userPhones } });
-                govConditions.push({ userId: { $in: userPhones } });
-            }
+            const govConditions = await buildGovernorateConditions(govTerm);
             if (filter.$or) {
                 filter.$and = [
                     { $or: filter.$or },
@@ -3741,22 +3730,7 @@ const getAdminOrderFinancialStats = asyncHandler(async (req, res) => {
     }
 
     if (governorate && governorate !== 'الكل' && governorate !== 'كل المحافظات' && governorate !== 'جميع المحافظات') {
-        const matchingUsers = await User.find({
-            governorate: { $regex: new RegExp(governorate, 'i') }
-        }).select('_id phone').lean();
-        const userIds = matchingUsers.map((u) => u._id.toString());
-        const userPhones = matchingUsers.map((u) => u.phone).filter(Boolean);
-
-        const govConditions = [
-            { governorate: { $regex: new RegExp(governorate, 'i') } },
-            { clientId: { $in: userIds } },
-            { userId: { $in: userIds } },
-        ];
-        if (userPhones.length > 0) {
-            govConditions.push({ clientId: { $in: userPhones } });
-            govConditions.push({ userId: { $in: userPhones } });
-        }
-        matchStage.$or = govConditions;
+        matchStage.$or = await buildGovernorateConditions(governorate);
     }
 
     const commissionCfg = await getCachedRepCommission().catch(() => ({

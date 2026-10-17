@@ -10,6 +10,7 @@ const { UserDiscount, DiscountCode } = require('../middlewares/Discount');
 const { VehicleType } = require('../middlewares/VehicleType');
 const { buildUrl } = require('../config/urlBuilder');
 const BannedDevice = require('../models/BannedDevice');
+const { escapeRegex } = require('../utils/escapeRegex');
 const { banIdentifier, unbanIdentifier, isBanned, normalizePhone } = require('../services/bannedDeviceService');
 
 const { sanitizeErrorResponse, isOwnerOrAuthorized } = require('../middlewares/objectAuthorization');
@@ -152,7 +153,7 @@ const updateUser = asyncHandler(async (req, res) => {
 const getAllUser = asyncHandler(async (req, res) => {
     const filter = {};
     if (req.query.userType) {
-        filter.userType = { $regex: new RegExp(req.query.userType, 'i') };
+        filter.userType = { $regex: new RegExp(escapeRegex(req.query.userType), 'i') };
     }
     if (req.query.role) {
         const roleLower = req.query.role.toLowerCase();
@@ -172,7 +173,7 @@ const getAllUser = asyncHandler(async (req, res) => {
             ];
             delete filter.userType;
         } else {
-            filter.userType = { $regex: new RegExp(req.query.role, 'i') };
+            filter.userType = { $regex: new RegExp(escapeRegex(req.query.role), 'i') };
         }
     }
     // Support isAdmin filter (true/false as string)
@@ -213,7 +214,7 @@ const getAllUser = asyncHandler(async (req, res) => {
         filter.isAdmin = { $ne: true };
         filter.userType = { $nin: ['Admin', 'admin', 'Administration', 'administration'] };
     } else if (req.query.governorate && req.query.governorate.trim()) {
-        filter.governorate = { $regex: new RegExp(req.query.governorate.trim(), 'i') };
+        filter.governorate = { $regex: new RegExp(escapeRegex(req.query.governorate.trim()), 'i') };
     }
 
     const [rawUsers, total] = await Promise.all([
@@ -255,16 +256,38 @@ const getAllUser = asyncHandler(async (req, res) => {
             };
         }
 
-        // 2. Representative Users (Delivery)
+        // 2. Representative Users (Delivery or Passenger)
         if (isRep) {
+            const prefTypes = Array.isArray(u.preferredOrderTypes) && u.preferredOrderTypes.length > 0
+                ? u.preferredOrderTypes.map(t => String(t).toLowerCase().trim())
+                : [];
+            const vehName = (u.vehicleTypeName || '').toLowerCase().trim();
+
+            const isPassenger = prefTypes.includes('passenger') || (prefTypes.length === 0 && (vehName.includes('ملاكي') || vehName.includes('سيارة')));
+            const isDelivery = prefTypes.includes('delivery') || (prefTypes.length === 0 && !isPassenger);
+
+            let repCategory = 'delivery';
+            let repTypeTitle = 'مندوب توصيل 🚚';
+
+            if (isPassenger && isDelivery) {
+                repCategory = 'both';
+                repTypeTitle = 'مندوب توصيل وأفراد 🚚🚗';
+            } else if (isPassenger) {
+                repCategory = 'passenger';
+                repTypeTitle = 'مندوب أفراد 🚗';
+            } else {
+                repCategory = 'delivery';
+                repTypeTitle = 'مندوب توصيل 🚚';
+            }
+
             return {
                 ...u,
                 id: u._id ? u._id.toString() : u.id,
-                repCategory: 'delivery',
+                repCategory,
                 isBusinessRep: false,
                 isBusinessRepresentative: false,
                 userType: 'Representative',
-                repTypeTitle: 'مندوب توصيل 🚚',
+                repTypeTitle,
             };
         }
 
@@ -2207,7 +2230,7 @@ const getBannedDevices = asyncHandler(async (req, res) => {
 
     const filter = { isActive: true };
     if (req.query.search) {
-        const searchRegex = new RegExp(req.query.search.trim(), 'i');
+        const searchRegex = new RegExp(escapeRegex(String(req.query.search).trim().slice(0, 100)), 'i');
         filter.$or = [
             { phone: searchRegex },
             { fcmToken: searchRegex },

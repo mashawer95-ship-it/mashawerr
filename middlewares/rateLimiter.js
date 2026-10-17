@@ -10,6 +10,64 @@ const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const logger = require('../utils/logger');
 
 /**
+ * Shared Redis store so limits are enforced across ALL API instances.
+ * Falls back to the default in-memory store if Redis / rate-limit-redis is unavailable.
+ */
+function buildStore(prefix) {
+    try {
+        const { getRedisClient } = require('../config/redis');
+        const client = getRedisClient();
+        if (!client) return undefined;
+        const { RedisStore } = require('rate-limit-redis');
+        return new RedisStore({
+            prefix: `rl:${prefix}:`,
+            sendCommand: (...args) => client.call(...args),
+        });
+    } catch (_) {
+        return undefined;
+    }
+}
+
+/**
+ * Login / register / social sign-in: brute-force & credential-stuffing protection.
+ * Keyed by IP + email so shared mobile-carrier NATs are not punished too hard.
+ */
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: Number(process.env.AUTH_RATE_LIMIT_MAX) || 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    store: buildStore('auth'),
+    passOnStoreError: true,
+    keyGenerator: (req, res) => {
+        const email = req.body?.email ? String(req.body.email).toLowerCase().trim() : '';
+        return `${ipKeyGenerator(req, res)}|${email}`;
+    },
+    handler: (req, res) => {
+        logger.warn(`[RateLimit] Auth limit exceeded for: ${req.body?.email || req.ip}`);
+        res.status(429).json({
+            success: false,
+            message: 'محاولات كثيرة جداً. يرجى الانتظار قليلاً ثم المحاولة مرة أخرى.',
+            retryAfterMinutes: 15,
+        });
+    },
+});
+
+/** Refresh-token endpoint: generous but bounded (clients refresh rarely). */
+const refreshTokenLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: Number(process.env.REFRESH_RATE_LIMIT_MAX) || 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    store: buildStore('refresh'),
+    passOnStoreError: true,
+    keyGenerator: (req, res) => ipKeyGenerator(req, res),
+    handler: (req, res) => {
+        res.status(429).json({ success: false, message: 'Too many token refresh requests.' });
+    },
+});
+
+/**
  * Strict limiter for driver location updates.
  * Drivers should call this endpoint every 5-10 seconds.
  * Allows up to 30 requests per minute (generous for 5s interval = 12/min per driver).
@@ -122,4 +180,6 @@ module.exports = {
     otpVerificationLimiter,
     passwordResetLimiter,
     emailVerificationLimiter,
+    authLimiter,
+    refreshTokenLimiter,
 };
