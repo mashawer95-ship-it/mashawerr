@@ -1192,6 +1192,15 @@ const createOrder = asyncHandler(async (req, res) => {
     };
 
     let backendDeliveryPriceFils = 0;
+    let originalFils = 0;
+    let discountRes = {
+        applied: false,
+        discountType: null,
+        discountCode: null,
+        discountPercentage: null,
+        discountAmountFils: 0,
+        finalDeliveryPriceFils: 0,
+    };
     let pricingVersion = 1;
     let distanceMeters = 0; // Total distance for pricing (sum of individual tasks)
     let fullRouteDistanceMeters = 0; // Distance of the continuous route for the driver
@@ -1340,8 +1349,8 @@ const createOrder = asyncHandler(async (req, res) => {
             calculatedKd = effectiveMinFare;
         }
 
-        const originalFils = kdToFils(calculatedKd);
-        const discountRes = await resolveAuthoritativeDiscount({
+        originalFils = kdToFils(calculatedKd);
+        discountRes = await resolveAuthoritativeDiscount({
             userId: value.clientId,
             discountCode: value.discountCode,
             discountType: value.discountType,
