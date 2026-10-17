@@ -410,16 +410,35 @@ class DeliveryEventBus {
         });
     }
 
-    static async emitDeliveryCompleted(io, session, orderId, traceId) {
+    static async emitDeliveryCompleted(io, session, orderId, traceId, parentOrder = null) {
+        const ordId = parentOrder?.orderId != null ? String(parentOrder.orderId) : null;
+        const mongoId = parentOrder?._id != null ? String(parentOrder._id) : String(orderId);
+        const orderRooms = new Set([
+            `user:${session.customerId}`,
+            `user:${session.driverId}`,
+            `order:${mongoId}`,
+            `trip:${mongoId}`,
+            ...(session.orderId ? [`order:${session.orderId}`, `trip:${session.orderId}`] : []),
+            ...(ordId ? [`order:${ordId}`, `trip:${ordId}`] : []),
+        ]);
+
         return this._dispatch({
             sessionId: session.sessionId,
             traceId,
             actor: 'DRIVER',
             action: 'DELIVERY_COMPLETED',
-            payload: { orderId, isCompleted: true, phase: 'COMPLETED' },
+            payload: {
+                orderId: mongoId,
+                _id: mongoId,
+                id: mongoId,
+                numericOrderId: ordId,
+                orderNumber: parentOrder?.orderNumber || ordId,
+                isCompleted: true,
+                phase: 'COMPLETED'
+            },
             socketConfig: {
                 io,
-                rooms: [`user:${session.customerId}`, `user:${session.driverId}`, `order:${orderId}`, `trip:${orderId}`],
+                rooms: Array.from(orderRooms),
                 eventNames: ['delivery_session:completed', 'order:completed', 'tripCompleted'],
             },
             fcmConfig: {
@@ -428,7 +447,11 @@ class DeliveryEventBus {
                 body: 'تم استلام طلبك وتأكيده بنجاح. شكراً لاستخدامك وصول!',
                 notificationData: {
                     type: 'DELIVERY_COMPLETED',
-                    orderId: String(orderId),
+                    orderId: mongoId,
+                    _id: mongoId,
+                    id: mongoId,
+                    numericOrderId: ordId || '',
+                    orderNumber: String(parentOrder?.orderNumber || ordId || '')
                 },
             },
         });

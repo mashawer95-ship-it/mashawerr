@@ -755,7 +755,7 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
         }
 
         try {
-            await DeliveryEventBus.emitDeliveryCompleted(io, session, orderId, traceId);
+            await DeliveryEventBus.emitDeliveryCompleted(io, session, orderId, traceId, parentOrder);
             await DeliveryEventBus.emitDeliveryApproved(io, session, attempt, orderId, true, extraRooms, trackData, traceId, completedStopIndex);
         } catch (_) {}
 
