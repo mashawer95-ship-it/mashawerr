@@ -308,14 +308,7 @@ const completeGoogleProfile = asyncHandler(async (req, res) => {
         });
     }
 
-    // Check if phone number is already used by another active user
-    const existingPhoneUser = await User.findOne({ phone: cleanPhone });
-    if (existingPhoneUser && (!userId || existingPhoneUser._id.toString() !== String(userId))) {
-        return res.status(400).json({
-            message: 'رقم الهاتف مستخدم بالفعل بحساب آخر. يرجى استخدام رقم هاتف مختلف.',
-            code: 'PHONE_ALREADY_EXISTS',
-        });
-    }
+    // Phone reuse is allowed across accounts as requested
 
     // Normalize gender
     let normalizedGender = 'male';
