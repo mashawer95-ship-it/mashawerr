@@ -401,7 +401,7 @@ function formatOrder(req, order, commissionCfg, repUser = null) {
         passengerRepCommissionPct: passengerPct,
         // ──────────────────────────────────────────────────────────────────────────────────
         totalPrice: order.totalPrice != null
-            ? Number((order.totalPrice > 100 ? order.totalPrice / 1000 : order.totalPrice).toFixed(3))
+            ? Number((order.totalPrice >= 5000 ? order.totalPrice / 1000 : order.totalPrice).toFixed(3))
             : 0,
         totalDistanceKm: calculateOrderTripDistance(order),
         distanceKm: calculateOrderTripDistance(order),
@@ -1387,12 +1387,12 @@ const createOrder = asyncHandler(async (req, res) => {
         });
     }
 
-    const clientDeliveryPriceFils = (value.totalDeliveryPrice || 0) < 100
-        ? Math.round((value.totalDeliveryPrice || 0) * 1000)
-        : (value.totalDeliveryPrice || 0);
+    const clientDeliveryPriceFils = (value.totalDeliveryPrice || 0) >= 5000
+        ? Math.round(value.totalDeliveryPrice)
+        : Math.round((value.totalDeliveryPrice || 0) * 1000);
     const deliveryDiffFils = backendDeliveryPriceFils - clientDeliveryPriceFils;
     const repAmount = Number(value.representativePaymentAmount) || 0;
-    const clientTotalPriceKd = (value.totalPrice || 0) > 100
+    const clientTotalPriceKd = (value.totalPrice || 0) >= 5000
         ? (value.totalPrice || 0) / 1000
         : (value.totalPrice || 0);
     const adjustedTotalPriceKd = repAmount > 0
@@ -1418,7 +1418,7 @@ const createOrder = asyncHandler(async (req, res) => {
 
     const order = new Order({
         clientId: value.clientId,
-        originalDeliveryPrice: value.originalDeliveryPrice,
+        originalDeliveryPrice: value.originalDeliveryPrice || (amt > 0 ? originalFils : null),
         totalDeliveryPrice: backendDeliveryPriceFils,
         discountAmount: value.discountAmount || 0,
         discountPercentage: value.discountPercentage ?? null,
@@ -3639,7 +3639,10 @@ const searchOrderByNumber = asyncHandler(async (req, res) => {
                 totalDeliveryPrice: (deliveryOrder.totalDeliveryPrice || 0) / 1000.0,
                 originalDeliveryPrice: deliveryOrder.originalDeliveryPrice ? deliveryOrder.originalDeliveryPrice / 1000.0 : null,
                 discountAmount: (deliveryOrder.discountAmount || 0) / 1000.0,
-                totalPrice: ((deliveryOrder.totalPrice || deliveryOrder.totalDeliveryPrice || 0)) / 1000.0,
+                totalPrice: (() => {
+                    const raw = deliveryOrder.totalPrice != null ? deliveryOrder.totalPrice : (deliveryOrder.totalDeliveryPrice ? deliveryOrder.totalDeliveryPrice / 1000.0 : 0);
+                    return raw >= 5000 ? Number((raw / 1000.0).toFixed(3)) : Number(Number(raw).toFixed(3));
+                })(),
             },
             tasks: formatted.tasks || [],
             details: formatted,

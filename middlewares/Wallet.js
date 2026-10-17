@@ -478,9 +478,9 @@ function extractDeliveryPriceFils(order) {
     const raw = order.totalDeliveryPrice ?? order.deliveryPrice ?? order.totalPrice ?? 0;
     let num = Number(raw);
     if (num <= 0) return 0;
-    // Values > 1000 are already in fils (e.g. 1500 = 1.500 KD)
-    if (num > 1000) return Math.round(num);
-    // Values <= 1000 are in KD (e.g. 1.500 KD → 1500 fils)
+    // Values >= 5000 are already in fils (e.g. 100,000 fils = 100 EGP, 5,000 fils = 5 EGP)
+    if (num >= 5000) return Math.round(num);
+    // Values < 5000 are in EGP / KD (e.g. 100 EGP → 100,000 fils)
     return Math.round(num * 1000);
 }
 
