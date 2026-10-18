@@ -923,6 +923,48 @@ exports.reviewAttempt = async (req, res) => {
         }
 
         if (decision === 'YES' || !decision) {
+            // Guard: Prevent approving an already-rejected attempt or an order in review / terminal state
+            if (attempt && attempt.state === 'REJECTED') {
+                return res.status(409).json({
+                    success: false,
+                    message: 'تم رفض صورة الاستلام/التسليم مسبقاً ولا يمكن اعتمادها. يرجى انتظار قيام المندوب برفع صورة جديدة.',
+                    code: 'ATTEMPT_ALREADY_REJECTED',
+                    status: 'review',
+                    canReview: false,
+                });
+            }
+
+            const mongoose = require('mongoose');
+            const isHex = mongoose.isValidObjectId(effectiveOrderId);
+            const checkOrderQuery = {
+                $or: [
+                    { orderId: isNaN(Number(effectiveOrderId)) ? -1 : Number(effectiveOrderId) },
+                    ...(isHex ? [{ _id: new mongoose.Types.ObjectId(effectiveOrderId) }] : [])
+                ]
+            };
+            const currentParentOrder = await Order.findOne(checkOrderQuery).select('status reviewReason').lean();
+            const orderStatusNorm = (currentParentOrder?.status || '').toString().toLowerCase().trim();
+
+            if (orderStatusNorm === 'review') {
+                return res.status(409).json({
+                    success: false,
+                    message: 'الطلب قيد المراجعة حالياً ولا يمكن تحويله إلى مقبول أو جاري التوصيل إلا بعد رفع صورة جديدة من المندوب أو مراجعة الإدارة.',
+                    code: 'ORDER_UNDER_REVIEW',
+                    status: 'review',
+                    canReview: false,
+                });
+            }
+
+            if (['cancelled', 'deleted', 'completed', 'delivered'].includes(orderStatusNorm)) {
+                return res.status(409).json({
+                    success: false,
+                    message: 'لا يمكن اعتماد صورة لطلب في حالة منتهية.',
+                    code: 'ORDER_TERMINAL_STATE',
+                    status: orderStatusNorm,
+                    canReview: false,
+                });
+            }
+
             if (attempt) {
                 attempt.state = 'APPROVED';
                 try { await attempt.save(); } catch(e) { logger.error(`[PoD] attempt approval save error [${traceId}]:`, e.message); }
@@ -994,6 +1036,25 @@ exports.verifyOTP = async (req, res) => {
             session.subState === 'WAITING_PICKUP_APPROVAL' ||
             (req.body?.phase && req.body.phase.toUpperCase() === 'PICKUP') ||
             (req.query?.phase && req.query.phase.toUpperCase() === 'PICKUP');
+
+        // Guard: Prevent completing delivery/pickup if session is rejected or order is under review / cancelled
+        const mongoose = require('mongoose');
+        const effectiveOrdId = session.orderId || id;
+        const isHexId = mongoose.isValidObjectId(effectiveOrdId);
+        const orderDoc = await Order.findOne({
+            $or: [
+                { orderId: isNaN(Number(effectiveOrdId)) ? -1 : Number(effectiveOrdId) },
+                ...(isHexId ? [{ _id: new mongoose.Types.ObjectId(effectiveOrdId) }] : [])
+            ]
+        }).select('status').lean();
+
+        if (orderDoc && (orderDoc.status === 'review' || orderDoc.status === 'cancelled' || orderDoc.status === 'deleted')) {
+            return res.status(409).json({
+                success: false,
+                message: `لا يمكن تأكيد الاستلام/التسليم لأن الطلب في حالة (${orderDoc.status === 'review' ? 'مراجعة' : 'ملغي'})`,
+                status: orderDoc.status
+            });
+        }
 
         const result = await completeDeliveryOrPickup(session, session.orderId || id, isPickup, req, traceId);
         return res.status(200).json(result);
@@ -1136,8 +1197,15 @@ exports.getCustomerConfirmations = async (req, res) => {
 
             const attemptPhotoUrl = latestAttempt?.photo?.cdnUrl || (latestAttempt?.photo?.objectKey ? `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME || 'dvhjawii0'}/image/upload/${latestAttempt.photo.objectKey}` : null);
             const currentPhase = session.phase || latestAttempt?.phase || 'DELIVERY';
-            const canReview = latestAttempt?.state === 'WAITING_CUSTOMER_REVIEW' &&
-                (session.subState === 'WAITING_CUSTOMER' || session.subState === 'WAITING_PICKUP_APPROVAL' || session.subState === 'WAITING_DRIVER_UPLOAD');
+            const isOrderReviewOrEnded = order?.status === 'review' ||
+                order?.status === 'cancelled' ||
+                order?.status === 'completed' ||
+                order?.status === 'delivered';
+
+            const canReview = !isOrderReviewOrEnded &&
+                latestAttempt?.state === 'WAITING_CUSTOMER_REVIEW' &&
+                session.state !== 'REJECTED' &&
+                (session.subState === 'WAITING_CUSTOMER' || session.subState === 'WAITING_PICKUP_APPROVAL');
 
             results.push({
                 sessionId: session.sessionId,
@@ -1157,7 +1225,7 @@ exports.getCustomerConfirmations = async (req, res) => {
                     photoUrl: attemptPhotoUrl,
                     phase: latestAttempt.phase || currentPhase,
                     state: latestAttempt.state, // 'WAITING_CUSTOMER_REVIEW', 'APPROVED', 'REJECTED', 'AI_VALIDATION'
-                    canReview: latestAttempt.state === 'WAITING_CUSTOMER_REVIEW',
+                    canReview: !isOrderReviewOrEnded && latestAttempt.state === 'WAITING_CUSTOMER_REVIEW' && session.state !== 'REJECTED',
                     rejectionReason: latestAttempt.rejectionReason || null,
                     uploadedAt: latestAttempt.createdAt,
                 } : null,

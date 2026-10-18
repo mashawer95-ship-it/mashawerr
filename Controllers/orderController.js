@@ -2075,6 +2075,15 @@ const cancelOrder = asyncHandler(async (req, res) => {
 
     const oldRepId = order.representativeId;
 
+    const setPayload = {
+        status: 'cancelled',
+        cancellationReason: value.reason,
+    };
+    if (Array.isArray(order.tasks) && order.tasks.length > 0) {
+        setPayload['tasks.$[].taskStatus'] = 'cancelled';
+        setPayload['tasks.$[].status'] = 'cancelled';
+    }
+
     // Atomically transition status from non-cancelled to cancelled first (lock claim)
     // Only the single winning request is permitted to perform financial mutations (cancellation fees, driver rewards, refunds)
     const atomicCancelledOrder = await Order.findOneAndUpdate(
@@ -2083,10 +2092,7 @@ const cancelOrder = asyncHandler(async (req, res) => {
             status: { $nin: ['cancelled', 'deleted'] },
         },
         {
-            $set: {
-                status: 'cancelled',
-                cancellationReason: value.reason,
-            },
+            $set: setPayload,
         },
         { new: true }
     );
@@ -2097,6 +2103,12 @@ const cancelOrder = asyncHandler(async (req, res) => {
 
     order.status = 'cancelled';
     order.cancellationReason = value.reason;
+    if (Array.isArray(order.tasks)) {
+        order.tasks.forEach(t => {
+            t.taskStatus = 'cancelled';
+            t.status = 'cancelled';
+        });
+    }
 
     // ─── خصم رسوم الإلغاء إذا مضى وقت أكثر من التايمر على قبول المندوب (فقط للطلب الفائز بالـ atomic lock) ───
     let cancellationFeeApplied = false;
