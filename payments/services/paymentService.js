@@ -534,6 +534,7 @@ async function refundPayment({ paymentId, amountPiastres, requestedBy, requestId
                     ...currentMeta,
                     refundMethod: actualRefundMethod,
                     refundPreference: refundPreference || (isAppWallet ? 'APP_WALLET' : 'ORIGINAL_PAYMENT'),
+                    refundNotified: actualRefundMethod === 'CARD_GATEWAY' ? true : currentMeta.refundNotified,
                 },
             },
         },
@@ -564,6 +565,11 @@ async function refundPayment({ paymentId, amountPiastres, requestedBy, requestId
         newStatus,
         isAppWallet,
     });
+
+    // Notify customer when Visa / Card refund succeeds
+    if (actualRefundMethod === 'CARD_GATEWAY') {
+        _notifyCustomerCardRefund({ payment, refundAmountPiastres: refundAmount }).catch(() => {});
+    }
 
     return updatedPayment;
 }
@@ -1200,6 +1206,7 @@ async function reconcileUncertainRefund({ paymentId, requestId }) {
             refundedAt: new Date(),
             'metadata.refundStatus': 'CONFIRMED',
             'metadata.refundMethod': 'CARD_GATEWAY',
+            'metadata.refundNotified': true,
         });
 
         if (payment.orderId) {
@@ -1212,6 +1219,10 @@ async function reconcileUncertainRefund({ paymentId, requestId }) {
             paymentId: payment._id,
             refundedPiastres,
         });
+
+        if (!payment.metadata?.refundNotified) {
+            _notifyCustomerCardRefund({ payment, refundAmountPiastres: refundedPiastres }).catch(() => {});
+        }
 
         return {
             status: isFull ? 'REFUNDED' : 'PARTIALLY_REFUNDED',
@@ -1278,6 +1289,63 @@ async function reconcileUncertainRefund({ paymentId, requestId }) {
             refundMethod: 'WALLET_FALLBACK',
             amountFils,
         };
+    }
+}
+
+/**
+ * Dispatch FCM push & in-app notification when a card refund succeeds.
+ * Non-blocking, fails gracefully, never throws.
+ *
+ * @param {object} params
+ * @param {object} params.payment - The Payment document/object
+ * @param {number} params.refundAmountPiastres - Refunded amount in integer piastres
+ */
+async function _notifyCustomerCardRefund({ payment, refundAmountPiastres }) {
+    if (!payment?.userId) return;
+
+    try {
+        const { notifyClient } = require('../../services/notifyClient');
+        const amountEgp = piastresToEgp(refundAmountPiastres);
+
+        let orderNum = payment.orderNumericId;
+        if (!orderNum && payment.orderId) {
+            try {
+                const ord = await Order.findById(payment.orderId).select('orderId').lean();
+                if (ord?.orderId) orderNum = ord.orderId;
+            } catch (_) {}
+        }
+        const orderRefStr = orderNum ? ` للطلب #${orderNum}` : '';
+
+        const title = '💳 تم استرجاع المبلغ إلى بطاقتك البنكية';
+        const body = `تمت معالجة استرجاع مبلغ ${amountEgp} ج.م إلى بطاقتك البنكية بنجاح${orderRefStr}. قد يستغرق ظهور المبلغ في كشف حسابك البنكي من 3 إلى 14 يوم عمل حسب البنك المُصدِر لبطاقتك.`;
+
+        await notifyClient(
+            payment.userId,
+            title,
+            body,
+            {
+                type: 'payment_refund_card',
+                paymentId: String(payment._id || ''),
+                orderId: String(payment.orderId || ''),
+                orderNumericId: String(orderNum || ''),
+                amount: String(amountEgp),
+                currency: 'EGP',
+                refundMethod: 'CARD_GATEWAY',
+            }
+        );
+
+        logger.info('[PaymentService] Card refund notification sent to customer', {
+            userId: payment.userId,
+            paymentId: payment._id,
+            amountEgp,
+            orderNum,
+        });
+    } catch (notifErr) {
+        logger.warn('[PaymentService] Failed to notify client of card refund', {
+            paymentId: payment?._id,
+            userId: payment?.userId,
+            err: notifErr.message,
+        });
     }
 }
 

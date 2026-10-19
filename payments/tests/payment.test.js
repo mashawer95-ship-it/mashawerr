@@ -1075,6 +1075,43 @@ describe('Phase 5: Order Cancellation Tests (Scenarios 16 - 18)', () => {
         assert.strictEqual(order.paymentStatus, 'unpaid');
     });
 
+    test('18.1. Card refund sends customer notification via notifyClient with order and amount details', async () => {
+        let notifiedPayload = null;
+        const fakeNotifyClient = async (userId, title, body, data) => {
+            notifiedPayload = { userId, title, body, data };
+        };
+
+        const payment = {
+            _id: 'pay_test_123',
+            userId: 'user_client_456',
+            orderNumericId: 1042,
+            orderId: '6ad68a37e3f71eac8123f03d',
+            amountPiastres: 5000,
+        };
+
+        const amountEgp = (payment.amountPiastres / 100).toFixed(2);
+        const orderRefStr = payment.orderNumericId ? ` للطلب #${payment.orderNumericId}` : '';
+        const title = '💳 تم استرجاع المبلغ إلى بطاقتك البنكية';
+        const body = `تمت معالجة استرجاع مبلغ ${amountEgp} ج.م إلى بطاقتك البنكية بنجاح${orderRefStr}. قد يستغرق ظهور المبلغ في كشف حسابك البنكي من 3 إلى 14 يوم عمل حسب البنك المُصدِر لبطاقتك.`;
+
+        await fakeNotifyClient(payment.userId, title, body, {
+            type: 'payment_refund_card',
+            paymentId: String(payment._id),
+            orderId: String(payment.orderId),
+            orderNumericId: String(payment.orderNumericId),
+            amount: String(amountEgp),
+            currency: 'EGP',
+            refundMethod: 'CARD_GATEWAY',
+        });
+
+        assert.strictEqual(notifiedPayload.userId, 'user_client_456');
+        assert.ok(notifiedPayload.title.includes('استرجاع المبلغ'));
+        assert.ok(notifiedPayload.body.includes('50.00 ج.م'));
+        assert.ok(notifiedPayload.body.includes('#1042'));
+        assert.strictEqual(notifiedPayload.data.refundMethod, 'CARD_GATEWAY');
+        assert.strictEqual(notifiedPayload.data.type, 'payment_refund_card');
+    });
+
     test('21. Legacy createOrder blocks client from creating unpaid online/wallet orders directly', async () => {
         const ONLINE_PAYMENT_METHODS = ['online', 'card', 'wallet', 'app_wallet', 'paymob', 'mobile_wallet'];
         
