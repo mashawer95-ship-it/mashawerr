@@ -1539,23 +1539,31 @@ describe('Post-Audit Invariant 1: Commission Pre-flight & Idempotent Deduction',
 });
 
 describe('Post-Audit Invariant 2: Cash Order Earnings Accounting (No Double Payout)', () => {
-    test('Cash order completion does NOT credit driver wallet with digital earnings', async () => {
+    test('Cash order completion does NOT credit driver wallet with digital earnings (cash retained in hand)', async () => {
+        const { isCashPaymentMethod, extractFullOrderPriceFils } = require('../../middlewares/Wallet');
         let driverWalletBalance = 0;
         let driverCredited = false;
+
+        // Acceptance: company commission (20%) deducted from wallet
+        const companyCommissionFils = 20000;
+        driverWalletBalance -= companyCommissionFils;
 
         function simulateCompletionAccounting(order) {
             const deliveryPriceFils = order.totalDeliveryPrice;
             const repCommissionPct = 80;
             const repEarningsFils = Math.round((deliveryPriceFils * repCommissionPct) / 100);
 
-            const isCashOrder = String(order.paymentMethod || 'cash').toLowerCase().trim() === 'cash';
+            const isCashOrder = isCashPaymentMethod(order.paymentMethod);
             if (order.representativeId && !isCashOrder) {
-                driverWalletBalance += repEarningsFils;
+                const fullOrderPriceFils = extractFullOrderPriceFils(order);
+                driverWalletBalance += fullOrderPriceFils;
                 driverCredited = true;
                 order.repEarningsFils = repEarningsFils;
+                order.repPayoutFils = fullOrderPriceFils;
             } else if (order.representativeId && isCashOrder) {
                 // Driver already collected full cash in hand! Zero digital payout.
-                order.repEarningsFils = 0;
+                order.repEarningsFils = repEarningsFils;
+                order.repPayoutFils = 0;
             }
         }
 
@@ -1568,40 +1576,57 @@ describe('Post-Audit Invariant 2: Cash Order Earnings Accounting (No Double Payo
 
         simulateCompletionAccounting(cashOrder);
         assert.strictEqual(driverCredited, false, 'Driver must NOT receive digital wallet credit for cash order');
-        assert.strictEqual(driverWalletBalance, 0, 'Driver wallet balance must remain unchanged');
-        assert.strictEqual(cashOrder.repEarningsFils, 0, 'Digital earnings record must be 0 for cash');
+        assert.strictEqual(driverWalletBalance, -20000, 'Driver wallet reflects company commission deduction only (-20 EGP)');
+        assert.strictEqual(cashOrder.repEarningsFils, 80000, 'Net earnings calculated as 80 EGP');
+        assert.strictEqual(cashOrder.repPayoutFils, 0, 'Digital payout is 0 for cash');
+        // Total driver profit = 100 EGP cash in hand - 20 EGP deducted in wallet = 80 EGP net!
     });
 
-    test('Non-cash (online/wallet) order completion DOES credit driver wallet', async () => {
-        let driverWalletBalance = 0;
-        let driverCredited = false;
+    test('Non-cash (visa, app_wallet, mobile_wallet) order completion credits driver wallet FULL order price', async () => {
+        const { isCashPaymentMethod, extractFullOrderPriceFils } = require('../../middlewares/Wallet');
 
-        function simulateCompletionAccounting(order) {
-            const deliveryPriceFils = order.totalDeliveryPrice;
-            const repCommissionPct = 80;
-            const repEarningsFils = Math.round((deliveryPriceFils * repCommissionPct) / 100);
+        const testPaymentMethods = ['visa', 'card', 'online', 'wallet', 'app_wallet', 'mobile_wallet'];
 
-            const isCashOrder = String(order.paymentMethod || 'cash').toLowerCase().trim() === 'cash';
-            if (order.representativeId && !isCashOrder) {
-                driverWalletBalance += repEarningsFils;
-                driverCredited = true;
-                order.repEarningsFils = repEarningsFils;
-            } else if (order.representativeId && isCashOrder) {
-                order.repEarningsFils = 0;
+        for (const pm of testPaymentMethods) {
+            let driverWalletBalance = 0;
+            let driverCredited = false;
+
+            // Acceptance: company commission (20%) deducted from wallet
+            const companyCommissionFils = 20000;
+            driverWalletBalance -= companyCommissionFils; // -20 EGP
+
+            function simulateCompletionAccounting(order) {
+                const deliveryPriceFils = order.totalDeliveryPrice;
+                const repCommissionPct = 80;
+                const repEarningsFils = Math.round((deliveryPriceFils * repCommissionPct) / 100);
+
+                const isCashOrder = isCashPaymentMethod(order.paymentMethod);
+                if (order.representativeId && !isCashOrder) {
+                    const fullOrderPriceFils = extractFullOrderPriceFils(order);
+                    driverWalletBalance += fullOrderPriceFils;
+                    driverCredited = true;
+                    order.repEarningsFils = repEarningsFils;
+                    order.repPayoutFils = fullOrderPriceFils;
+                } else if (order.representativeId && isCashOrder) {
+                    order.repEarningsFils = repEarningsFils;
+                    order.repPayoutFils = 0;
+                }
             }
+
+            const nonCashOrder = {
+                orderId: 502,
+                paymentMethod: pm,
+                totalDeliveryPrice: 100000, // 100 EGP collected online/wallet
+                totalPrice: 100,
+                representativeId: 'driver-502',
+            };
+
+            simulateCompletionAccounting(nonCashOrder);
+            assert.strictEqual(driverCredited, true, `Driver must receive digital wallet credit for ${pm} order`);
+            assert.strictEqual(nonCashOrder.repPayoutFils, 100000, 'Full order price (100 EGP) credited to wallet');
+            assert.strictEqual(driverWalletBalance, 80000, `Net driver wallet balance (-20 commission + 100 credit) = 80 EGP profit for ${pm}`);
+            assert.strictEqual(nonCashOrder.repEarningsFils, 80000, 'Driver net profit is recorded as 80 EGP');
         }
-
-        const onlineOrder = {
-            orderId: 502,
-            paymentMethod: 'online',
-            totalDeliveryPrice: 100000, // 100 EGP collected online
-            representativeId: 'driver-502',
-        };
-
-        simulateCompletionAccounting(onlineOrder);
-        assert.strictEqual(driverCredited, true, 'Driver must receive digital wallet credit for online order');
-        assert.strictEqual(driverWalletBalance, 80000, 'Driver wallet credited with 80 EGP earnings');
-        assert.strictEqual(onlineOrder.repEarningsFils, 80000);
     });
 });
 

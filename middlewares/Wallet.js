@@ -472,6 +472,15 @@ async function debitWalletAllowNegative({ userId, amountFils, type = 'debit', de
 }
 
 /**
+ * Helper to determine if a payment method is cash
+ */
+function isCashPaymentMethod(paymentMethod) {
+    if (!paymentMethod) return true;
+    const pm = String(paymentMethod).toLowerCase().trim();
+    return pm === 'cash' || pm === 'كاش' || pm === 'نقدا' || pm === 'نقد';
+}
+
+/**
  * Helper to accurately extract delivery price in fils for Regular Orders (Fils / KD).
  */
 function extractDeliveryPriceFils(order) {
@@ -482,6 +491,34 @@ function extractDeliveryPriceFils(order) {
     if (num >= 5000) return Math.round(num);
     // Values < 5000 are in EGP / KD (e.g. 100 EGP → 100,000 fils)
     return Math.round(num * 1000);
+}
+
+/**
+ * Helper to extract full order price in fils
+ * (delivery price + any purchase/item amount if representative paid)
+ */
+function extractFullOrderPriceFils(order) {
+    if (!order) return 0;
+    const deliveryFils = extractDeliveryPriceFils(order);
+
+    let totalRaw = order.totalPrice;
+    let totalNum = Number(totalRaw);
+    let totalFils = 0;
+    if (totalNum > 0) {
+        totalFils = totalNum >= 5000 ? Math.round(totalNum) : Math.round(totalNum * 1000);
+    }
+
+    let fullOrderFils = Math.max(totalFils, deliveryFils);
+
+    const repPaymentEgp = Number(order.representativePaymentAmount) || 0;
+    if (repPaymentEgp > 0) {
+        const repPaymentFils = Math.round(repPaymentEgp * 1000);
+        if (fullOrderFils <= deliveryFils) {
+            fullOrderFils = deliveryFils + repPaymentFils;
+        }
+    }
+
+    return fullOrderFils > 0 ? fullOrderFils : deliveryFils;
 }
 
 /**
@@ -670,7 +707,7 @@ async function refundCompanyCommissionOnCancelOrRelease({ order }) {
 /**
  * الخصم التلقائي لرسوم التوصيل عند اكتمال الطلب (completed / delivered)
  * 1. خصم سعر التوصيل من محفظة العميل (إن وجد)
- * 2. إيداع أرباح التوصيل للمندوب عند الاكتمال التام للطلب
+ * 2. إيداع مستحقات التوصيل للمندوب عند الاكتمال التام للطلب
  */
 async function processOrderCompletionWallet(order) {
     if (!order) return;
@@ -684,13 +721,16 @@ async function processOrderCompletionWallet(order) {
     let clientDebited = false;
     let driverCredited = false;
 
-    // 1. الخصم من محفظة العميل (فقط إذا اختار العميل الدفع بالمحفظة)
+    // 1. الخصم من محفظة العميل (فقط إذا اختار العميل الدفع بمحفظة التطبيق)
     // SECURITY: Do NOT debit if paymentStatus is already 'paid' — that means the wallet
     // was already debited atomically at checkout time (via payOrderFromWallet / webhook).
     // Double-charging the same wallet order is prevented here by checking paymentStatus.
     const clientUserId = order.clientId || order.userId;
     const alreadyPaidViaCheckout = (order.paymentStatus === 'paid');
-    if (clientUserId && order.paymentMethod === 'wallet' && !alreadyPaidViaCheckout) {
+    const rawPm = String(order.paymentMethod || (Array.isArray(order.tasks) && order.tasks[0]?.paymentMethod) || 'cash').toLowerCase().trim();
+    const isAppWallet = (rawPm === 'wallet' || rawPm === 'app_wallet');
+
+    if (clientUserId && isAppWallet && !alreadyPaidViaCheckout) {
         try {
             await debitWalletAllowNegative({
                 userId: clientUserId,
@@ -716,39 +756,48 @@ async function processOrderCompletionWallet(order) {
         }
     }
 
-    // 2. إيداع أرباح التوصيل للمندوب عند الاكتمال التام للطلب
+    // 2. إيداع مستحقات التوصيل للمندوب عند الاكتمال التام للطلب
     // ACCOUNTING INVARIANT:
     // في طلبات الكاش: يستلم المندوب كامل المبلغ كاش في يده من العميل مباشرة،
     // ونسبة الشركة تم خصمها بالفعل من محفظة المندوب عند قبول الطلب.
     // صافي ربح المندوب موجود بالفعل في جيبه كاش (المبلغ الإجمالي - عمولة الشركة).
-    // لذلك، إيداع أرباح إضافية في المحفظة لطلبات الكاش يؤدي إلى مضاعفة أرباح المندوب (دفع مزدوج).
-    // الإيداع في المحفظة مخصص فقط للطلبات الرقمية (online / card / wallet / mobile_wallet)
-    // حيث استلمت المنصة المبلغ رقمياً ويجب تحويل حصة المندوب لمحفظته.
-    const isCashOrder = String(order.paymentMethod || 'cash').toLowerCase().trim() === 'cash';
+    // لذلك، لا يتم إيداع أي مبلغ في المحفظة لطلبات الكاش تجنباً للازدواجية.
+    // أما في طلبات الدفع الرقمي (محفظة تطبيق، محفظة كاش، فيزا/أونلاين):
+    // فالعميل دفع للمنصة إلكترونياً، والمندوب لم يستلم أي كاش في يده،
+    // ونسبة الشركة خُصمت بالفعل من محفظة المندوب عند قبول الطلب.
+    // لذلك ينزل للمندوب سعر الطلب كاملاً في محفظته بعد اكتمال الطلب،
+    // ليصبح صافي ما دخل محفظته: (سعر الطلب كاملاً - عمولة الشركة المخصومة عند القبول = أرباح المندوب الصافية).
+    const isCashOrder = isCashPaymentMethod(rawPm);
     if (order.representativeId && !isCashOrder) {
         try {
             const { resolveOrderRepCommissionPct } = require('./RepCommission');
             const repCommissionPct = await resolveOrderRepCommissionPct({ order, repId: order.representativeId });
             const repEarningsFils = Math.round((deliveryPriceFils * repCommissionPct) / 100);
+            const payoutAmountFils = extractFullOrderPriceFils(order);
 
-            if (repEarningsFils > 0) {
+            if (payoutAmountFils > 0) {
                 await creditWallet({
                     userId: order.representativeId,
-                    amountFils: repEarningsFils,
+                    amountFils: payoutAmountFils,
                     type: 'order_earnings',
-                    description: `أرباح توصيل الطلب #${order.orderId || ''}`,
+                    description: `مستحقات الطلب #${order.orderId || ''}`,
                     refId,
                     performedBy: 'system',
                 });
                 order.repEarningsFils = repEarningsFils;
+                order.repPayoutFils = payoutAmountFils;
                 driverCredited = true;
             }
         } catch (err) {
-            console.error(`[processOrderCompletionWallet] فشل إيداع أرباح المندوب: ${err.message}`);
+            console.error(`[processOrderCompletionWallet] فشل إيداع مستحقات المندوب: ${err.message}`);
         }
     } else if (order.representativeId && isCashOrder) {
-        // Record zero digital wallet payout for cash orders (cash retained by driver)
-        order.repEarningsFils = 0;
+        // Record zero digital wallet payout for cash orders (cash retained by driver in hand)
+        const { resolveOrderRepCommissionPctSync } = require('./RepCommission');
+        const repCommissionPct = resolveOrderRepCommissionPctSync({ order });
+        const repEarningsFils = Math.round((deliveryPriceFils * repCommissionPct) / 100);
+        order.repEarningsFils = repEarningsFils;
+        order.repPayoutFils = 0;
     }
 
     if (clientDebited || driverCredited || deliveryPriceFils > 0) {
@@ -829,4 +878,6 @@ module.exports = {
     getMinWalletBalanceFils,
     validateCreditDebit,
     DEFAULT_MIN_WALLET_FILS,
+    isCashPaymentMethod,
+    extractFullOrderPriceFils,
 };

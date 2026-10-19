@@ -1870,6 +1870,11 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
 
     // ─── Fire-and-forget: check target reward & send email when order completes ────────────
     if ((st === 'completed' || st === 'delivered') && order.representativeId) {
+        try {
+            const { processOrderCompletionWallet } = require('../middlewares/Wallet');
+            processOrderCompletionWallet(order).catch((e) => console.error('[updateOrderStatus] Wallet error:', e.message));
+        } catch (_) {}
+
         checkAndRewardTarget(order.representativeId).catch(() => { });
 
         const { sendDeliveryOrderCompletionEmail, dispatchBackgroundEmail } = require('../services/emailService');
