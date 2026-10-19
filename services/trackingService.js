@@ -184,6 +184,15 @@ async function processLocationUpdate(socket, nsp, payload) {
     // ── Step 2: Get previous location ─────────────────────────────────────────
     const prevLoc = await getDriverLocation(driverId);
 
+    // 🛑 Senior Production Guard: If vehicle is stopped or moving slowly (< 0.8 m/s)
+    // and reported heading is 0, preserve the previous valid heading so customer
+    // marker orientation doesn't snap to North (0°) or spin.
+    if ((newLoc.speed == null || newLoc.speed < 0.8) && (newLoc.heading === 0 || newLoc.heading == null)) {
+        if (prevLoc && prevLoc.heading != null && prevLoc.heading !== 0) {
+            newLoc.heading = prevLoc.heading;
+        }
+    }
+
     // ── Step 3: Movement & broadcast check ───────────────────────────────────
     let shouldBroadcast = true;
     if (prevLoc) {
@@ -457,8 +466,8 @@ async function customerSubscribeToTrip(socket, tripId, driverId) {
                 lastLoc = {
                     lat: rep.lastLocation.lat,
                     lng: rep.lastLocation.lng,
-                    heading: 0,
-                    speed: 0,
+                    heading: rep.lastLocation.heading ?? 0,
+                    speed: rep.lastLocation.speed ?? 0,
                     timestamp: Date.now(),
                 };
             }
