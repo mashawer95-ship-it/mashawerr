@@ -300,8 +300,8 @@ module.exports = {
  * @returns {Promise<string>} The plaintext 6-digit OTP to send to the client.
  */
 async function generateAndStoreHMAC(sessionId, otpVersion) {
-    const otp = Math.floor(100000 + Math.random() * 900000).toString(); // 6 digits
-    const secret = process.env.OTP_SECRET || 'mashawerr-super-secret-key-2026';
+    const otp = crypto.randomInt(100000, 1000000).toString(); // 6 digits (CSPRNG)
+    const secret = require('../utils/secrets').getOtpSecret();
     const hmac = crypto.createHmac('sha256', secret).update(otp).digest('hex');
     
     const key = `delivery:otp:${sessionId}:v${otpVersion}`;
@@ -340,7 +340,7 @@ async function verifyHMACOTP(sessionId, otpVersion, incomingOtp) {
     if (!data) return { valid: false, reason: 'EXPIRED_OR_NOT_FOUND', attempts: 0 };
     if (data.attempts >= 5) return { valid: false, reason: 'LOCKED_MAX_ATTEMPTS', attempts: data.attempts };
     
-    const secret = process.env.OTP_SECRET || 'mashawerr-super-secret-key-2026';
+    const secret = require('../utils/secrets').getOtpSecret();
     const incomingHmac = crypto.createHmac('sha256', secret).update(incomingOtp).digest('hex');
     
     // Timing safe equal is best practice, but straight comparison is okay since it's an HMAC hex string.

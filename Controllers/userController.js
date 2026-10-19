@@ -862,12 +862,24 @@ const getOnlineRepresentatives = asyncHandler(async (req, res) => {
         const { normalizeGovernorate } = require('../utils/governorateHelper');
         const normGov = normalizeGovernorate(governorate);
         if (normGov) {
-            filter.governorate = { $regex: new RegExp(normGov, 'i') };
+            filter.governorate = { $regex: new RegExp(escapeRegex(normGov), 'i') };
         }
+    }
+
+    // Bounding box pre-filter (index-friendly) — avoids scanning/loading every rep in the country.
+    const _bbLat = parseFloat(lat);
+    const _bbLng = parseFloat(lng);
+    if (!isNaN(_bbLat) && !isNaN(_bbLng)) {
+        const _bbRadiusKm = parseFloat(radius) || 25;
+        const dLat = _bbRadiusKm / 111;
+        const dLng = _bbRadiusKm / (111 * Math.max(0.01, Math.cos((_bbLat * Math.PI) / 180)));
+        filter['lastLocation.lat'] = { $gte: _bbLat - dLat, $lte: _bbLat + dLat };
+        filter['lastLocation.lng'] = { $gte: _bbLng - dLng, $lte: _bbLng + dLng };
     }
 
     let users = await User.find(filter)
         .select('_id firstName lastName phone profileImage vehicleModel vehicleNumber vehicleColor lastLocation preferredOrderTypes governorate')
+        .limit(Number(process.env.ONLINE_REPS_CAP) || 500)
         .lean();
 
     // فلترة وترتيب المناديب حسب المسافة إذا أرسل العميل إحداثياته (نطاق 25 كم افتراضياً)

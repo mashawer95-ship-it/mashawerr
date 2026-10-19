@@ -166,6 +166,10 @@ UserSchema.index({ createdAt: -1, _id: -1 });
 UserSchema.index({ userType: 1, createdAt: -1 });
 UserSchema.index({ isSuspended: 1, updatedAt: -1, _id: -1 });
 UserSchema.index({ status: 1, updatedAt: -1, _id: -1 });
+// Online representatives lookup (bounding-box on last known location)
+UserSchema.index({ isAvailable: 1, 'lastLocation.lat': 1, 'lastLocation.lng': 1 });
+// Ban / linked-account checks by physical device
+UserSchema.index({ deviceId: 1 }, { sparse: true });
 
 UserSchema.set('toJSON', {
     transform(_doc, ret) {

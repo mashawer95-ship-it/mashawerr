@@ -2513,6 +2513,36 @@ function isFemaleGender(g) {
     return norm === 'female' || norm === 'أنثى' || norm === 'انثى' || norm === 'woman';
 }
 
+// ── Waiting-orders base query: short in-process cache + hard cap ─────────────────
+// Thousands of representatives poll /orders/waiting; they all need the same base
+// result set, so share it (and share the in-flight query) instead of hitting MongoDB per request.
+const WAITING_BASE_TTL_MS = Number(process.env.WAITING_ORDERS_CACHE_MS) || 2000;
+const WAITING_BASE_CAP = Number(process.env.WAITING_ORDERS_CAP) || 2000;
+const _waitingBaseCache = new Map(); // key -> { at, orders, pending }
+
+async function _getWaitingOrdersBase(orderCategoryFilter) {
+    const key = JSON.stringify(orderCategoryFilter);
+    const now = Date.now();
+    const entry = _waitingBaseCache.get(key);
+    if (entry && entry.orders && now - entry.at < WAITING_BASE_TTL_MS) return entry.orders;
+    if (entry && entry.pending) return entry.pending;
+
+    const pending = Order.find({ status: 'waiting', orderCategory: orderCategoryFilter })
+        .sort({ orderId: -1 })
+        .limit(WAITING_BASE_CAP)
+        .lean()
+        .then((orders) => {
+            _waitingBaseCache.set(key, { at: Date.now(), orders, pending: null });
+            return orders;
+        })
+        .catch((err) => {
+            _waitingBaseCache.delete(key);
+            throw err;
+        });
+    _waitingBaseCache.set(key, { at: entry?.at || 0, orders: entry?.orders || null, pending });
+    return pending;
+}
+
 /**
  * @description List all waiting orders (for representative dashboard)
  * @route GET /api/orders/waiting
@@ -2548,10 +2578,9 @@ const listWaitingOrders = asyncHandler(async (req, res) => {
         }
     }
 
-    let orders = await Order.find({
-        status: 'waiting',
-        orderCategory: orderCategoryFilter
-    }).sort({ orderId: -1 }).lean();
+    // Shared base query: cached briefly + capped (see _getWaitingOrdersBase). Copy objects because
+    // the filters below mutate order fields (e.g. o.governorate) and must not leak between reps.
+    let orders = (await _getWaitingOrdersBase(orderCategoryFilter)).map((o) => ({ ...o }));
 
     // 2. Filter orders strictly based on gender for passenger trips:
     // - Female representative: sees ONLY passenger orders belonging to females (is_ladies_only OR female client)

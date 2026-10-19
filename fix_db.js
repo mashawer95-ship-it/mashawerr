@@ -1,6 +1,7 @@
 require('dotenv').config();
 const m=require('mongoose');
-const uri = process.env.MONGO_URI || 'mongodb+srv://amirashraf653_db_user:amirashraf12@cluster0.9v3tbgy.mongodb.net/MashawerrDB?retryWrites=true&w=majority&appName=Cluster0';
+const uri = process.env.MONGO_URI;
+if (!uri) { console.error('MONGO_URI is not set'); process.exit(1); }
 m.connect(uri).then(async()=>{
   const db=m.connection.db;
   const res=await db.collection('products').updateMany({deliveryPricePerMeter:100}, {$unset:{deliveryPricePerMeter:''}});

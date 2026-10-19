@@ -1,6 +1,7 @@
 const asyncHandler = require('express-async-handler');
 const admin = require('firebase-admin');
 const jwt = require('jsonwebtoken'); // kept for any legacy usage
+const { getRegistrationTokenSecret } = require('../utils/secrets');
 const bcrypt = require('bcryptjs');
 const mongoose = require('mongoose');
 const { User } = require('../middlewares/User');
@@ -123,7 +124,7 @@ const googleSignIn = asyncHandler(async (req, res) => {
         const nameParts = (name || '').trim().split(' ');
         const firstName = nameParts[0] || 'Google';
         const lastName = nameParts.slice(1).join(' ') || 'User';
-        const jwtSecret = process.env.JWT_SECRET || 'fallback_secret_mashaweer_auth';
+        const jwtSecret = getRegistrationTokenSecret();
 
         // ── 3. If User DOES NOT exist in DB: DO NOT CREATE THEM YET! ───────────
         // They must complete governorate, phone, password, and gender first.
@@ -331,7 +332,7 @@ const completeGoogleProfile = asyncHandler(async (req, res) => {
 
     // ── 1. If registrationToken is provided, decode and verify ─────────────
     if (regToken) {
-        const jwtSecret = process.env.JWT_SECRET || 'fallback_secret_mashaweer_auth';
+        const jwtSecret = getRegistrationTokenSecret();
         let decodedPayload = null;
         try {
             decodedPayload = jwt.verify(regToken, jwtSecret);
