@@ -19,6 +19,7 @@ router.get('/client-keys', (req, res) => {
         const googleMapsKey =
             process.env.GOOGLE_MAPS_CLIENT_KEY ||
             process.env.GOOGLE_MAPS_ANDROID_KEY ||
+            process.env.GOOGLE_MAPS_KEY ||
             '';
 
         const paymobConfig = require('../payments/config/paymobConfig');
