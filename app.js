@@ -221,6 +221,9 @@ app.use('/api/chat', require('./routes/chat'));
 // ─── Client Dynamic Configuration Module ───────────────────────────────────
 app.use('/api/config', require('./routes/config'));
 
+// ─── Secure Maps Proxy Module (Places, Geocode, Roads) ──────────────────────
+app.use('/api/maps', require('./routes/maps'));
+
 // ─── Static: uploaded order photos ──────────────────────────────────────────
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 

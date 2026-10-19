@@ -14,11 +14,11 @@ const logger = require('../utils/logger');
 // GET /api/config/client-keys
 router.get('/client-keys', (req, res) => {
     try {
+        // Only expose a key specifically designated for the mobile SDK (restricted by Package + SHA-1).
+        // The master GOOGLE_MAPS_KEY stays secret on the server for /api/maps and /api/trip routes.
         const googleMapsKey =
-            process.env.GOOGLE_MAPS_KEY ||
-            process.env.GOOGLE_ROUTES_API_KEY ||
-            process.env.GOOGLE_API_KEY ||
-            process.env.GOOGLE_MAP_API_KEY ||
+            process.env.GOOGLE_MAPS_CLIENT_KEY ||
+            process.env.GOOGLE_MAPS_ANDROID_KEY ||
             '';
 
         const paymobConfig = require('../payments/config/paymobConfig');

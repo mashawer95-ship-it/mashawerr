@@ -174,6 +174,28 @@ const emailVerificationLimiter = rateLimit({
     },
 });
 
+/**
+ * Maps Proxy Rate Limiter:
+ * Up to 120 requests per minute per user/IP. Prevents abuse/scraping while allowing smooth autocomplete.
+ */
+const mapsProxyLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: Number(process.env.MAPS_RATE_LIMIT_MAX) || 120,
+    standardHeaders: true,
+    legacyHeaders: false,
+    store: buildStore('maps'),
+    passOnStoreError: true,
+    keyGenerator: (req, res) => req.user?.id || ipKeyGenerator(req, res),
+    handler: (req, res) => {
+        logger.warn(`[RateLimit] Maps proxy limit exceeded for: ${req.user?.id || req.ip}`);
+        res.status(429).json({
+            status: 'OVER_QUERY_LIMIT',
+            success: false,
+            message: 'Too many map requests. Please slow down.',
+        });
+    },
+});
+
 module.exports = {
     locationUpdateLimiter,
     tripApiLimiter,
@@ -182,4 +204,5 @@ module.exports = {
     emailVerificationLimiter,
     authLimiter,
     refreshTokenLimiter,
+    mapsProxyLimiter,
 };
