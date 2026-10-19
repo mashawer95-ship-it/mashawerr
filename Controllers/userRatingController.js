@@ -1,7 +1,8 @@
 const asyncHandler = require('express-async-handler');
-const { UserRating, validateUserRating } = require('../middlewares/UserRating');
+const { UserRating, RatingSkip, validateUserRating } = require('../middlewares/UserRating');
 const { Order } = require('../middlewares/Order');
 const { User } = require('../middlewares/User');
+const { redisGet, redisSet, redisDel } = require('../config/redis');
 
 const { sanitizeErrorResponse } = require('../middlewares/objectAuthorization');
 
@@ -214,6 +215,10 @@ const submitUserRating = asyncHandler(async (req, res) => {
         { upsert: true, new: true }
     );
 
+    // تنظيف أي تخطي مسجل مسبقاً لهذا الأوردر إن وجد
+    RatingSkip.deleteOne({ userId: finalRaterId, orderId: normalizedOrderId }).catch(() => {});
+    redisDel(`rating_skip:${finalRaterId}:${normalizedOrderId}`).catch(() => {});
+
     const stats = await calcUserStats(finalRateeId);
 
     return res.status(alreadyExists ? 200 : 201).json({
@@ -363,4 +368,153 @@ const getOrderRatings = asyncHandler(async (req, res) => {
     });
 });
 
-module.exports = { submitUserRating, getUserRatings, getOrderRatings };
+/**
+ * @desc   Get pending unrated completed order for the authenticated user (cloud persistent recovery)
+ * @route  GET /api/ratings/pending
+ * @access Private (verifyToken)
+ */
+const getPendingRating = asyncHandler(async (req, res) => {
+    const userId = req.user?.id?.toString();
+    if (!userId) {
+        return res.status(401).json({ message: 'Authentication required' });
+    }
+
+    const rawUserType = (req.user?.userType || req.fullUser?.userType || '').toLowerCase();
+    const isRep = ['representative', 'driver', 'rep', 'captain', 'delegate'].includes(rawUserType);
+
+    const COMPLETED_STATUSES = ['completed', 'delivered', 'تم التسليم', 'مكتمل', '3', 'ended', 'done'];
+
+    let order = null;
+    if (isRep) {
+        order = await Order.findOne({
+            representativeId: userId,
+            status: { $in: COMPLETED_STATUSES },
+            $or: [
+                { clientId: { $exists: true, $ne: null } },
+                { userId: { $exists: true, $ne: null } },
+            ],
+        })
+        .sort({ updatedAt: -1, createdAt: -1 })
+        .select('orderId clientId userId status createdAt updatedAt')
+        .lean();
+    } else {
+        order = await Order.findOne({
+            $or: [
+                { clientId: userId },
+                { userId: userId },
+            ],
+            status: { $in: COMPLETED_STATUSES },
+            representativeId: { $exists: true, $ne: null },
+        })
+        .sort({ updatedAt: -1, createdAt: -1 })
+        .select('orderId representativeId status createdAt updatedAt')
+        .lean();
+    }
+
+    if (!order) {
+        return res.status(200).json({ hasPending: false });
+    }
+
+    const normalizedOrderId = order.orderId || order._id.toString();
+
+    // 1. فحص هل قام المستخدم بتقييم هذا الأوردر مسبقاً
+    const alreadyRated = await UserRating.exists({
+        orderId: normalizedOrderId,
+        raterId: userId,
+    });
+    if (alreadyRated) {
+        return res.status(200).json({ hasPending: false });
+    }
+
+    // 2. فحص هل قام المستخدم بالضغط على تخطي لهذا الأوردر
+    const redisSkip = await redisGet(`rating_skip:${userId}:${normalizedOrderId}`).catch(() => null);
+    if (redisSkip) {
+        return res.status(200).json({ hasPending: false });
+    }
+
+    const dbSkip = await RatingSkip.exists({
+        userId,
+        orderId: normalizedOrderId,
+    });
+    if (dbSkip) {
+        await redisSet(`rating_skip:${userId}:${normalizedOrderId}`, '1', 86400 * 30).catch(() => {});
+        return res.status(200).json({ hasPending: false });
+    }
+
+    // 3. جلب بيانات الطرف الآخر المراد تقييمه
+    let rateeId = '';
+    let userTypeStr = 'customer';
+
+    if (isRep) {
+        rateeId = (order.clientId || order.userId || '').toString();
+        userTypeStr = 'representative';
+    } else {
+        rateeId = (order.representativeId || '').toString();
+        userTypeStr = 'customer';
+    }
+
+    if (!rateeId) {
+        return res.status(200).json({ hasPending: false });
+    }
+
+    const rateeUser = await User.findById(rateeId)
+        .select('firstName lastName profileImage rating ratingCount')
+        .lean();
+
+    const rateeName = rateeUser
+        ? `${rateeUser.firstName || ''} ${rateeUser.lastName || ''}`.trim()
+        : (isRep ? 'العميل' : 'المندوب');
+
+    return res.status(200).json({
+        hasPending: true,
+        data: {
+            orderId: normalizedOrderId,
+            ratedById: userId,
+            ratedUserId: rateeId,
+            ratedUserName: rateeName || (isRep ? 'العميل' : 'المندوب'),
+            rateeImageUrl: rateeUser?.profileImage || null,
+            rateeRating: rateeUser?.rating || 5.0,
+            rateeRatingCount: rateeUser?.ratingCount || 0,
+            userType: userTypeStr,
+        },
+    });
+});
+
+/**
+ * @desc   Mark a rating as skipped for an order
+ * @route  POST /api/ratings/order/:orderId/skip
+ * @access Private (verifyToken)
+ */
+const skipOrderRating = asyncHandler(async (req, res) => {
+    const rawOrderId = req.params.orderId;
+    const userId = req.user?.id?.toString();
+
+    if (!userId || !rawOrderId) {
+        return res.status(400).json({ message: 'orderId and authentication required' });
+    }
+
+    const orderIdNum = parseInt(rawOrderId, 10);
+    const normalizedOrderId = (!isNaN(orderIdNum) && orderIdNum > 0) ? orderIdNum : rawOrderId;
+
+    await RatingSkip.findOneAndUpdate(
+        { userId, orderId: normalizedOrderId },
+        { userId, orderId: normalizedOrderId, skippedAt: new Date() },
+        { upsert: true, new: true }
+    );
+
+    await redisSet(`rating_skip:${userId}:${normalizedOrderId}`, '1', 86400 * 30).catch(() => {});
+
+    return res.status(200).json({
+        success: true,
+        message: 'Rating skipped successfully',
+        orderId: normalizedOrderId,
+    });
+});
+
+module.exports = {
+    submitUserRating,
+    getUserRatings,
+    getOrderRatings,
+    getPendingRating,
+    skipOrderRating,
+};

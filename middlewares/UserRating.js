@@ -64,6 +64,32 @@ UserRatingSchema.index({ orderId: 1 });
 
 const UserRating = mongoose.model('UserRating', UserRatingSchema);
 
+// ─── RatingSkip Schema ────────────────────────────────────────────────────────
+// تتبع الأوردرات التي تم تخطي تقييمها من قِبل المستخدم حتى لا يتم إزعاجه بها مرة أخرى
+const RatingSkipSchema = new mongoose.Schema(
+    {
+        userId: {
+            type: String,
+            required: true,
+            index: true,
+        },
+        orderId: {
+            type: mongoose.Schema.Types.Mixed,
+            required: true,
+            index: true,
+        },
+        skippedAt: {
+            type: Date,
+            default: Date.now,
+        },
+    },
+    { timestamps: true }
+);
+
+RatingSkipSchema.index({ userId: 1, orderId: 1 }, { unique: true });
+
+const RatingSkip = mongoose.model('RatingSkip', RatingSkipSchema);
+
 // ─── Joi Validators ───────────────────────────────────────────────────────────
 
 /**
@@ -95,4 +121,4 @@ function validateUserRating(obj) {
     return schema.validate(obj, { abortEarly: false });
 }
 
-module.exports = { UserRating, validateUserRating };
+module.exports = { UserRating, RatingSkip, validateUserRating };
