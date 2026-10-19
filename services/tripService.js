@@ -13,7 +13,9 @@ const { haversineDistance, encodePolyline, decodePolyline } = require('../utils/
 const { broadcastRoute } = require('./BroadcastService');
 const logger = require('../utils/logger');
 const metrics = require('../utils/metrics');
+const mongoose = require('mongoose');
 const { Trip } = require('../models/Trip');
+const { Order } = require('../middlewares/Order');
 const { resolveOrderIds } = require('../utils/orderIdResolver');
 
 function sleep(ms) {
@@ -216,6 +218,18 @@ async function startTrip(tripId, driverId, origin, destination, options = {}) {
                 startedAt:        existingTrip?.startedAt || new Date(),
                 routeVersion:     newVersion,
             }, { upsert: true, new: true });
+
+            const initialOrderFields = {
+                encodedPolyline: routeData.encodedPolyline,
+                distanceMeters:  routeData.distanceMeters,
+                durationSeconds: routeData.durationSeconds,
+            };
+            if (mongoose.isValidObjectId(tid)) {
+                await Order.findByIdAndUpdate(tid, initialOrderFields).catch(() => {});
+            }
+            if (!isNaN(Number(tid))) {
+                await Order.findOneAndUpdate({ orderId: Number(tid) }, initialOrderFields).catch(() => {});
+            }
         }
 
         const tripData = {
@@ -391,6 +405,18 @@ async function processLocationUpdate(tripId, driverId, location, heading, io, op
                 routeVersion:    newVersion,
                 destination:     dest,
             });
+
+            const rerouteOrderFields = {
+                encodedPolyline: newRoute.encodedPolyline,
+                distanceMeters:  newRoute.distanceMeters,
+                durationSeconds: newRoute.durationSeconds,
+            };
+            if (mongoose.isValidObjectId(tid)) {
+                await Order.findByIdAndUpdate(tid, rerouteOrderFields).catch(() => {});
+            }
+            if (!isNaN(Number(tid))) {
+                await Order.findOneAndUpdate({ orderId: Number(tid) }, rerouteOrderFields).catch(() => {});
+            }
         }
 
         // Update Redis Trip cache across all IDs
