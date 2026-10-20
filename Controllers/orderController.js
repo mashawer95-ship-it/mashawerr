@@ -1866,6 +1866,29 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
         }
     }
 
+    // ─── Refund company commission to representative when order moves to 'review' or 'delayed' ─────
+    if (['review', 'delayed'].includes(st) && order.representativeId) {
+        if (order.companyCommissionDeducted && order.companyCommissionFils > 0) {
+            try {
+                const { refundCompanyCommissionOnCancelOrRelease } = require('../middlewares/Wallet');
+                const reasonLabel = st === 'review' ? 'تحويل الطلب للمراجعة' : 'تسجيل تأخير الطلب';
+                await refundCompanyCommissionOnCancelOrRelease({
+                    order,
+                    repId: order.representativeId,
+                    reason: `استرجاع عمولة الشركة بعد ${reasonLabel} #${order.orderId || order._id}`,
+                });
+                order.companyCommissionDeducted = false;
+            } catch (commErr) {
+                console.error(`[updateOrderStatus] Failed to refund commission: ${commErr.message}`);
+            }
+        }
+        try {
+            const { clearRepCurrentOrder, invalidateLiveDashboard } = require('../redis/hrRedis');
+            await clearRepCurrentOrder(order.representativeId);
+            await invalidateLiveDashboard();
+        } catch (_) {}
+    }
+
     await order.save();
 
     // ─── Fire-and-forget: check target reward & send email when order completes ────────────
@@ -2920,6 +2943,8 @@ const acceptOrder = asyncHandler(async (req, res) => {
             if (deductResult && deductResult.allowed) {
                 deductionSuccessful = true;
                 if (deductResult.companyFeeFils > 0) {
+                    acceptedOrder.companyCommissionDeducted = true;
+                    acceptedOrder.companyCommissionFils = deductResult.companyFeeFils;
                     await Order.findByIdAndUpdate(acceptedOrder._id, {
                         companyCommissionDeducted: true,
                         companyCommissionFils: deductResult.companyFeeFils,
@@ -3306,8 +3331,15 @@ const markClientDelayed = asyncHandler(async (req, res) => {
     if (oldRepId) {
         try {
             const { refundCompanyCommissionOnCancelOrRelease } = require('../middlewares/Wallet');
-            await refundCompanyCommissionOnCancelOrRelease({ order });
-        } catch (_) { }
+            await refundCompanyCommissionOnCancelOrRelease({
+                order,
+                repId: oldRepId,
+                reason: `استرجاع عمولة الشركة بعد تسجيل تأخير الطلب #${refId}`,
+            });
+            await Order.findByIdAndUpdate(order._id, { companyCommissionDeducted: false }).catch(() => {});
+        } catch (commErr) {
+            logger.error(`[markClientDelayed] Failed to refund company commission: ${commErr.message}`);
+        }
         try {
             const { clearRepCurrentOrder, invalidateLiveDashboard } = require('../redis/hrRedis');
             await clearRepCurrentOrder(oldRepId);

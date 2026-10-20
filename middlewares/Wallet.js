@@ -666,21 +666,35 @@ async function deductCompanyCommissionOnAccept({ order, repId, isBusiness = fals
 }
 
 /**
- * ─── Helper: استرجاع نسبة الشركة المخصومة في حال إلغاء الطلب أو إفلاته قبل الاكتمال ─────
+ * ─── Helper: استرجاع نسبة الشركة المخصومة في حال إلغاء أو إفلات الطلب أو تحويله لمراجعة / تأخير ─────
  */
-async function refundCompanyCommissionOnCancelOrRelease({ order }) {
-    if (!order) return;
-    if (!order.companyCommissionDeducted || !order.companyCommissionFils || order.companyCommissionFils <= 0) {
-        return;
+async function refundCompanyCommissionOnCancelOrRelease({ order, reason = '', repId: repIdOverride = null }) {
+    if (!order) return { refunded: false };
+
+    // Refresh commission details from DB if missing on in-memory object
+    if ((!order.companyCommissionFils || order.companyCommissionFils <= 0 || order.companyCommissionDeducted === undefined) && order._id) {
+        try {
+            const OrderModel = mongoose.models.Order || mongoose.model('Order');
+            const fresh = await OrderModel.findById(order._id).select('companyCommissionDeducted companyCommissionFils representativeId orderId').lean();
+            if (fresh) {
+                if (fresh.companyCommissionDeducted !== undefined) order.companyCommissionDeducted = fresh.companyCommissionDeducted;
+                if (fresh.companyCommissionFils !== undefined) order.companyCommissionFils = fresh.companyCommissionFils;
+                if (!order.representativeId && fresh.representativeId) order.representativeId = fresh.representativeId;
+            }
+        } catch (_) {}
     }
-    const repId = order.representativeId;
-    if (!repId) return;
+
+    if (!order.companyCommissionDeducted || !order.companyCommissionFils || order.companyCommissionFils <= 0) {
+        return { refunded: false };
+    }
+    const repId = repIdOverride || order.representativeId;
+    if (!repId) return { refunded: false };
 
     try {
         const wallet = await getOrCreateWallet(repId);
         wallet.balanceFils += order.companyCommissionFils;
         const orderNum = order.orderId || order._id || '';
-        const transDesc = `استرجاع عمولة الشركة بعد إلغاء/إفلات الطلب #${orderNum}`;
+        const transDesc = reason || `استرجاع عمولة الشركة بعد إلغاء/إفلات الطلب #${orderNum}`;
         wallet.transactions.push({
             type: 'company_commission_refund',
             amountFils: order.companyCommissionFils,
@@ -699,8 +713,19 @@ async function refundCompanyCommissionOnCancelOrRelease({ order }) {
             refId: String(orderNum),
         });
         order.companyCommissionDeducted = false;
+
+        // Persist companyCommissionDeducted = false in MongoDB directly
+        if (order._id) {
+            try {
+                const OrderModel = mongoose.models.Order || mongoose.model('Order');
+                await OrderModel.findByIdAndUpdate(order._id, { companyCommissionDeducted: false });
+            } catch (_) {}
+        }
+
+        return { refunded: true, amountFils: order.companyCommissionFils };
     } catch (err) {
         console.error(`[refundCompanyCommissionOnCancelOrRelease] فشل استرجاع العمولة: ${err.message}`);
+        return { refunded: false, error: err.message };
     }
 }
 

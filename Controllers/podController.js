@@ -915,6 +915,29 @@ exports.reviewAttempt = async (req, res) => {
                 { new: true }
             ).catch(() => null);
 
+            // ─── Refund company commission to representative when order moves to 'review' ─────
+            if (updatedOrder) {
+                const repUser = updatedOrder.representativeId || session?.driverId;
+                if (repUser) {
+                    try {
+                        const { refundCompanyCommissionOnCancelOrRelease } = require('../middlewares/Wallet');
+                        await refundCompanyCommissionOnCancelOrRelease({
+                            order: updatedOrder,
+                            repId: repUser,
+                            reason: `استرجاع عمولة الشركة بعد تحويل الطلب #${updatedOrder.orderId || updatedOrder._id} للمراجعة`,
+                        });
+                        await Order.findByIdAndUpdate(updatedOrder._id, { companyCommissionDeducted: false }).catch(() => {});
+                    } catch (commErr) {
+                        logger.error(`[PoD review] Failed to refund company commission: ${commErr.message}`);
+                    }
+                    try {
+                        const { clearRepCurrentOrder, invalidateLiveDashboard } = require('../redis/hrRedis');
+                        await clearRepCurrentOrder(repUser);
+                        await invalidateLiveDashboard();
+                    } catch (_) {}
+                }
+            }
+
             if (session && attempt) {
                 await DeliveryEventBus.emitAttemptRejected(req.app.get('io'), session, attempt, reason, traceId, updatedOrder).catch(() => {});
             }

@@ -1491,6 +1491,56 @@ describe('Fix 5: Company commission wired into acceptance and cancellation', () 
         assert.strictEqual(shouldRefundA, true, 'Commission is refunded when flag is set');
         assert.strictEqual(shouldRefundB, false, 'No refund when no commission was deducted');
     });
+
+    test('commission refund on status changed to review: refunds commission if deducted', async () => {
+        const { refundCompanyCommissionOnCancelOrRelease } = require('../../middlewares/Wallet');
+        const order = {
+            orderId: 995,
+            representativeId: 'test-rep-review-1',
+            companyCommissionDeducted: true,
+            companyCommissionFils: 1500,
+        };
+
+        const res = await refundCompanyCommissionOnCancelOrRelease({
+            order,
+            reason: `استرجاع عمولة الشركة بعد تحويل الطلب #${order.orderId} للمراجعة`,
+        });
+
+        assert.strictEqual(res.refunded, true, 'Must refund commission when order is moved to review');
+        assert.strictEqual(res.amountFils, 1500, 'Must refund exact commission amount');
+        assert.strictEqual(order.companyCommissionDeducted, false, 'Deducted flag must be cleared to false');
+
+        // Calling it again must not refund (idempotent)
+        const secondRes = await refundCompanyCommissionOnCancelOrRelease({
+            order,
+            reason: `استرجاع عمولة الشركة بعد تحويل الطلب #${order.orderId} للمراجعة`,
+        });
+        assert.strictEqual(secondRes.refunded, false, 'Second call must be idempotent and not double-refund');
+    });
+
+    test('commission refund on status changed to delayed: refunds commission independent of delay reward', async () => {
+        const { refundCompanyCommissionOnCancelOrRelease } = require('../../middlewares/Wallet');
+        const order = {
+            orderId: 996,
+            representativeId: 'test-rep-delayed-1',
+            companyCommissionDeducted: true,
+            companyCommissionFils: 2500,
+        };
+
+        // Driver delay reward is a separate concept
+        const delayRewardFils = 1000;
+        assert.notStrictEqual(order.companyCommissionFils, delayRewardFils, 'Delay reward and company commission are independent');
+
+        const res = await refundCompanyCommissionOnCancelOrRelease({
+            order,
+            repId: order.representativeId,
+            reason: `استرجاع عمولة الشركة بعد تسجيل تأخير الطلب #${order.orderId}`,
+        });
+
+        assert.strictEqual(res.refunded, true, 'Must refund company commission when order is marked delayed');
+        assert.strictEqual(res.amountFils, 2500, 'Must refund exact commission amount (2500 fils)');
+        assert.strictEqual(order.companyCommissionDeducted, false, 'Deducted flag must be cleared');
+    });
 });
 
 describe('Fix 6: JWT production startup guard', () => {
