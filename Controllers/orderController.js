@@ -3845,7 +3845,7 @@ const getAdminOrderFinancialStats = asyncHandler(async (req, res) => {
                                 { $gt: ['$$dp', 0] },
                                 {
                                     $cond: [
-                                        { $lt: ['$$dp', 100] },
+                                        { $lt: ['$$dp', 5000] },
                                         { $round: [{ $multiply: ['$$dp', 1000] }] },
                                         { $round: ['$$dp'] }
                                     ]
@@ -3860,7 +3860,7 @@ const getAdminOrderFinancialStats = asyncHandler(async (req, res) => {
                         { $gt: ['$totalPrice', 0] },
                         {
                             $cond: [
-                                { $lt: ['$totalPrice', 100] },
+                                { $lt: ['$totalPrice', 5000] },
                                 { $round: [{ $multiply: ['$totalPrice', 1000] }] },
                                 { $round: ['$totalPrice'] }
                             ]

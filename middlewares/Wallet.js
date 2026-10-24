@@ -430,7 +430,8 @@ async function debitWalletAllowNegative({ userId, amountFils, type = 'debit', de
     if (!updated) {
         const currentWallet = await Wallet.findById(wallet._id).lean();
         const limitKd = (Math.abs(minAllowedFils) / 1000).toFixed(2);
-        throw new Error(`الرصيد سيتجاوز الحد الأقصى للمديونية المسموح بها (${limitKd} ج.م). الرصيد الحالي: ${currentWallet?.balanceFils ?? 0} قرش.`);
+        const currentBalanceKd = ((currentWallet?.balanceFils ?? 0) / 1000).toFixed(2);
+        throw new Error(`الرصيد سيتجاوز الحد الأقصى للمديونية المسموح بها (${limitKd} ج.م). الرصيد الحالي: ${currentBalanceKd} ج.م.`);
     }
 
     const lastTx = updated.transactions[updated.transactions.length - 1];
