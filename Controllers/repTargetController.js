@@ -62,8 +62,10 @@ async function buildTargetProgress(target, repIdStr, now = new Date(), customSta
     if (repIdStr && isAchieved) {
         const achievement = await RepTargetAchievement.findOne({
             repId: new mongoose.Types.ObjectId(repIdStr),
-            targetId: target._id,
-            periodKey,
+            $or: [
+                { targetId: target._id },
+                { periodKey },
+            ],
         }).lean();
         alreadyRewarded = !!achievement;
     }
@@ -492,16 +494,23 @@ const getGlobalProgress = asyncHandler(async (req, res) => {
     const walletMap = {};
     wallets.forEach(w => { walletMap[w.userId?.toString()] = w; });
 
-    // 5. Achievements this period
+    // 5. Achievements this period or for these targets
+    const targetIdsToMatch = [
+        primaryGlobalTargetDoc?._id,
+        ...allGlobalTargetsDoc.map(t => t._id),
+        ...individualTargets.map(t => t._id),
+    ].filter(Boolean);
+
     const achievements = await RepTargetAchievement.find({
-        periodKey,
         $or: [
-            { repId: { $in: reps.map(r => r._id) } },
-            { repId: { $in: reps.map(r => r._id.toString()) } },
+            { targetId: { $in: targetIdsToMatch } },
+            { periodKey: periodKey },
         ],
+        repId: { $in: allRepIds },
     }).lean();
     const achievedRepIds = new Set(achievements.map(a => a.repId?.toString()));
     const achievedTargetKeySet = new Set(achievements.map(a => `${a.repId?.toString()}_${a.targetId?.toString()}`));
+    const achievedPeriodKeySet = new Set(achievements.map(a => `${a.repId?.toString()}_${a.periodKey}`));
 
     // 6. Build per-rep rows
     let totalCompleted = 0;
@@ -521,7 +530,9 @@ const getGlobalProgress = asyncHandler(async (req, res) => {
             progressPct = Math.min(100, Math.round((completed / effectiveTarget.targetCount) * 100));
             isAchieved = completed >= effectiveTarget.targetCount;
             const targetIdStr = effectiveTarget._id?.toString();
-            alreadyRewarded = achievedTargetKeySet.has(`${repIdStr}_${targetIdStr}`) || achievedRepIds.has(repIdStr);
+            alreadyRewarded = achievedTargetKeySet.has(`${repIdStr}_${targetIdStr}`)
+                           || achievedPeriodKeySet.has(`${repIdStr}_${periodKey}`)
+                           || (primaryGlobalTargetDoc && achievedTargetKeySet.has(`${repIdStr}_${primaryGlobalTargetDoc._id?.toString()}`));
         }
 
         const wallet = walletMap[repIdStr] || null;
@@ -701,7 +712,19 @@ const approveTargetReward = asyncHandler(async (req, res) => {
         const { start, end } = getPeriodRange(targetPeriod, now);
         const periodKey = getPeriodKey(targetPeriod, now);
 
-        const targetObjId = target?._id || new mongoose.Types.ObjectId();
+        const targetObjId = target?._id || (targetId && mongoose.Types.ObjectId.isValid(targetId) ? new mongoose.Types.ObjectId(targetId) : null);
+
+        // Derive refDate and periodRange consistently with target dates
+        const effStart = target?.startDate ? new Date(target.startDate).toISOString() : null;
+        const effEnd = target?.endDate ? new Date(target.endDate).toISOString() : null;
+        const refDate = target?.startDate || (req.body.date ? new Date(req.body.date) : new Date());
+        const now = isNaN(refDate.getTime()) ? new Date() : refDate;
+        const { start, end } = getPeriodRange(targetPeriod, now, effStart, effEnd);
+
+        const periodKey = (effStart && effEnd)
+            ? `${effStart} to ${effEnd}`
+            : getPeriodKey(targetPeriod, now);
+
         let rewardFils = target?.rewardFils ?? 0;
         
         // If rewardFils not in target document, check if custom rewardFils passed in body or global target
@@ -709,31 +732,38 @@ const approveTargetReward = asyncHandler(async (req, res) => {
             rewardFils = Number(req.body.rewardFils);
         }
 
-        // Check if already rewarded for this periodKey
-        const achievementQuery = {
-            periodKey,
-            $or: [
-                ...(isRepObjId ? [{ repId: new mongoose.Types.ObjectId(repId) }] : []),
-                { repId: String(repId) },
-            ],
-        };
-        if (target?._id) {
-            achievementQuery.targetId = target._id;
+        const achievementRepId = isRepObjId ? new mongoose.Types.ObjectId(repId) : repId;
+        const repIdMatch = [
+            ...(isRepObjId ? [new mongoose.Types.ObjectId(repId)] : []),
+            String(repId)
+        ];
+
+        // Check if already rewarded for this targetId OR this periodKey
+        const checkOrConditions = [
+            { periodKey },
+        ];
+        if (targetObjId) {
+            checkOrConditions.push({ targetId: targetObjId });
         }
 
-        const existing = await RepTargetAchievement.findOne(achievementQuery).lean();
+        const existing = await RepTargetAchievement.findOne({
+            repId: { $in: repIdMatch },
+            $or: checkOrConditions,
+        }).lean();
+
         if (existing) {
-            return res.status(400).json({ message: 'تم إيداع مكافأة هذا التارجت للمندوب بالفعل لهذه الفترة' });
+            return res.status(400).json({ 
+                message: 'تم قبول هذا التارجت وإيداع المكافأة للمندوب بالفعل، ولا يمكن قبوله مرة أخرى.' 
+            });
         }
 
         // Check completed count for period
         const completedCount = await countCompletedOrders(repId, start, end);
 
         // Record achievement
-        const achievementRepId = isRepObjId ? new mongoose.Types.ObjectId(repId) : repId;
         await RepTargetAchievement.create({
             repId: achievementRepId,
-            targetId: targetObjId,
+            targetId: targetObjId || new mongoose.Types.ObjectId(),
             period: targetPeriod,
             periodKey,
             completedCount,
@@ -747,13 +777,13 @@ const approveTargetReward = asyncHandler(async (req, res) => {
                 amountFils: rewardFils,
                 type: 'target_reward',
                 description: `مكافأة تارجت ${targetPeriod} — ${completedCount} أوردر مكتمل (اعتماد الأدمن)`,
-                refId: targetObjId.toString(),
+                refId: targetObjId ? targetObjId.toString() : null,
                 performedBy: req.user?._id?.toString() || 'admin',
             });
         }
 
         return res.status(200).json({
-            message: `تم قبول التارجت بنجاح وإيداع ${filsToKwd(rewardFils)} ج.م في محفظة المندوب ${rep.firstName || ''} ${rep.lastName || ''}`.trim(),
+            message: `تم قبول التارجت بنجاح وإيداع ${filsToKwd(rewardFils).toFixed(2)} ج.م في محفظة المندوب ${rep.firstName || ''} ${rep.lastName || ''}`.trim(),
             repId,
             rewardFils,
             rewardKWD: filsToKwd(rewardFils),
