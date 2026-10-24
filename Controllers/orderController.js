@@ -1552,7 +1552,68 @@ const getOrderRoute = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: 'orderId must be a positive integer or valid ObjectId' });
     }
 
-    // 🚀 1. Check active live trip route from Redis or Mongo Trip first across allIds
+    // 1. Fetch Order document first for status, ownership, and clean route determination
+    let order = null;
+    if (idInfo.numericId) {
+        order = await Order.findOne({ orderId: Number(idInfo.numericId) })
+            .select('clientId representativeId routeSnapshot routeStatus status')
+            .lean();
+    }
+    if (!order && idInfo.mongoId) {
+        order = await Order.findById(idInfo.mongoId)
+            .select('clientId representativeId routeSnapshot routeStatus status')
+            .lean();
+    }
+    if (!order) {
+        return res.status(404).json({ message: 'Order not found' });
+    }
+
+    // Security Check
+    const userId = req.user.id;
+    const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
+    const isClient = order.clientId && order.clientId.toString() === userId;
+    const isRep = order.representativeId && order.representativeId.toString() === userId;
+
+    if (!isAdmin && !isClient && !isRep) {
+        return res.status(403).json({ message: 'Forbidden: You do not have access to this route' });
+    }
+
+    const isWaitingOrUnassigned = !order.representativeId ||
+        ['waiting', 'pending', 'return_pending', 'cancelled', 'deleted'].includes(order.status);
+
+    // 🛑 If order is in waiting/pending state (no representative assigned), purge any stale driver trip keys and return static order route!
+    if (isWaitingOrUnassigned) {
+        for (const tid of allIds) {
+            redisDel(`active_route:${tid}`, `trip:${tid}:snapshot`, `trip:${tid}:pose`, `order_route:${tid}`).catch(() => {});
+        }
+
+        const effectiveOrderId = idInfo.numericId || idInfo.mongoId || idInfo.rawId;
+        const cacheKey = `order_route:${effectiveOrderId}`;
+        let cachedRoute = null;
+        try {
+            cachedRoute = await redisGet(cacheKey);
+        } catch (_) { }
+
+        if (cachedRoute) {
+            return res.status(200).json(cachedRoute);
+        }
+
+        if (order.routeSnapshot && order.routeSnapshot.encodedPolyline && order.routeStatus !== 'FAILED') {
+            let snap = order.routeSnapshot;
+            if (snap.compression === 'gzip' && snap.encodedPolyline) {
+                const buffer = Buffer.from(snap.encodedPolyline, 'base64');
+                const unzipped = await gunzipAsync(buffer);
+                snap.encodedPolyline = unzipped.toString('utf8');
+                snap.compression = 'none';
+            }
+            await redisSet(cacheKey, snap, 300).catch(() => {});
+            return res.status(200).json(snap);
+        }
+
+        return res.status(404).json({ message: 'No route available for this order' });
+    }
+
+    // 🚀 2. Active accepted order: check live driver route from Redis or active Mongo Trip
     try {
         for (const tid of allIds) {
             let activeRouteRaw = await redisGet(`active_route:${tid}`);
@@ -1579,7 +1640,10 @@ const getOrderRoute = asyncHandler(async (req, res) => {
 
         const { Trip } = require('../models/Trip');
         for (const tid of allIds) {
-            const activeTrip = await Trip.findById(tid).lean();
+            const activeTrip = await Trip.findOne({
+                $or: [{ _id: tid }, { orderId: tid }],
+                status: { $nin: ['released', 'cancelled', 'ended', 'completed'] }
+            }).lean();
             if (activeTrip && activeTrip.encodedPolyline) {
                 return res.status(200).json({
                     schemaVersion: 1,
@@ -1597,89 +1661,18 @@ const getOrderRoute = asyncHandler(async (req, res) => {
         logger.error(`[OrderController] Active route lookup error: ${activeErr.message}`);
     }
 
-    // 2. Fetch Order document for ownership & fallback
-    let order = null;
-    if (idInfo.numericId) {
-        order = await Order.findOne({ orderId: Number(idInfo.numericId) })
-            .select('clientId representativeId routeSnapshot routeStatus status')
-            .lean();
-    }
-    if (!order && idInfo.mongoId) {
-        order = await Order.findById(idInfo.mongoId)
-            .select('clientId representativeId routeSnapshot routeStatus status')
-            .lean();
-    }
-    if (!order) {
-        return res.status(404).json({ message: 'Order not found' });
-    }
-
-    // Security Check
-    const userId = req.user.id;
-    const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
-    const isClient = order.clientId && order.clientId.toString() === userId;
-    const isRep = order.representativeId && order.representativeId.toString() === userId;
-
-    if (!isAdmin && !isClient && !isRep) {
-        return res.status(403).json({ message: 'Forbidden: You do not have access to this route' });
-    }
-
-    // 🛑 If driver is assigned to the order, do NOT serve the static multi-stop customer route to final dropoff!
-    if (order.representativeId) {
-        return res.status(200).json({
-            schemaVersion: 1,
-            encodedPolyline: '',
-            distanceMeters: 0,
-            durationSeconds: 0,
-            routeVersion: 1,
-            compression: 'none',
-            isLiveDriverRoute: false,
-            pendingDriverRoute: true,
-            message: 'Driver route is being established'
-        });
-    }
-
-    // 3. Fallback for unaccepted orders (waiting for driver)
-    const effectiveOrderId = idInfo.numericId || idInfo.mongoId || idInfo.rawId;
-    const cacheKey = `order_route:${effectiveOrderId}`;
-    let cachedRoute = null;
-    try {
-        cachedRoute = await redisGet(cacheKey);
-    } catch (err) { }
-
-    let routeSnapshot;
-    if (!order.routeSnapshot || !order.routeSnapshot.encodedPolyline || order.routeStatus === 'FAILED') {
-        return res.status(404).json({ message: 'No route available for this order' });
-    }
-
-    if (cachedRoute) {
-        routeSnapshot = cachedRoute;
-    } else {
-        routeSnapshot = order.routeSnapshot;
-
-        // Async Decompression (only read once from Mongo, decompress before sending/caching)
-        if (routeSnapshot.compression === 'gzip' && routeSnapshot.encodedPolyline) {
-            const buffer = Buffer.from(routeSnapshot.encodedPolyline, 'base64');
-            const unzipped = await gunzipAsync(buffer);
-            routeSnapshot.encodedPolyline = unzipped.toString('utf8');
-            routeSnapshot.compression = 'none'; // reset to none for the client
-        }
-
-        // Cache in Redis for 5 minutes (300 seconds)
-        await redisSet(cacheKey, routeSnapshot, 300);
-    }
-
-    // ETag Support
-    if (routeSnapshot.schemaVersion && routeSnapshot.routeChecksum) {
-        const eTag = `"${routeSnapshot.schemaVersion}-${routeSnapshot.routeChecksum}"`;
-        res.setHeader('ETag', eTag);
-
-        const ifNoneMatch = req.headers['if-none-match'];
-        if (ifNoneMatch === eTag) {
-            return res.status(304).end();
-        }
-    }
-
-    return res.status(200).json(routeSnapshot);
+    // If driver is assigned to the order but route is still being calculated by driver app
+    return res.status(200).json({
+        schemaVersion: 1,
+        encodedPolyline: '',
+        distanceMeters: 0,
+        durationSeconds: 0,
+        routeVersion: 1,
+        compression: 'none',
+        isLiveDriverRoute: false,
+        pendingDriverRoute: true,
+        message: 'Driver route is being established'
+    });
 });
 
 /**
