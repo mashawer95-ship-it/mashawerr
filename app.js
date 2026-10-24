@@ -509,6 +509,7 @@ registerHrSocket(io);
 
 // ─── Export io so controllers can emit events ────────────────────────────────
 app.set('io', io);
+global.__io = io;
 
 // Start server
 httpServer.listen(PORT, '0.0.0.0', () => {

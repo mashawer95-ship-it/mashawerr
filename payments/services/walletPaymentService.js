@@ -1246,6 +1246,24 @@ async function _createOrderFromSnapshot({ session, paymentId, paymentMethod, req
 
     await order.save(mongoSession ? { session: mongoSession } : undefined);
 
+    // ── Broadcast new waiting order to active representatives ──
+    try {
+        const io = global.__io;
+        if (io && order.status === 'waiting') {
+            const waitingPayload = {
+                orderId: order.orderId,
+                id: String(order._id),
+                status: 'waiting',
+                governorate: order.governorate,
+                orderCategory: order.orderCategory || 'delivery',
+                totalPrice: order.totalPrice,
+                createdAt: order.createdAt || new Date(),
+            };
+            io.emit('new_waiting_order', waitingPayload);
+            logger.info(`[WalletPaymentService] Broadcasted new_waiting_order for #${order.orderId}`);
+        }
+    } catch (_) {}
+
     logger.info('[WalletPaymentService] Final order created from session snapshot', {
         requestId,
         orderMongoId: order._id,

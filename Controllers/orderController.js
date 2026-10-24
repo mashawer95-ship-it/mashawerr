@@ -1515,6 +1515,26 @@ const createOrder = asyncHandler(async (req, res) => {
         });
     }
 
+    // ── Broadcast new waiting order to active representatives ──
+    try {
+        const io = req.app?.get('io') || global.__io;
+        if (io && order.status === 'waiting') {
+            const waitingPayload = {
+                orderId: order.orderId,
+                id: String(order._id),
+                status: 'waiting',
+                governorate: order.governorate,
+                orderCategory: order.orderCategory || 'delivery',
+                totalPrice: order.totalPrice,
+                createdAt: order.createdAt || new Date(),
+            };
+            io.emit('new_waiting_order', waitingPayload);
+            logger.info(`[createOrder] Broadcasted new_waiting_order for #${order.orderId}`);
+        }
+    } catch (broadcastErr) {
+        logger.error(`[createOrder] Broadcast error: ${broadcastErr.message}`);
+    }
+
     return res.status(201).json(formatted);
 });
 
@@ -3537,6 +3557,19 @@ const releaseOrder = asyncHandler(async (req, res) => {
                 cancellationFeeApplied,
                 cancellationFeeFils,
             });
+            if (resetStatus === 'waiting') {
+                const waitingPayload = {
+                    orderId: refId,
+                    id: String(order._id || refId),
+                    status: 'waiting',
+                    governorate: order.governorate,
+                    orderCategory: order.orderCategory || 'delivery',
+                    totalPrice: order.totalPrice,
+                    createdAt: order.createdAt || new Date(),
+                };
+                io.emit('new_waiting_order', waitingPayload);
+                logger.info(`[releaseOrder] Broadcasted new_waiting_order for #${refId}`);
+            }
             if (order.clientId) {
                 io.to(`user:${order.clientId}`).emit('order:status_changed', payload);
             }
