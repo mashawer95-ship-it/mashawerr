@@ -55,7 +55,7 @@ const submitFeedback = asyncHandler(async (req, res) => {
 
     res.status(201).json({
         success: true,
-        message: 'تم إرسال رأيك بنجاح، شكراً لمشاركتك معنا في تطوير وصول!',
+        message: 'تم إرسال رأيك بنجاح، شكراً لمشاركتك معنا في تطوير مشاوير!',
         data: feedback,
     });
 });
@@ -187,7 +187,7 @@ const updateFeedbackStatus = asyncHandler(async (req, res) => {
     if (status === 'resolved') {
         const targetUserId = updated.userId?._id || updated.userId;
         if (targetUserId) {
-            const title = 'إدارة تطبيق وصول';
+            const title = 'إدارة تطبيق مشاوير';
             const body = 'تم مراجعه طلبك وتم حل كل ما طلبته بنجاح شكرا لك نحن دائما في مساعدتك';
             notifyClient(targetUserId, title, body, {
                 type: 'feedback_resolved',

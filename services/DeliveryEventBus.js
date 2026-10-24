@@ -481,7 +481,7 @@ class DeliveryEventBus {
             fcmConfig: {
                 targetUserId: session.customerId,
                 title: 'تم إكمال التسليم بنجاح 🎉',
-                body: 'تم استلام طلبك وتأكيده بنجاح. شكراً لاستخدامك وصول!',
+                body: 'تم استلام طلبك وتأكيده بنجاح. شكراً لاستخدامك مشاوير!',
                 notificationData: {
                     type: 'DELIVERY_COMPLETED',
                     orderId: mongoId,
