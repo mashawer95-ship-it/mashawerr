@@ -21,8 +21,13 @@ export class RedisTripRouteStore implements TripRouteStore {
   // Snapshot Key
   async saveRouteSnapshot(tripId: string, snapshot: RouteSnapshot): Promise<void> {
     const key = `trip:${tripId}:snapshot`;
-    // Store snapshot for 24 hours
-    await this.redis.setex(key, 86400, JSON.stringify(snapshot));
+    const activeRouteKey = `active_route:${tripId}`;
+    const payload = JSON.stringify(snapshot);
+    // Store snapshot for 24 hours under both keys to ensure immediate availability for REST and Socket subscribers
+    await Promise.all([
+      this.redis.setex(key, 86400, payload),
+      this.redis.setex(activeRouteKey, 86400, payload),
+    ]);
   }
 
   async getRouteSnapshot(tripId: string): Promise<RouteSnapshot | null> {

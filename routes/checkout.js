@@ -27,6 +27,7 @@ const sessionCreationLimiter = rateLimit({
     windowMs: 60 * 1000,
     max:      10,
     keyGenerator: (req) => req.user?.id || req.ip,
+    validate: { keyGeneratorIpFallback: false },
     handler: (req, res) => {
         res.status(429).json({
             success: false,
@@ -42,6 +43,7 @@ const paymentLimiter = rateLimit({
     windowMs: 60 * 1000,
     max:      5,
     keyGenerator: (req) => req.user?.id || req.ip,
+    validate: { keyGeneratorIpFallback: false },
     handler: (req, res) => {
         res.status(429).json({
             success: false,

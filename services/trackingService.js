@@ -513,16 +513,20 @@ async function customerSubscribeToTrip(socket, tripId, driverId) {
 
         if (!trip || !trip.encodedPolyline) {
             for (const tid of allTripIds) {
-                const activeRaw = await redisGet(`active_route:${tid}`);
+                let activeRaw = await redisGet(`active_route:${tid}`);
+                if (!activeRaw) {
+                    activeRaw = await redisGet(`trip:${tid}:snapshot`);
+                }
                 if (activeRaw) {
                     const parsed = typeof activeRaw === 'string' ? JSON.parse(activeRaw) : activeRaw;
-                    if (parsed && parsed.encodedPolyline) {
+                    const poly = parsed?.encodedPolyline || parsed?.polyline;
+                    if (parsed && poly) {
                         trip = {
                             tripId: primaryTripId,
-                            encodedPolyline: parsed.encodedPolyline,
+                            encodedPolyline: poly,
                             distanceMeters: parsed.distanceMeters,
-                            durationSeconds: parsed.durationSeconds,
-                            routeVersion: parsed.routeVersion,
+                            durationSeconds: parsed.durationSeconds || parsed.etaSeconds,
+                            routeVersion: parsed.routeVersion || parsed.version,
                             destination: parsed.destination,
                         };
                         break;

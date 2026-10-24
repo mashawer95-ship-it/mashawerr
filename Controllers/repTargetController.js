@@ -706,12 +706,6 @@ const approveTargetReward = asyncHandler(async (req, res) => {
                 ],
             }).sort({ createdAt: -1 }).lean();
         }
-
-        const refDate = req.body.date ? new Date(req.body.date) : new Date();
-        const now = isNaN(refDate.getTime()) ? new Date() : refDate;
-        const { start, end } = getPeriodRange(targetPeriod, now);
-        const periodKey = getPeriodKey(targetPeriod, now);
-
         const targetObjId = target?._id || (targetId && mongoose.Types.ObjectId.isValid(targetId) ? new mongoose.Types.ObjectId(targetId) : null);
 
         // Derive refDate and periodRange consistently with target dates

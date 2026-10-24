@@ -24,7 +24,7 @@ const { buildUrl } = require('../config/urlBuilder');
 const { notifyClient } = require('../services/notifyClient');
 const { calculateRoute } = require('../services/googleRoutesService');
 const { getOrCreatePricing, kdToFils } = require('../middlewares/Pricing');
-const { redisGet, redisSet } = require('../config/redis');
+const { redisGet, redisSet, redisDel } = require('../config/redis');
 const {
     getCompletedIdempotency,
     acquireInFlightLock,
@@ -1555,16 +1555,20 @@ const getOrderRoute = asyncHandler(async (req, res) => {
     // 🚀 1. Check active live trip route from Redis or Mongo Trip first across allIds
     try {
         for (const tid of allIds) {
-            const activeRouteRaw = await redisGet(`active_route:${tid}`);
+            let activeRouteRaw = await redisGet(`active_route:${tid}`);
+            if (!activeRouteRaw) {
+                activeRouteRaw = await redisGet(`trip:${tid}:snapshot`);
+            }
             if (activeRouteRaw) {
                 const active = typeof activeRouteRaw === 'string' ? JSON.parse(activeRouteRaw) : activeRouteRaw;
-                if (active && active.encodedPolyline) {
+                const poly = active?.encodedPolyline || active?.polyline;
+                if (active && poly) {
                     return res.status(200).json({
                         schemaVersion: 1,
-                        encodedPolyline: active.encodedPolyline,
+                        encodedPolyline: poly,
                         distanceMeters: active.distanceMeters || 0,
-                        durationSeconds: active.durationSeconds || 0,
-                        routeVersion: active.routeVersion || 1,
+                        durationSeconds: active.durationSeconds || active.etaSeconds || 0,
+                        routeVersion: active.routeVersion || active.version || 1,
                         compression: 'none',
                         isLiveDriverRoute: true,
                         destination: active.destination || null,
@@ -3551,6 +3555,7 @@ const releaseOrder = asyncHandler(async (req, res) => {
                 message: 'عادت حالة الطلب للانتظار للبحث عن مندوب جديد',
             };
             io.to(room).emit('order:status_changed', payload);
+            io.to(room).emit('order:back_to_waiting', payload);
             io.to(room).emit('order:released', {
                 orderId: refId,
                 status: resetStatus,
@@ -3572,7 +3577,49 @@ const releaseOrder = asyncHandler(async (req, res) => {
             }
             if (order.clientId) {
                 io.to(`user:${order.clientId}`).emit('order:status_changed', payload);
+                io.to(`user:${order.clientId}`).emit('order:back_to_waiting', payload);
             }
+        }
+
+        // Broadcast tripEnded to tracking namespace to stop active GPS tracking
+        try {
+            const trackingIo = req.app.get('trackingIo');
+            if (trackingIo) {
+                trackingIo.to(`trip:${refId}`).emit('tripEnded', { tripId: refId, reason: 'released' });
+                if (order._id) {
+                    trackingIo.to(`trip:${String(order._id)}`).emit('tripEnded', { tripId: String(order._id), reason: 'released' });
+                }
+            }
+        } catch (_) {}
+
+        // Cleanup Redis route and trip keys for released order
+        try {
+            const keysToDelete = [
+                `active_route:${refId}`,
+                `trip:${refId}:snapshot`,
+                `trip:${refId}:pose`,
+                `trip:${refId}:eta`,
+                `order_route:${refId}`,
+            ];
+            if (order._id) {
+                const mId = String(order._id);
+                keysToDelete.push(
+                    `active_route:${mId}`,
+                    `trip:${mId}:snapshot`,
+                    `trip:${mId}:pose`,
+                    `trip:${mId}:eta`,
+                    `order_route:${mId}`,
+                );
+            }
+            await redisDel(...keysToDelete);
+
+            const { Trip } = require('../models/Trip');
+            await Trip.updateMany(
+                { $or: [{ orderId: refId }, { _id: order._id }] },
+                { $set: { status: 'released', endedAt: new Date() } }
+            ).catch(() => {});
+        } catch (cleanupErr) {
+            logger.warn(`[releaseOrder] Trip/Redis cleanup error: ${cleanupErr.message}`);
         }
     } catch (socketErr) {
         logger.error(`[releaseOrder] Socket error: ${socketErr.message}`);
