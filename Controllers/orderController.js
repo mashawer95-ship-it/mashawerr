@@ -1584,7 +1584,8 @@ const getOrderRoute = asyncHandler(async (req, res) => {
     // 🛑 If order is in waiting/pending state (no representative assigned), purge any stale driver trip keys and return static order route!
     if (isWaitingOrUnassigned) {
         for (const tid of allIds) {
-            redisDel(`active_route:${tid}`, `trip:${tid}:snapshot`, `trip:${tid}:pose`, `order_route:${tid}`).catch(() => {});
+            // NOTE: do NOT delete `order_route:*` here — it is the static-route cache read just below.
+            redisDel(`active_route:${tid}`, `trip:${tid}:snapshot`, `trip:${tid}:pose`).catch(() => {});
         }
 
         const effectiveOrderId = idInfo.numericId || idInfo.mongoId || idInfo.rawId;
@@ -1680,7 +1681,40 @@ const getOrderRoute = asyncHandler(async (req, res) => {
  * @route GET /api/orders/:id
  * @access Public
  */
+// ── Short-lived per-user response cache for GET /orders/:id ────────────────────────────────
+// Clients poll this endpoint from several places at once; a ~1s window collapses
+// those bursts into a single DB-heavy computation. Authorization is still
+// evaluated per user because the cache key includes the user id.
+const ORDER_RESPONSE_TTL_MS = 1000;
+const ORDER_RESPONSE_MAX_ENTRIES = 5000;
+const orderResponseCache = new Map();
+
+const getCachedOrderResponse = (key) => {
+    const hit = orderResponseCache.get(key);
+    if (!hit) return null;
+    if (Date.now() - hit.at > ORDER_RESPONSE_TTL_MS) {
+        orderResponseCache.delete(key);
+        return null;
+    }
+    return hit.body;
+};
+
+const setCachedOrderResponse = (key, body) => {
+    if (orderResponseCache.size >= ORDER_RESPONSE_MAX_ENTRIES) {
+        // Drop the oldest entry (Map preserves insertion order).
+        orderResponseCache.delete(orderResponseCache.keys().next().value);
+    }
+    orderResponseCache.set(key, { at: Date.now(), body });
+};
+
 const getOrderById = asyncHandler(async (req, res) => {
+    const wantsFresh = /no-cache/i.test(String(req.headers['cache-control'] || ''));
+    const orderCacheKey = `${req.user?.id}:${String(req.params.id || '').trim()}`;
+    if (!wantsFresh && req.user?.id) {
+        const cachedBody = getCachedOrderResponse(orderCacheKey);
+        if (cachedBody) return res.status(200).json(cachedBody);
+    }
+
     const rawId = String(req.params.id || '').trim();
     const numId = !isNaN(Number(rawId)) ? Number(rawId) : -1;
     const isValidObjId = mongoose.isValidObjectId(rawId);
@@ -1783,6 +1817,7 @@ const getOrderById = asyncHandler(async (req, res) => {
         }
     } catch (_) { }
 
+    if (req.user?.id) setCachedOrderResponse(orderCacheKey, enriched);
     return res.status(200).json(enriched);
 });
 
