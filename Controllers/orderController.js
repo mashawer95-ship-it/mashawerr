@@ -1781,10 +1781,12 @@ const getOrderById = asyncHandler(async (req, res) => {
     // 🚀 Attach active DeliverySession and active OTP code for customer & driver sync
     try {
         const { DeliverySession } = require('../models/DeliverySession');
-        let session = await DeliverySession.findOne({ orderId: id }).sort({ createdAt: -1 }).lean();
-        if (!session) {
-            session = await DeliverySession.findOne({ orderId: String(id) }).sort({ createdAt: -1 }).lean();
-        }
+        const sessionFilter = [];
+        if (order.orderId) sessionFilter.push({ orderId: order.orderId }, { orderId: String(order.orderId) });
+        if (order._id) sessionFilter.push({ orderId: String(order._id) });
+        if (rawId) sessionFilter.push({ orderId: rawId });
+
+        let session = await DeliverySession.findOne(sessionFilter.length > 0 ? { $or: sessionFilter } : { orderId: order.orderId }).sort({ createdAt: -1 }).lean();
         if (session) {
             let otpCode = session.activeOtpCode;
             if (!otpCode && session.otpVersion > 0) {
@@ -2005,6 +2007,9 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
                 message: `Order status changed to ${st}`,
             };
             io.to(room).emit('order:status_changed', payload);
+            if (order._id && String(order._id) !== String(id)) {
+                io.to(`order:${order._id}`).emit('order:status_changed', payload);
+            }
             if (order.clientId) {
                 io.to(`user:${order.clientId}`).emit('order:status_changed', payload);
             }
@@ -3076,6 +3081,10 @@ const acceptOrder = asyncHandler(async (req, res) => {
     let [formatted] = await enrichOrdersWithRepData(req, [formatOrder(req, acceptedOrder, commissionCfg)]);
     [formatted] = await enrichOrdersWithClientData(req, [formatted]);
 
+    const resolvedNumericId = acceptedOrder.orderId ? String(acceptedOrder.orderId) : null;
+    const resolvedMongoId = acceptedOrder._id ? String(acceptedOrder._id) : null;
+    const orderIdStr = resolvedNumericId || resolvedMongoId || String(rawId);
+
     // ─── Publish to Redis → tracking-service ─────────────────────────────────
     try {
         const { getRedisClient } = require('../config/redis');
@@ -3098,7 +3107,7 @@ const acceptOrder = asyncHandler(async (req, res) => {
 
             await redisPub.publish('trip:events', JSON.stringify({
                 event: 'order_accepted',
-                orderId: id,
+                orderId: orderIdStr,
                 representativeId: repId,
                 driverLat,
                 driverLng,
@@ -3106,7 +3115,7 @@ const acceptOrder = asyncHandler(async (req, res) => {
                 originLng: firstTask.fromLongitude || 0,
                 destinationLat: lastTask.toLatitude || 0,
                 destinationLng: lastTask.toLongitude || 0,
-                destinationId: 'order_' + id,
+                destinationId: 'order_' + orderIdStr,
                 destinationType: 'delivery',
             }));
         }
@@ -3118,20 +3127,29 @@ const acceptOrder = asyncHandler(async (req, res) => {
     try {
         const io = req.app.get('io');
         if (io) {
-            const room = `order:${id}`;
             const payload = {
-                orderId: id,
+                orderId: acceptedOrder.orderId || orderIdStr,
+                _id: resolvedMongoId,
                 status: 'accepted',
                 order: formatted,
                 message: 'تم قبول طلبك من قِبَل المندوب',
             };
-            io.to(room).emit('order:accepted', payload);
-            io.to(room).emit('order:status_changed', payload);
+
+            if (resolvedMongoId) {
+                io.to(`order:${resolvedMongoId}`).emit('order:accepted', payload);
+                io.to(`order:${resolvedMongoId}`).emit('order:status_changed', payload);
+            }
+            if (resolvedNumericId && resolvedNumericId !== resolvedMongoId) {
+                io.to(`order:${resolvedNumericId}`).emit('order:accepted', payload);
+                io.to(`order:${resolvedNumericId}`).emit('order:status_changed', payload);
+            }
             if (acceptedOrder.clientId) {
                 io.to(`user:${acceptedOrder.clientId}`).emit('order:accepted', payload);
                 io.to(`user:${acceptedOrder.clientId}`).emit('order:status_changed', payload);
             }
-            console.log(`[Socket.IO] ✅ Emitted order:accepted to room ${room} and user:${acceptedOrder.clientId}`);
+            io.to('admin:orders').emit('order:accepted', payload);
+            io.to('admin:orders').emit('order:status_changed', payload);
+            console.log(`[Socket.IO] ✅ Emitted order:accepted to rooms (order:${resolvedMongoId}, order:${resolvedNumericId}) and user:${acceptedOrder.clientId}`);
         } else {
             console.warn('[acceptOrder] ⚠️ Socket.IO instance not found on app');
         }
