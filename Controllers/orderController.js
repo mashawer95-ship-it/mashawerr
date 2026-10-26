@@ -1913,6 +1913,11 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
             });
         }
     } else if (st === 'waiting' || st === 'pending') {
+        order.representativeId = null;
+        order.acceptedAt = null;
+        order.cancellationFeeApplied = false;
+        order.cancellationFeeFils = 0;
+        order.cancellationRewardFils = 0;
         if (Array.isArray(order.tasks) && order.tasks.length > 0) {
             order.tasks.forEach((t) => {
                 t.taskStatus = 'pending';
@@ -2196,13 +2201,26 @@ const cancelOrder = asyncHandler(async (req, res) => {
     }
 
     // ─── خصم رسوم الإلغاء إذا مضى وقت أكثر من التايمر على قبول المندوب (فقط للطلب الفائز بالـ atomic lock) ───
+    // تأكيد قطعي: لا يتم تطبيق أي رسوم إلغاء على العميل إطلاقاً إذا كان الطلب في حالة انتظار (waiting / pending)
+    // أو لم يتم قبوله بعد من مندوب (المهلة والرسوم تبدأ حصراً من لحظة قبول المندوب للطلب)
     let cancellationFeeApplied = false;
     let cancellationFeeFils = 0;
     let cancellationRewardFils = 0;
+
+    const isWaitingStatus = ['waiting', 'pending', 'return_pending'].includes(st);
+    const hasRepresentative = Boolean(
+        order.representativeId &&
+        String(order.representativeId).trim() !== '' &&
+        String(order.representativeId).trim() !== 'null'
+    );
+    const hasAcceptedAt = Boolean(order.acceptedAt && !isNaN(new Date(order.acceptedAt).getTime()));
+    const isPostAcceptanceStatus = ['accepted', 'delivering', 'confirmed', 'processing', 'in_progress', 'on_way'].includes(st);
+
     if (
-        ['accepted', 'delivering', 'confirmed', 'processing'].includes(st) &&
-        order.acceptedAt &&
-        order.representativeId
+        !isWaitingStatus &&
+        isPostAcceptanceStatus &&
+        hasRepresentative &&
+        hasAcceptedAt
     ) {
         try {
             const pricing = await getOrCreatePricing();
@@ -2260,6 +2278,11 @@ const cancelOrder = asyncHandler(async (req, res) => {
         } catch (pricingErr) {
             logger.error(`[cancelOrder] خطأ في جلب إعدادات التسعير: ${pricingErr.message}`);
         }
+    } else {
+        // حماية قطعية: في الانتظار رسوم الإلغاء 0 تماماً
+        cancellationFeeApplied = false;
+        cancellationFeeFils = 0;
+        cancellationRewardFils = 0;
     }
 
     order.cancellationFeeApplied = cancellationFeeApplied;
@@ -2402,7 +2425,7 @@ const cancelOrder = asyncHandler(async (req, res) => {
         }
     }
 
-    const cancelFeeNotice = cancellationFeeApplied
+    const cancelFeeNotice = (cancellationFeeApplied && cancellationFeeFils > 0)
         ? ` (تم خصم ${(cancellationFeeFils / 1000).toFixed(2)} ج.م رسوم إلغاء لتجاوز المهلة)`
         : '';
 
@@ -3558,9 +3581,10 @@ const releaseOrder = asyncHandler(async (req, res) => {
     order.representativeId = null;
     order.acceptedAt = null;
     order.cancellationReason = cancelReason;
-    order.cancellationFeeApplied = cancellationFeeApplied;
-    order.cancellationFeeFils = cancellationFeeFils;
-    order.cancellationRewardFils = cancellationRewardFils;
+    // تنظيف رسوم إلغاء العميل عند عودة الطلب للانتظار (رسوم اعتذار المندوب خُصمت من محفظته ولا علاقة للعميل بها)
+    order.cancellationFeeApplied = false;
+    order.cancellationFeeFils = 0;
+    order.cancellationRewardFils = 0;
     if (!order.clientId && (order.userId || order._doc?.userId)) {
         order.clientId = String(order.userId || order._doc?.userId);
     }
