@@ -2402,6 +2402,23 @@ const cancelOrder = asyncHandler(async (req, res) => {
         } catch (_) { }
     }
 
+    // ─── Realtime teardown: tell client + rep + tracking namespace, kill trip ───
+    // Awaited only for the cheap tombstone; the rest is isolated by try/catch inside.
+    try {
+        const { terminateOrderTracking } = require('../utils/orderTermination');
+        await terminateOrderTracking({
+            io: req.app.get('io'),
+            order,
+            status: 'cancelled',
+            previousStatus: st,
+            cancelledBy: isAdmin ? 'admin' : (isRepOwner ? 'representative' : 'client'),
+            reason: value.reason,
+            representativeId: oldRepId,
+        });
+    } catch (termErr) {
+        logger.error(`[cancelOrder] terminateOrderTracking failed: ${termErr.message}`);
+    }
+
     // ─── Refund company commission on cancellation ─────────────────────────────
     // If the captain had already accepted and the commission was deducted from their
     // wallet, refund it back now that the order is being cancelled/released.
@@ -3651,15 +3668,22 @@ const releaseOrder = asyncHandler(async (req, res) => {
             }
         }
 
-        // Broadcast tripEnded to tracking namespace to stop active GPS tracking
+        // End live tracking for everyone (the old `trackingIo` app setting was never
+        // registered, so the previous tripEnded broadcast was a silent no-op).
         try {
-            const trackingIo = req.app.get('trackingIo');
-            if (trackingIo) {
-                trackingIo.to(`trip:${refId}`).emit('tripEnded', { tripId: refId, reason: 'released' });
-                if (order._id) {
-                    trackingIo.to(`trip:${String(order._id)}`).emit('tripEnded', { tripId: String(order._id), reason: 'released' });
-                }
-            }
+            const { terminateOrderTracking } = require('../utils/orderTermination');
+            await terminateOrderTracking({
+                io: req.app.get('io'),
+                order,
+                status: order.status,
+                previousStatus: currentStatus,
+                cancelledBy: 'representative',
+                reason: cancelReason,
+                representativeId: oldRepId,
+                isRelease: true,
+                emitStatusEvents: false,
+                extraId: refId,
+            });
         } catch (_) {}
 
         // Cleanup Redis route and trip keys for released order

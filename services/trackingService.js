@@ -231,6 +231,19 @@ async function processLocationUpdate(socket, nsp, payload) {
     const primaryTripId = idInfo.rawId || String(tripId).trim();
     const allTripIds = idInfo.allIds.length > 0 ? idInfo.allIds : [primaryTripId];
 
+    // ── Step 4b: Terminated-trip guard (order cancelled) ──────────────────────
+    // Runs after the throttle so it costs at most one Redis GET per broadcast window.
+    const { isTripTerminated } = require('../utils/orderTermination');
+    if (await isTripTerminated(allTripIds)) {
+        socket.emit('tripEnded', { tripId: primaryTripId, reason: 'cancelled', timestamp: Date.now() });
+        for (const tid of allTripIds) {
+            socket.leave(tripRoom(tid));
+            socket.leave(`trip:${tid}`);
+            socket.leave(`order:${tid}`);
+        }
+        return { broadcasted: false, reason: 'trip_terminated' };
+    }
+
     // ── Step 5: Broadcast to trip rooms across all resolved IDs ─────────────────
     const minPayload = buildMinimalPayload({ driverId, ...newLoc });
     const fullLocationPayload = {
