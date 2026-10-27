@@ -2,7 +2,7 @@ const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
 const Message = require('../models/Message');
 const { Order } = require('../middlewares/Order');
-const User = require('../middlewares/User');
+const { User } = require('../middlewares/User');
 const { sanitizeErrorResponse } = require('../middlewares/objectAuthorization');
 const { resolveOrderIds } = require('../utils/orderIdResolver');
 
@@ -37,9 +37,12 @@ const getChatHistory = asyncHandler(async (req, res) => {
         if (mongoose.isValidObjectId(id)) orderConditions.push({ _id: id });
     }
 
-    const normalOrder = orderConditions.length > 0
-        ? await Order.findOne({ $or: orderConditions }).select('orderId clientId representativeId status orderCategory createdAt').lean()
-        : null;
+    let normalOrder = null;
+    try {
+        if (orderConditions.length > 0) {
+            normalOrder = await Order.findOne({ $or: orderConditions }).select('orderId clientId representativeId status orderCategory createdAt').lean();
+        }
+    } catch (_) {}
 
     if (!isAdmin) {
         if (process.env.TEST_MODE === 'true' && mongoose.connection.readyState !== 1) {
@@ -58,38 +61,40 @@ const getChatHistory = asyncHandler(async (req, res) => {
     // Resolve participant profiles (client & representative)
     let clientInfo = null;
     let repInfo = null;
-    if (normalOrder) {
-        const userPromises = [];
-        if (normalOrder.clientId && mongoose.isValidObjectId(normalOrder.clientId)) {
-            userPromises.push(User.findById(normalOrder.clientId).select('firstName lastName phone profileImage').lean().catch(() => null));
-        } else {
-            userPromises.push(Promise.resolve(null));
-        }
+    try {
+        if (normalOrder && User) {
+            const userPromises = [];
+            if (normalOrder.clientId && mongoose.isValidObjectId(normalOrder.clientId)) {
+                userPromises.push(User.findById(normalOrder.clientId).select('firstName lastName phone profileImage').lean().catch(() => null));
+            } else {
+                userPromises.push(Promise.resolve(null));
+            }
 
-        if (normalOrder.representativeId && mongoose.isValidObjectId(normalOrder.representativeId)) {
-            userPromises.push(User.findById(normalOrder.representativeId).select('firstName lastName phone profileImage').lean().catch(() => null));
-        } else {
-            userPromises.push(Promise.resolve(null));
-        }
+            if (normalOrder.representativeId && mongoose.isValidObjectId(normalOrder.representativeId)) {
+                userPromises.push(User.findById(normalOrder.representativeId).select('firstName lastName phone profileImage').lean().catch(() => null));
+            } else {
+                userPromises.push(Promise.resolve(null));
+            }
 
-        const [clientDoc, repDoc] = await Promise.all(userPromises);
-        if (clientDoc) {
-            clientInfo = {
-                id: normalOrder.clientId,
-                name: `${clientDoc.firstName || ''} ${clientDoc.lastName || ''}`.trim() || 'العميل',
-                phone: clientDoc.phone || '',
-                photo: clientDoc.profileImage || null,
-            };
+            const [clientDoc, repDoc] = await Promise.all(userPromises);
+            if (clientDoc) {
+                clientInfo = {
+                    id: normalOrder.clientId,
+                    name: `${clientDoc.firstName || ''} ${clientDoc.lastName || ''}`.trim() || 'العميل',
+                    phone: clientDoc.phone || '',
+                    photo: clientDoc.profileImage || null,
+                };
+            }
+            if (repDoc) {
+                repInfo = {
+                    id: normalOrder.representativeId,
+                    name: `${repDoc.firstName || ''} ${repDoc.lastName || ''}`.trim() || 'المندوب',
+                    phone: repDoc.phone || '',
+                    photo: repDoc.profileImage || null,
+                };
+            }
         }
-        if (repDoc) {
-            repInfo = {
-                id: normalOrder.representativeId,
-                name: `${repDoc.firstName || ''} ${repDoc.lastName || ''}`.trim() || 'المندوب',
-                phone: repDoc.phone || '',
-                photo: repDoc.profileImage || null,
-            };
-        }
-    }
+    } catch (_) {}
 
     const maxLimit = isAdmin ? (Number(limit) || 500) : (Number(limit) || 50);
     let query = { orderId: { $in: allIds } };
