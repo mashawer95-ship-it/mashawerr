@@ -3634,25 +3634,45 @@ const releaseOrder = asyncHandler(async (req, res) => {
         if (io) {
             const isReturn = order.isReturnOrder || (typeof order.status === 'string' && order.status.startsWith('return_'));
             const resetStatus = isReturn ? 'return_pending' : 'waiting';
-            const room = `order:${refId}`;
+            const mongoId = String(order._id);
+            const targetRooms = new Set([
+                `order:${refId}`,
+                `order:${mongoId}`,
+                `trip:${refId}`,
+                `trip:${mongoId}`,
+                ...(order.clientId ? [`user:${order.clientId}`] : []),
+            ]);
             const payload = {
                 orderId: refId,
+                _id: mongoId,
+                id: mongoId,
                 status: resetStatus,
                 previousStatus: currentStatus,
                 message: 'عادت حالة الطلب للانتظار للبحث عن مندوب جديد',
             };
-            io.to(room).emit('order:status_changed', payload);
-            io.to(room).emit('order:back_to_waiting', payload);
-            io.to(room).emit('order:released', {
-                orderId: refId,
-                status: resetStatus,
-                cancellationFeeApplied,
-                cancellationFeeFils,
-            });
+
+            for (const r of targetRooms) {
+                io.to(r).emit('order:status_changed', payload);
+                io.to(r).emit('order:back_to_waiting', payload);
+                io.to(r).emit('order:released', {
+                    orderId: refId,
+                    _id: mongoId,
+                    id: mongoId,
+                    status: resetStatus,
+                    cancellationFeeApplied,
+                    cancellationFeeFils,
+                });
+                try {
+                    io.of('/tracking').to(r).emit('order:status_changed', payload);
+                    io.of('/tracking').to(r).emit('order:back_to_waiting', payload);
+                    io.of('/tracking').to(r).emit('order:released', payload);
+                } catch (_) {}
+            }
+
             if (resetStatus === 'waiting') {
                 const waitingPayload = {
                     orderId: refId,
-                    id: String(order._id || refId),
+                    id: mongoId,
                     status: 'waiting',
                     governorate: order.governorate,
                     orderCategory: order.orderCategory || 'delivery',
@@ -3662,14 +3682,23 @@ const releaseOrder = asyncHandler(async (req, res) => {
                 io.emit('new_waiting_order', waitingPayload);
                 logger.info(`[releaseOrder] Broadcasted new_waiting_order for #${refId}`);
             }
+
             if (order.clientId) {
-                io.to(`user:${order.clientId}`).emit('order:status_changed', payload);
-                io.to(`user:${order.clientId}`).emit('order:back_to_waiting', payload);
+                notifyClient(
+                    order.clientId,
+                    '⏳ جاري البحث عن مندوب جديد',
+                    'اعتذر المندوب عن الطلب، ويجري الآن البحث عن مندوب آخر لخدمتك بأسرع وقت.',
+                    {
+                        type: 'order_released',
+                        orderId: String(refId),
+                        _id: mongoId,
+                        status: resetStatus,
+                    }
+                ).catch(() => {});
             }
         }
 
-        // End live tracking for everyone (the old `trackingIo` app setting was never
-        // registered, so the previous tripEnded broadcast was a silent no-op).
+        // End live tracking for everyone
         try {
             const { terminateOrderTracking } = require('../utils/orderTermination');
             await terminateOrderTracking({
@@ -3681,7 +3710,7 @@ const releaseOrder = asyncHandler(async (req, res) => {
                 reason: cancelReason,
                 representativeId: oldRepId,
                 isRelease: true,
-                emitStatusEvents: false,
+                emitStatusEvents: true,
                 extraId: refId,
             });
         } catch (_) {}
