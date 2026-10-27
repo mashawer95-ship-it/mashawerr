@@ -2,6 +2,7 @@ const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
 const Message = require('../models/Message');
 const { Order } = require('../middlewares/Order');
+const User = require('../middlewares/User');
 const { sanitizeErrorResponse } = require('../middlewares/objectAuthorization');
 const { resolveOrderIds } = require('../utils/orderIdResolver');
 
@@ -9,41 +10,44 @@ const { resolveOrderIds } = require('../utils/orderIdResolver');
  * GET /api/chat/:orderId
  * Fetch chat history for a specific order.
  * Query params:
- * - limit: number of messages to return (default 50)
+ * - limit: number of messages to return (default 50 for regular users, 500 for admin)
  * - before: timestamp to paginate (fetch messages older than this)
  */
 const getChatHistory = asyncHandler(async (req, res) => {
     const { orderId } = req.params;
-    const { limit = 50, before } = req.query;
+    const { limit, before } = req.query;
 
     const { allIds, numericId, mongoId } = await resolveOrderIds(orderId);
 
-    const isAdmin = req.user?.isAdmin === true || req.fullUser?.isAdmin === true;
+    const userTypeLower = (req.user?.userType || req.fullUser?.userType || '').toString().toLowerCase();
+    const isAdmin = req.user?.isAdmin === true ||
+        req.fullUser?.isAdmin === true ||
+        userTypeLower === 'admin' ||
+        userTypeLower === 'administration';
+
+    const orderConditions = [];
+    if (numericId && !isNaN(Number(numericId))) {
+        orderConditions.push({ orderId: Number(numericId) });
+    }
+    if (mongoId && mongoose.isValidObjectId(mongoId)) {
+        orderConditions.push({ _id: mongoId });
+    }
+    for (const id of allIds) {
+        if (!isNaN(Number(id))) orderConditions.push({ orderId: Number(id) });
+        if (mongoose.isValidObjectId(id)) orderConditions.push({ _id: id });
+    }
+
+    const normalOrder = orderConditions.length > 0
+        ? await Order.findOne({ $or: orderConditions }).select('orderId clientId representativeId status orderCategory createdAt').lean()
+        : null;
+
     if (!isAdmin) {
         if (process.env.TEST_MODE === 'true' && mongoose.connection.readyState !== 1) {
             return sanitizeErrorResponse(res, true, true);
         }
         const userIdStr = req.user?.id?.toString();
 
-        const orderConditions = [];
-        if (numericId && !isNaN(Number(numericId))) {
-            orderConditions.push({ orderId: Number(numericId) });
-        }
-        if (mongoId && mongoose.isValidObjectId(mongoId)) {
-            orderConditions.push({ _id: mongoId });
-        }
-        for (const id of allIds) {
-            if (!isNaN(Number(id))) orderConditions.push({ orderId: Number(id) });
-            if (mongoose.isValidObjectId(id)) orderConditions.push({ _id: id });
-        }
-
-        const [isParticipant, normalOrder] = await Promise.all([
-            Message.exists({ orderId: { $in: allIds }, $or: [{ senderId: userIdStr }, { receiverId: userIdStr }] }),
-            orderConditions.length > 0
-                ? Order.findOne({ $or: orderConditions }).select('clientId representativeId').lean()
-                : null
-        ]);
-
+        const isParticipant = await Message.exists({ orderId: { $in: allIds }, $or: [{ senderId: userIdStr }, { receiverId: userIdStr }] });
         const isOrderOwner = Boolean(normalOrder && (normalOrder.clientId?.toString() === userIdStr || normalOrder.representativeId?.toString() === userIdStr));
 
         if (!isParticipant && !isOrderOwner) {
@@ -51,6 +55,43 @@ const getChatHistory = asyncHandler(async (req, res) => {
         }
     }
 
+    // Resolve participant profiles (client & representative)
+    let clientInfo = null;
+    let repInfo = null;
+    if (normalOrder) {
+        const userPromises = [];
+        if (normalOrder.clientId && mongoose.isValidObjectId(normalOrder.clientId)) {
+            userPromises.push(User.findById(normalOrder.clientId).select('firstName lastName phone profileImage').lean().catch(() => null));
+        } else {
+            userPromises.push(Promise.resolve(null));
+        }
+
+        if (normalOrder.representativeId && mongoose.isValidObjectId(normalOrder.representativeId)) {
+            userPromises.push(User.findById(normalOrder.representativeId).select('firstName lastName phone profileImage').lean().catch(() => null));
+        } else {
+            userPromises.push(Promise.resolve(null));
+        }
+
+        const [clientDoc, repDoc] = await Promise.all(userPromises);
+        if (clientDoc) {
+            clientInfo = {
+                id: normalOrder.clientId,
+                name: `${clientDoc.firstName || ''} ${clientDoc.lastName || ''}`.trim() || 'العميل',
+                phone: clientDoc.phone || '',
+                photo: clientDoc.profileImage || null,
+            };
+        }
+        if (repDoc) {
+            repInfo = {
+                id: normalOrder.representativeId,
+                name: `${repDoc.firstName || ''} ${repDoc.lastName || ''}`.trim() || 'المندوب',
+                phone: repDoc.phone || '',
+                photo: repDoc.profileImage || null,
+            };
+        }
+    }
+
+    const maxLimit = isAdmin ? (Number(limit) || 500) : (Number(limit) || 50);
     let query = { orderId: { $in: allIds } };
     if (before) {
         query.createdAt = { $lt: new Date(before) };
@@ -58,11 +99,35 @@ const getChatHistory = asyncHandler(async (req, res) => {
 
     const messages = await Message.find(query)
         .sort({ createdAt: -1 })
-        .limit(Number(limit));
+        .limit(maxLimit);
+
+    const enrichedMessages = messages.map(m => {
+        const doc = m.toObject ? m.toObject() : m;
+        const senderStr = doc.senderId?.toString();
+        let role = 'unknown';
+        if (normalOrder) {
+            if (normalOrder.clientId && senderStr === normalOrder.clientId.toString()) {
+                role = 'client';
+            } else if (normalOrder.representativeId && senderStr === normalOrder.representativeId.toString()) {
+                role = 'representative';
+            }
+        }
+        return {
+            ...doc,
+            senderRole: role,
+        };
+    });
 
     res.json({
         success: true,
-        data: messages.reverse() // Return in chronological order
+        data: enrichedMessages.reverse(), // Return in chronological order
+        orderInfo: {
+            orderId: normalOrder?.orderId || numericId || mongoId || orderId,
+            status: normalOrder?.status || null,
+            orderCategory: normalOrder?.orderCategory || null,
+            client: clientInfo,
+            representative: repInfo,
+        }
     });
 });
 
