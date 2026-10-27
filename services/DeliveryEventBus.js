@@ -450,17 +450,21 @@ class DeliveryEventBus {
     static async emitDeliveryCompleted(io, session, orderId, traceId, parentOrder = null) {
         const ordId = parentOrder?.orderId != null ? String(parentOrder.orderId) : null;
         const mongoId = parentOrder?._id != null ? String(parentOrder._id) : String(orderId);
+        const clientId = parentOrder?.clientId || parentOrder?.userId || session?.customerId;
+        const driverId = parentOrder?.driverId || parentOrder?.representativeId || session?.driverId;
         const orderRooms = new Set([
-            `user:${session.customerId}`,
-            `user:${session.driverId}`,
+            ...(clientId ? [`user:${clientId}`] : []),
+            ...(session?.customerId ? [`user:${session.customerId}`] : []),
+            ...(driverId ? [`user:${driverId}`] : []),
+            ...(session?.driverId ? [`user:${session.driverId}`] : []),
             `order:${mongoId}`,
             `trip:${mongoId}`,
-            ...(session.orderId ? [`order:${session.orderId}`, `trip:${session.orderId}`] : []),
+            ...(session?.orderId ? [`order:${session.orderId}`, `trip:${session.orderId}`] : []),
             ...(ordId ? [`order:${ordId}`, `trip:${ordId}`] : []),
         ]);
 
         return this._dispatch({
-            sessionId: session.sessionId,
+            sessionId: session?.sessionId,
             traceId,
             actor: 'DRIVER',
             action: 'DELIVERY_COMPLETED',
@@ -470,20 +474,29 @@ class DeliveryEventBus {
                 id: mongoId,
                 numericOrderId: ordId,
                 orderNumber: parentOrder?.orderNumber || ordId,
+                status: 'completed',
                 isCompleted: true,
+                allTasksCompleted: true,
                 phase: 'COMPLETED'
             },
             socketConfig: {
                 io,
                 rooms: Array.from(orderRooms),
-                eventNames: ['delivery_session:completed', 'order:completed', 'tripCompleted'],
+                eventNames: [
+                    'delivery_session:completed',
+                    'order:completed',
+                    'order:status_changed',
+                    'tripCompleted',
+                    'tripEnded',
+                ],
             },
             fcmConfig: {
-                targetUserId: session.customerId,
+                targetUserId: session?.customerId || clientId,
                 title: 'تم إكمال التسليم بنجاح 🎉',
                 body: 'تم استلام طلبك وتأكيده بنجاح. شكراً لاستخدامك مشاوير!',
                 notificationData: {
                     type: 'DELIVERY_COMPLETED',
+                    status: 'completed',
                     orderId: mongoId,
                     _id: mongoId,
                     id: mongoId,

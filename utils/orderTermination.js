@@ -75,6 +75,8 @@ async function terminateOrderTracking({
         timestamp: Date.now(),
     };
 
+    const isCompletedStatus = status === 'completed' || status === 'delivered';
+
     // 1) Tombstone first: closes the race with in-flight GPS packets.
     // (Skipped for release: the order returns to waiting and a new rep will track it.)
     try {
@@ -102,13 +104,16 @@ async function terminateOrderTracking({
                 if (isRelease) {
                     emitAll('order:back_to_waiting', base);
                     emitAll('order:released', base);
+                } else if (isCompletedStatus) {
+                    emitAll('order:completed', { ...base, isCompleted: true, allTasksCompleted: true });
                 } else {
                     emitAll('order:cancelled', base);
                 }
             }
 
             // 3) End the live trip for every subscriber on every namespace
-            const tripEnded = { tripId: mongoId, orderId: numericId, reason: isRelease ? 'released' : 'cancelled', timestamp: Date.now() };
+            const tripEndReason = isRelease ? 'released' : (isCompletedStatus ? 'completed' : 'cancelled');
+            const tripEnded = { tripId: mongoId, orderId: numericId, reason: tripEndReason, timestamp: Date.now() };
             const namespaces = [io.of('/tracking'), io.of('/ride')].filter(Boolean);
             for (const nsp of namespaces) {
                 let chain = nsp;
@@ -126,7 +131,7 @@ async function terminateOrderTracking({
             }
             // The "order:" rooms on the root namespace are used by the order
             // sockets (not by tracking). The status events above are already
-            // delivered, so evict them too for a cancel (but keep for release,
+            // delivered, so evict them too for a cancel/complete (but keep for release,
             // since the client keeps waiting for a new rep on the same order).
             if (!isRelease) {
                 for (const id of ids) io.in(`order:${id}`).socketsLeave(`order:${id}`);
@@ -156,9 +161,10 @@ async function terminateOrderTracking({
 
     try {
         const { Trip } = require('../models/Trip');
+        const tripEndStatus = isRelease ? 'released' : (isCompletedStatus ? 'completed' : 'cancelled');
         await Trip.updateMany(
             { $or: [{ orderId: { $in: ids } }, { _id: order._id }] },
-            { $set: { status: isRelease ? 'released' : 'cancelled', endedAt: new Date() } },
+            { $set: { status: tripEndStatus, endedAt: new Date() } },
         );
     } catch (_) { /* Trip doc is optional */ }
 

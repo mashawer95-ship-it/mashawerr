@@ -759,6 +759,24 @@ async function completeDeliveryOrPickup(session, orderId, isPickup, req, traceId
             await DeliveryEventBus.emitDeliveryApproved(io, session, attempt, orderId, true, extraRooms, trackData, traceId, completedStopIndex);
         } catch (_) {}
 
+        try {
+            const { terminateOrderTracking } = require('../utils/orderTermination');
+            await terminateOrderTracking({
+                io,
+                order: parentOrder || { _id: orderId },
+                status: 'completed',
+                previousStatus: parentOrder?.status || 'delivering',
+                cancelledBy: 'system',
+                reason: 'delivery_completed',
+                representativeId: session?.driverId || parentOrder?.representativeId,
+                isRelease: false,
+                emitStatusEvents: false,
+                extraId: orderId,
+            });
+        } catch (e) {
+            console.error('[podController] terminateOrderTracking error:', e.message);
+        }
+
         return {
             success: true,
             isApproved: true,

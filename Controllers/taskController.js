@@ -605,6 +605,22 @@ const deliverTask = [
             dispatchBackgroundEmail(async () => {
                 await sendDeliveryOrderCompletionEmail(order);
             });
+
+            try {
+                const { terminateOrderTracking } = require('../utils/orderTermination');
+                await terminateOrderTracking({
+                    io: req.app.get('io'),
+                    order,
+                    status: 'completed',
+                    previousStatus: 'delivering',
+                    cancelledBy: 'system',
+                    reason: 'delivery_completed',
+                    representativeId: order.representativeId || order.driverId,
+                    isRelease: false,
+                    emitStatusEvents: false,
+                    extraId: rawOrderId,
+                });
+            } catch (_) {}
         } else {
             if (clientToNotify) {
                 const partTitle = isPassenger ? '📍 تم الوصول لمحطة من المشوار' : '✅ تم تسليم جزء من طلبك';
