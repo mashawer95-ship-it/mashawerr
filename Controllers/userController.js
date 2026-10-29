@@ -12,6 +12,7 @@ const { buildUrl } = require('../config/urlBuilder');
 const BannedDevice = require('../models/BannedDevice');
 const { escapeRegex } = require('../utils/escapeRegex');
 const { banIdentifier, unbanIdentifier, isBanned, normalizePhone } = require('../services/bannedDeviceService');
+const { revokeAllUserTokens } = require('../services/tokenService');
 
 const { sanitizeErrorResponse, isOwnerOrAuthorized } = require('../middlewares/objectAuthorization');
 const { pickAllowedFields } = require('../utils/sanitizer');
@@ -436,91 +437,229 @@ const uploadProfileImageHandler = asyncHandler(async (req, res) => {
  * @description Delete User by id
  * @route /api/users/:id
  * @method Delete
- * @access private(only admin & user himself) 
+ * @description Soft delete user account by ID (Owner or Admin) - keeps orders, history and ratings completely intact
+ * @route DELETE /api/users/:id
+ * @access private(only admin & user himself)
  */
 const DeleteUserbyid = asyncHandler(async (req, res) => {
     const userId = req.params.id;
     const user = await User.findById(userId).select('-password');
-    
+
     if (!user) {
-        return res.status(404).json({ message: 'User not found' });
+        return res.status(404).json({ message: 'المستخدم غير موجود' });
     }
 
     if (user.isAdmin || user.userType === 'Admin' || user.userType === 'admin') {
         return res.status(400).json({ message: 'عذراً، لا يمكن حذف حساب مسؤول (Admin)' });
     }
 
-    // Ensure no stale device/phone/email ban remains for this deleted user so they can re-register freely
-    await unbanIdentifier(userId.toString()).catch(() => {});
-    if (user.phone) await unbanIdentifier(user.phone).catch(() => {});
-    if (user.email) await unbanIdentifier(user.email).catch(() => {});
+    const isAdmin = req.user?.isAdmin === true || req.fullUser?.isAdmin === true;
+    const isOwner = req.user?.id?.toString() === userId.toString();
+    if (!isAdmin && !isOwner) {
+        return res.status(403).json({ message: 'غير مصرح لك بحذف هذا الحساب' });
+    }
 
-        // Cascade delete all user-related data across all collections
-        // Cascade delete all user-related data across all collections
-        await Promise.all([
-            // 1. Delete UserRatings where user is rater or ratee
-            UserRating.deleteMany({ $or: [{ raterId: userId }, { rateeId: userId }, { raterId: userId.toString() }, { rateeId: userId.toString() }] }),
-            
-            // 2. Delete FCM Tokens
-            FcmToken.deleteMany({ $or: [{ userId: userId }, { userId: userId.toString() }] }),
-            
-            // 3. Delete Chat Messages
-            Message.deleteMany({ $or: [{ senderId: userId }, { receiverId: userId }, { senderId: userId.toString() }, { receiverId: userId.toString() }] }),
-            
-            // 4. Delete Role Requests
-            RoleRequest.deleteMany({ $or: [{ user: userId }, { userId: userId }, { user: userId.toString() }] }),
-            
-            // 5. Delete personal user discount
-            UserDiscount.deleteMany({ $or: [{ userId: userId }, { userId: userId.toString() }] }),
-            
-            // 6. Remove user from used discount codes
-            DiscountCode.updateMany(
-                { usedByUserIds: { $in: [userId, userId.toString()] } },
-                { $pull: { usedByUserIds: { $in: [userId, userId.toString()] } } }
-            ),
-            
-            // 7. Delete normal Orders (rides/mashawer) where user is client or representative
-            Order.deleteMany({
-                $or: [
-                    { clientId: userId },
-                    { clientId: userId.toString() },
-                    { representativeId: userId },
-                    { representativeId: userId.toString() },
-                    { userId: userId },
-                    { userId: userId.toString() }
-                ]
-            }),
+    const { reason, notes } = req.body || {};
 
-            // 8. Finally, hard delete the user account
-            User.findByIdAndDelete(userId)
-        ]);
+    // ─── تنفيذ الحذف الناعم (Soft Delete) ──────────────────────────────────
+    // تبقى جميع الطلبات والتقييمات والمعاملات المالية ومحادثات الشات في قاعدة البيانات
+    user.isDeleted = true;
+    user.deletedAt = new Date();
+    user.deleteReason = (reason && String(reason).trim()) || (isOwner ? 'طلب العميل حذف حسابه' : 'حذف الحساب من قبل الإدارة');
+    user.deleteNotes = (notes && String(notes).trim()) || null;
+    user.isAvailable = false;
+    await user.save();
 
-        // Emit Socket.io notification to force logout the deleted user immediately across all namespaces
-        const io = req.app.get('io');
-        if (io) {
-            const payload = {
-                action: 'force_logout',
-                reason: 'USER_DELETED',
-                message: 'تم حذف حسابك من قبل الإدارة.'
-            };
-            const room = `user:${userId}`;
-            io.to(room).emit('force_logout', payload);
-            io.to(room).emit('user_status_changed', payload);
-            io.to(room).emit('account_blocked', payload);
-            if (io.of) {
-                ['/chat', '/hr', '/tracking', '/ride'].forEach(ns => {
-                    try {
-                        io.of(ns).to(room).emit('force_logout', payload);
-                        io.of(ns).to(room).emit('user_status_changed', payload);
-                        io.of(ns).to(room).emit('account_blocked', payload);
-                    } catch (_) {}
-                });
-            }
+    // إبطال جميع جلسات الـ Refresh Tokens وحذف رموز الـ FCM لتجنب وصول أي إشعارات
+    await Promise.all([
+        revokeAllUserTokens(userId).catch(() => {}),
+        FcmToken.deleteMany({ $or: [{ userId: userId }, { userId: userId.toString() }] }).catch(() => {}),
+    ]);
+
+    // إشعار فوري عبر Socket.io لتسجيل الخروج الفوري للمستخدم المحذوف
+    const io = req.app.get('io');
+    if (io) {
+        const payload = {
+            action: 'force_logout',
+            reason: 'ACCOUNT_DELETED',
+            message: isOwner ? 'تم حذف حسابك بنجاح.' : 'تم حذف حسابك من قبل الإدارة.',
+        };
+        const room = `user:${userId}`;
+        io.to(room).emit('force_logout', payload);
+        io.to(room).emit('user_status_changed', payload);
+        io.to(room).emit('account_blocked', payload);
+        if (io.of) {
+            ['/chat', '/hr', '/tracking', '/ride'].forEach(ns => {
+                try {
+                    io.of(ns).to(room).emit('force_logout', payload);
+                    io.of(ns).to(room).emit('user_status_changed', payload);
+                    io.of(ns).to(room).emit('account_blocked', payload);
+                } catch (_) {}
+            });
         }
+    }
 
-        console.log(`[DeleteUser] Successfully deleted user ${userId} and all cascade data.`);
+    console.log(`[DeleteUser] Successfully soft-deleted user ${userId}. All orders and history are safely preserved.`);
 
-        return res.status(200).json({ message: "User and all related data have been completely deleted" });
+    return res.status(200).json({
+        success: true,
+        message: 'تم حذف الحساب بنجاح، وجميع بيانات الطلبات والسجلات محفوظة بأمان.',
+    });
+});
+
+/**
+ * @description Delete own account by authenticated client (Soft Delete)
+ * @route DELETE /api/users/delete-account
+ * @access Private (Owner)
+ */
+const deleteOwnAccount = asyncHandler(async (req, res) => {
+    const userId = req.user?.id;
+    if (!userId) {
+        return res.status(401).json({ message: 'غير مصرح لك بالوصول' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+        return res.status(404).json({ message: 'المستخدم غير موجود' });
+    }
+
+    if (user.isAdmin || user.userType === 'Admin' || user.userType === 'admin') {
+        return res.status(400).json({ message: 'عذراً، لا يمكن حذف حساب مسؤول (Admin)' });
+    }
+
+    const { reason, notes } = req.body || {};
+
+    user.isDeleted = true;
+    user.deletedAt = new Date();
+    user.deleteReason = (reason && String(reason).trim()) || 'طلب العميل حذف حسابه';
+    user.deleteNotes = (notes && String(notes).trim()) || null;
+    user.isAvailable = false;
+    await user.save();
+
+    await Promise.all([
+        revokeAllUserTokens(userId).catch(() => {}),
+        FcmToken.deleteMany({ $or: [{ userId: userId }, { userId: userId.toString() }] }).catch(() => {}),
+    ]);
+
+    const io = req.app.get('io');
+    if (io) {
+        const payload = {
+            action: 'force_logout',
+            reason: 'ACCOUNT_DELETED',
+            message: 'تم حذف حسابك بنجاح. نتمنى رؤيتك مجدداً.',
+        };
+        const room = `user:${userId}`;
+        io.to(room).emit('force_logout', payload);
+        io.to(room).emit('user_status_changed', payload);
+        io.to(room).emit('account_blocked', payload);
+        if (io.of) {
+            ['/chat', '/hr', '/tracking', '/ride'].forEach(ns => {
+                try {
+                    io.of(ns).to(room).emit('force_logout', payload);
+                    io.of(ns).to(room).emit('user_status_changed', payload);
+                    io.of(ns).to(room).emit('account_blocked', payload);
+                } catch (_) {}
+            });
+        }
+    }
+
+    return res.status(200).json({
+        success: true,
+        message: 'تم حذف حسابك بنجاح. نتمنى رؤيتك مجدداً.',
+    });
+});
+
+/**
+ * @description Get all soft-deleted accounts for Admin Dashboard with pagination & search
+ * @route GET /api/users/deleted-accounts
+ * @access Private (Admin only)
+ */
+const getDeletedAccounts = asyncHandler(async (req, res) => {
+    const { page = 1, limit = 50, search, q } = req.query;
+    const safePage = Math.max(1, parseInt(page, 10) || 1);
+    const safeLimit = Math.min(100, Math.max(1, parseInt(limit, 10) || 50));
+    const skip = (safePage - 1) * safeLimit;
+
+    const filter = { isDeleted: true };
+    const searchTerm = (search || q || '').trim();
+
+    if (searchTerm) {
+        const escaped = escapeRegex(searchTerm);
+        const searchRegex = new RegExp(escaped, 'i');
+        filter.$or = [
+            { firstName: searchRegex },
+            { lastName: searchRegex },
+            { email: searchRegex },
+            { phone: searchRegex },
+            { deleteReason: searchRegex },
+        ];
+    }
+
+    const [total, users] = await Promise.all([
+        User.countDocuments(filter),
+        User.find(filter)
+            .select('_id firstName lastName email phone userType profileImage isDeleted deletedAt deleteReason deleteNotes governorate gender createdAt')
+            .sort({ deletedAt: -1, createdAt: -1 })
+            .skip(skip)
+            .limit(safeLimit)
+            .lean()
+    ]);
+
+    const formattedUsers = users.map(u => ({
+        ...u,
+        fullName: `${u.firstName || ''} ${u.lastName || ''}`.trim() || 'مستخدم بدون اسم',
+        profileImage: sanitizeImageUrl(buildUrl(req, u.profileImage)),
+    }));
+
+    const totalPages = Math.ceil(total / safeLimit) || 1;
+
+    return res.status(200).json({
+        success: true,
+        page: safePage,
+        limit: safeLimit,
+        total,
+        totalPages,
+        hasNextPage: safePage < totalPages,
+        hasPrevPage: safePage > 1,
+        users: formattedUsers,
+        data: formattedUsers,
+    });
+});
+
+/**
+ * @description Restore a soft-deleted user account (Admin only)
+ * @route PATCH /api/users/:id/restore
+ * @access Private (Admin only)
+ */
+const restoreDeletedAccount = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const user = await User.findById(id);
+
+    if (!user) {
+        return res.status(404).json({ message: 'المستخدم غير موجود' });
+    }
+
+    if (!user.isDeleted) {
+        return res.status(400).json({ message: 'هذا الحساب ليس محذوفاً بالفعل' });
+    }
+
+    user.isDeleted = false;
+    user.deletedAt = null;
+    user.deleteReason = null;
+    user.deleteNotes = null;
+    await user.save();
+
+    return res.status(200).json({
+        success: true,
+        message: 'تم استرجاع الحساب وتفعيله بنجاح. يمكن للمستخدم الآن تسجيل الدخول مجدداً.',
+        user: {
+            _id: user._id,
+            email: user.email,
+            phone: user.phone,
+            fullName: `${user.firstName} ${user.lastName}`.trim(),
+            isDeleted: false,
+        }
+    });
 });
 
 /**
@@ -2499,6 +2638,9 @@ module.exports = {
     getBannedDevices,
     unbanBannedDevice,
     updateUserGovernorate,
+    deleteOwnAccount,
+    getDeletedAccounts,
+    restoreDeletedAccount,
 };
 
 

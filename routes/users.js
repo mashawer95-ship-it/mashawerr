@@ -1,6 +1,35 @@
 const express = require('express');
 const router = express.Router();
-const { updateUser, getAllUser, getProfile, getUserbyid, uploadProfileImageHandler, DeleteUserbyid, toggleRepresentativeAvailability, setUserAsRepresentative, migrateRepresentatives, updateVehicleInfo, clearStaleImages, updateOnlineLocation, getOnlineRepresentatives, suspendUser, unsuspendUser, getSuspendedUsers, blockUser, unblockUser, getRepresentativeOrders, getRepresentativeRatingsAdmin, toggleVehicleEditPermission, changeUserType, getBannedDevices, unbanBannedDevice, updateUserGovernorate } = require('../Controllers/userController');
+const {
+    updateUser,
+    getAllUser,
+    getProfile,
+    getUserbyid,
+    uploadProfileImageHandler,
+    DeleteUserbyid,
+    toggleRepresentativeAvailability,
+    setUserAsRepresentative,
+    migrateRepresentatives,
+    updateVehicleInfo,
+    clearStaleImages,
+    updateOnlineLocation,
+    getOnlineRepresentatives,
+    suspendUser,
+    unsuspendUser,
+    getSuspendedUsers,
+    blockUser,
+    unblockUser,
+    getRepresentativeOrders,
+    getRepresentativeRatingsAdmin,
+    toggleVehicleEditPermission,
+    changeUserType,
+    getBannedDevices,
+    unbanBannedDevice,
+    updateUserGovernorate,
+    deleteOwnAccount,
+    getDeletedAccounts,
+    restoreDeletedAccount,
+} = require('../Controllers/userController');
 const { uploadProfileImage, uploadVehicleImage } = require('../middlewares/upload');
 const { verifyToken, verifyTokenAndAdmin, optionalAuth } = require('../middlewares/verifytoken');
 const { authorize } = require('../middlewares/authorize');
@@ -8,6 +37,12 @@ const { createRoleRequest, getAllRoleRequests, updateRoleRequestStatus } = requi
 
 router.get('/', verifyToken, authorize('admin', 'administration', 'agent'), getAllUser);
 router.get('/profile/:id', verifyToken, getProfile);
+
+// 🗑️ Client Delete Own Account (MUST be before /:id)
+router.delete('/delete-account', verifyToken, deleteOwnAccount);
+
+// 🗑️ Admin: View All Soft-Deleted Accounts (MUST be before /:id)
+router.get('/deleted-accounts', verifyTokenAndAdmin, getDeletedAccounts);
 
 // 📝 Change User Type / Role (Admin only)
 router.patch('/:id/change-user-type', verifyTokenAndAdmin, changeUserType);
@@ -37,6 +72,10 @@ router.patch('/:id/unblock', verifyToken, authorize('admin', 'administration', '
 router.get('/banned-devices', verifyTokenAndAdmin, getBannedDevices);
 router.delete('/banned-devices/:id', verifyTokenAndAdmin, unbanBannedDevice);
 
+// 🔄 Admin: Restore Soft-Deleted Account
+router.patch('/:id/restore', verifyTokenAndAdmin, restoreDeletedAccount);
+router.put('/:id/restore', verifyTokenAndAdmin, restoreDeletedAccount);
+
 // 🚗 Admin & Agent: Toggle or set representative vehicle edit permissions (Lock/Unlock)
 router.patch('/:id/vehicle-edit-permissions', verifyToken, authorize('admin', 'administration', 'agent'), toggleVehicleEditPermission);
 router.patch('/:id/toggle-vehicle-edit', verifyToken, authorize('admin', 'administration', 'agent'), toggleVehicleEditPermission);
@@ -51,8 +90,8 @@ router.patch('/:id/governorate', verifyToken, updateUserGovernorate);
 router.get('/:id', verifyToken, getUserbyid);
 router.put('/:id/profile-image', verifyToken, uploadProfileImage, uploadProfileImageHandler);
 router.put('/:id', verifyToken, updateUser);
-// DELETE /api/users/:id - Hard delete user account and all related orders & data (Admin only)
-router.delete('/:id', verifyTokenAndAdmin, DeleteUserbyid);
+// DELETE /api/users/:id - Soft delete user account preserving all orders and data (Owner or Admin)
+router.delete('/:id', verifyToken, DeleteUserbyid);
 
 // Toggle availability
 router.patch('/:id/availability', verifyToken, toggleRepresentativeAvailability);

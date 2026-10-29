@@ -65,6 +65,12 @@ const register = asyncHandler(async (req, res) => {
     // Check if user exists by email
     const existingUser = await User.findOne({ email });
     if (existingUser) {
+        if (existingUser.isDeleted === true) {
+            return res.status(403).json({
+                code: 'ACCOUNT_DELETED',
+                message: 'عذراً، هذا الحساب محذوف. يرجى التواصل مع الدعم الفني لاستعادته.',
+            });
+        }
         return res.status(400).json({ message: 'Email already registered' });
     }
 
@@ -118,6 +124,14 @@ const login = asyncHandler(async (req, res) => {
     let user = await User.findOne({ email: emailRegex });
     if (!user) {
         return res.status(401).json({ message: 'Invalid email or password' });
+    }
+
+    // Check if account is deleted
+    if (user.isDeleted === true) {
+        return res.status(403).json({
+            code: 'ACCOUNT_DELETED',
+            message: 'عذراً، هذا الحساب محذوف. يرجى التواصل مع الدعم الفني.',
+        });
     }
 
     // Check if account is suspended or blocked by admin

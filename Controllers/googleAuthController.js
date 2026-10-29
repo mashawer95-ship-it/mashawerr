@@ -106,6 +106,13 @@ const googleSignIn = asyncHandler(async (req, res) => {
             });
         }
 
+        if (user && user.isDeleted === true) {
+            return res.status(403).json({
+                code: 'ACCOUNT_DELETED',
+                message: 'عذراً، هذا الحساب محذوف. يرجى التواصل مع الدعم الفني.',
+            });
+        }
+
         if (user && (user.isSuspended === true || user.status === 'blocked')) {
             return res.status(403).json({
                 code: 'ACCOUNT_SUSPENDED',

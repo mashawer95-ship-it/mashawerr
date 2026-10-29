@@ -69,6 +69,14 @@ const checkUserStatus = async (req, res, next) => {
             }
         }
 
+        // Check if user account was deleted (Soft Delete)
+        if (user.isDeleted === true) {
+            return res.status(403).json({
+                code: 'ACCOUNT_DELETED',
+                message: 'عذراً، هذا الحساب محذوف. يرجى التواصل مع الدعم الفني.',
+            });
+        }
+
         // Check if user account is suspended or blocked by admin
         if (user.isSuspended === true || user.status === 'blocked') {
             return res.status(403).json({

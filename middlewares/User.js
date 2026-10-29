@@ -151,6 +151,31 @@ const UserSchema = new mongoose.Schema({
     updatedAt: { type: Date, default: null }
  },
 
+ // ─── حذف الحساب (Soft Delete) ───────────────────────────────────────────
+ isDeleted: {
+     type: Boolean,
+     default: false,
+     index: true,
+     description: 'إذا كانت true، الحساب محذوف (Soft Delete) ولا يمكن تسجيل الدخول به'
+ },
+ deletedAt: {
+     type: Date,
+     default: null,
+     description: 'تاريخ ووقت حذف الحساب'
+ },
+ deleteReason: {
+     type: String,
+     default: null,
+     trim: true,
+     description: 'سبب حذف الحساب كما اختاره المستخدم'
+ },
+ deleteNotes: {
+     type: String,
+     default: null,
+     trim: true,
+     description: 'ملاحظات إضافية عند حذف الحساب'
+ },
+
  // ─── Refresh Token Security (Token Family Tracking) ───────────────────────
  // UUID of the current active refresh token family.
  // When a replay attack is detected (reuse of a revoked refresh token),
@@ -166,6 +191,9 @@ UserSchema.index({ createdAt: -1, _id: -1 });
 UserSchema.index({ userType: 1, createdAt: -1 });
 UserSchema.index({ isSuspended: 1, updatedAt: -1, _id: -1 });
 UserSchema.index({ status: 1, updatedAt: -1, _id: -1 });
+UserSchema.index({ isDeleted: 1, deletedAt: -1 });
+UserSchema.index({ email: 1, isDeleted: 1 });
+UserSchema.index({ phone: 1, isDeleted: 1 });
 // Online representatives lookup (bounding-box on last known location)
 UserSchema.index({ isAvailable: 1, 'lastLocation.lat': 1, 'lastLocation.lng': 1 });
 // Ban / linked-account checks by physical device
