@@ -103,6 +103,20 @@ exports.createAttempt = async (req, res) => {
         const session = await DeliverySession.findOne({ sessionId });
         if (!session) return res.status(404).json({ success: false, message: 'Session not found' });
 
+        const parentOrderCheck = await getParentOrder(session.orderId);
+        if (parentOrderCheck) {
+            const st = (parentOrderCheck.status || '').toString().toLowerCase().trim();
+            if (['cancelled', 'completed', 'delivered', 'review', 'deleted', 'returned', 'finished', 'delayed'].includes(st)) {
+                return res.status(409).json({
+                    success: false,
+                    message: 'لا يمكن رفع صورة لطلب في حالة منتهية أو قيد المراجعة.',
+                    code: 'ORDER_NOT_LIVE',
+                    status: st,
+                    canReview: false,
+                });
+            }
+        }
+
         const reqPhase = (phase || req.query.phase || session.phase || 'DELIVERY').toUpperCase();
         session.phase = reqPhase;
         await session.save();
@@ -1115,6 +1129,9 @@ exports.getCustomerConfirmations = async (req, res) => {
         }
 
         const targetOrderId = req.query.orderId || req.query.targetOrderId;
+        const activeOnly = req.query.activeOnly === 'true' || req.query.pendingOnly === 'true';
+
+        const terminalStatuses = ['cancelled', 'completed', 'delivered', 'review', 'deleted', 'returned', 'finished', 'delayed'];
 
         const userOrConditions = [
             { customerId: String(userId) },
@@ -1133,7 +1150,8 @@ exports.getCustomerConfirmations = async (req, res) => {
             ],
             isBusinessOrder: { $ne: true },
             orderCategory: { $ne: 'business' },
-        }).select('_id orderId').lean();
+        }).select('_id orderId status').lean();
+
         const normalOrderIds = deliveryOrders.map(o => o.orderId || String(o._id)).filter(Boolean);
         const allOrderIds = [...new Set(normalOrderIds)];
         const allSessionIds = [];
@@ -1156,6 +1174,10 @@ exports.getCustomerConfirmations = async (req, res) => {
                     ...(allSessionIds.length > 0 ? [{ sessionId: { $in: allSessionIds } }] : [])
                 ]
             };
+        }
+
+        if (activeOnly) {
+            sessionQuery.state = 'IN_PROGRESS';
         }
 
         const { page: safePage, limit: safeLimit, skip } = normalizePagination({
@@ -1216,13 +1238,34 @@ exports.getCustomerConfirmations = async (req, res) => {
 
             let order = ordersMap.get(String(session.orderId)) || null;
 
+            const orderStatus = (order?.status || '').toString().toLowerCase().trim();
+            const isOrderEndedOrInvalid = !order || terminalStatuses.includes(orderStatus);
+
+            // Auto-heal session in DB if the parent order has ended or is in review
+            if (isOrderEndedOrInvalid && session.state === 'IN_PROGRESS') {
+                const terminalState = (orderStatus === 'completed' || orderStatus === 'delivered') ? 'COMPLETED' : (orderStatus === 'review' ? 'REJECTED' : 'CANCELLED');
+                DeliverySession.updateOne({ sessionId: session.sessionId }, { $set: { state: terminalState, subState: 'NONE' } }).catch(() => {});
+                DeliveryAttempt.updateMany({ sessionId: session.sessionId, state: 'WAITING_CUSTOMER_REVIEW' }, { $set: { state: terminalState } }).catch(() => {});
+            }
+
+            const canReview = !isOrderEndedOrInvalid &&
+                session.state === 'IN_PROGRESS' &&
+                latestAttempt?.state === 'WAITING_CUSTOMER_REVIEW' &&
+                session.state !== 'REJECTED' &&
+                (session.subState === 'WAITING_CUSTOMER' || session.subState === 'WAITING_PICKUP_APPROVAL');
+
+            // If client asked for active/pending confirmations only, skip ended/unreviewable sessions
+            if (activeOnly && !canReview) {
+                continue;
+            }
+
             const orderType = 'DELIVERY';
             const orderDetails = {
                 pickupAddress: order?.pickupAddress || order?.pickupLocationName || 'عنوان الاستلام',
                 deliveryAddress: order?.deliveryAddress || order?.dropoffLocationName || 'عنوان التسليم',
                 details: order?.details || order?.itemDescription || 'طلب توصيل',
                 totalPrice: order?.cost || order?.totalPrice || 0,
-                status: order?.status || 'active',
+                status: order?.status || (isOrderEndedOrInvalid ? 'completed' : 'active'),
             };
 
             // Retrieve OTP code if available/generated
@@ -1230,7 +1273,7 @@ exports.getCustomerConfirmations = async (req, res) => {
             if (!otpCode && session.otpVersion > 0) {
                 otpCode = await getPlainOTP(session.sessionId, session.otpVersion);
             }
-            if (!otpCode && (session.subState === 'WAITING_OTP' || session.otpVersion > 0) && session.state !== 'COMPLETED') {
+            if (!otpCode && (session.subState === 'WAITING_OTP' || session.otpVersion > 0) && session.state !== 'COMPLETED' && !isOrderEndedOrInvalid) {
                 const newVersion = session.otpVersion || 1;
                 otpCode = await generateAndStoreHMAC(session.sessionId, newVersion);
                 await DeliverySession.updateOne({ sessionId: session.sessionId }, { activeOtpCode: otpCode, otpVersion: newVersion });
@@ -1238,35 +1281,31 @@ exports.getCustomerConfirmations = async (req, res) => {
 
             const attemptPhotoUrl = latestAttempt?.photo?.cdnUrl || (latestAttempt?.photo?.objectKey ? `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME || 'dvhjawii0'}/image/upload/${latestAttempt.photo.objectKey}` : null);
             const currentPhase = session.phase || latestAttempt?.phase || 'DELIVERY';
-            const isOrderReviewOrEnded = order?.status === 'review' ||
-                order?.status === 'cancelled' ||
-                order?.status === 'completed' ||
-                order?.status === 'delivered';
 
-            const canReview = !isOrderReviewOrEnded &&
-                latestAttempt?.state === 'WAITING_CUSTOMER_REVIEW' &&
-                session.state !== 'REJECTED' &&
-                (session.subState === 'WAITING_CUSTOMER' || session.subState === 'WAITING_PICKUP_APPROVAL');
+            // Resolved state: ended orders MUST NEVER report WAITING_CUSTOMER_REVIEW
+            const resolvedAttemptState = isOrderEndedOrInvalid
+                ? (orderStatus || 'COMPLETED').toUpperCase()
+                : (latestAttempt?.state || session.subState);
 
             results.push({
                 sessionId: session.sessionId,
                 orderId: session.orderId,
                 orderType, // 'BUSINESS' or 'DELIVERY'
                 phase: currentPhase,
-                sessionState: session.state,
-                sessionSubState: session.subState,
+                sessionState: isOrderEndedOrInvalid ? 'COMPLETED' : session.state,
+                sessionSubState: isOrderEndedOrInvalid ? 'NONE' : session.subState,
                 attemptId: latestAttempt?.attemptId || null,
                 photoUrl: attemptPhotoUrl,
-                state: latestAttempt?.state || session.subState,
-                canReview,
+                state: resolvedAttemptState,
+                canReview: canReview,
                 orderDetails,
                 attempt: latestAttempt ? {
                     attemptId: latestAttempt.attemptId,
                     attemptNumber: latestAttempt.attemptNumber,
                     photoUrl: attemptPhotoUrl,
                     phase: latestAttempt.phase || currentPhase,
-                    state: latestAttempt.state, // 'WAITING_CUSTOMER_REVIEW', 'APPROVED', 'REJECTED', 'AI_VALIDATION'
-                    canReview: !isOrderReviewOrEnded && latestAttempt.state === 'WAITING_CUSTOMER_REVIEW' && session.state !== 'REJECTED',
+                    state: resolvedAttemptState,
+                    canReview: canReview,
                     rejectionReason: latestAttempt.rejectionReason || null,
                     uploadedAt: latestAttempt.createdAt,
                 } : null,
@@ -1284,7 +1323,7 @@ exports.getCustomerConfirmations = async (req, res) => {
 
         res.json({
             success: true,
-            count: total,
+            count: results.length,
             total,
             page: safePage,
             limit: safeLimit,
@@ -1319,8 +1358,11 @@ exports.getSessionStatus = async (req, res) => {
             session = await DeliverySession.findOne({ orderId: id }).sort({ createdAt: -1 }).lean();
         }
 
+        const terminalStatuses = ['delivered', 'completed', 'returned', 'finished', 'cancelled', 'review', 'deleted', 'delayed'];
+        const orderStatusLower = (order?.status || '').toString().toLowerCase().trim();
+        const isOrderDone = terminalStatuses.includes(orderStatusLower) || (session && (session.state === 'COMPLETED' || session.state === 'CANCELLED'));
+
         if (!session) {
-            const isOrderDone = ['delivered', 'completed', 'returned', 'finished'].includes(order?.status?.toLowerCase());
             return res.json({
                 success: true,
                 hasSession: false,
@@ -1329,11 +1371,12 @@ exports.getSessionStatus = async (req, res) => {
                 state: isOrderDone ? 'COMPLETED' : 'NONE',
                 status: isOrderDone ? 'COMPLETED' : 'NONE',
                 sessionState: isOrderDone ? 'COMPLETED' : 'NONE',
-                attemptState: isOrderDone ? 'APPROVED' : null,
+                attemptState: isOrderDone ? (orderStatusLower || 'COMPLETED').toUpperCase() : null,
                 isDeliveryApproved: isOrderDone,
                 isApproved: isOrderDone,
+                canReview: false,
                 allTasksCompleted: isOrderDone,
-                message: isOrderDone ? 'Order is already completed' : 'No delivery session active for this order',
+                message: isOrderDone ? 'Order is already completed or ended' : 'No delivery session active for this order',
             });
         }
 
@@ -1360,10 +1403,8 @@ exports.getSessionStatus = async (req, res) => {
         }
 
         const latestAttempt = attempts[0] || null;
-        const latestAttemptState = targetAttempt?.state || latestAttempt?.state || null;
+        const latestAttemptState = isOrderDone ? (orderStatusLower || 'COMPLETED').toUpperCase() : (targetAttempt?.state || latestAttempt?.state || null);
         const latestAttemptPhase = targetAttempt?.phase || latestAttempt?.phase || currentPhase;
-
-        const isOrderDone = ['delivered', 'completed', 'returned', 'finished'].includes(order?.status?.toLowerCase()) || session.state === 'COMPLETED';
 
         // Strictly evaluate approval for current active phase attempt: MUST be explicitly APPROVED or order already completed
         const isApproved = isOrderDone || (latestAttemptState === 'APPROVED');

@@ -180,6 +180,46 @@ async function terminateOrderTracking({
             await Promise.all(ids.map((id) => cleanupTrip(id).catch(() => { })));
         }
     } catch (_) { }
+
+    // 6) Clean up PoD DeliverySession and DeliveryAttempt so ended orders never prompt for photo review
+    try {
+        if (!isRelease) {
+            const { DeliverySession } = require('../models/DeliverySession');
+            const { DeliveryAttempt } = require('../models/DeliveryAttempt');
+            const sessionTerminalState = isCompletedStatus ? 'COMPLETED' : 'CANCELLED';
+            const numIds = ids.map(Number).filter(n => !isNaN(n));
+            const sessionFilter = {
+                $or: [
+                    { orderId: { $in: ids } },
+                    ...(numIds.length > 0 ? [{ orderId: { $in: numIds } }] : []),
+                ]
+            };
+            const sessions = await DeliverySession.find(sessionFilter).select('sessionId').lean();
+            const sIds = sessions.map(s => s.sessionId).filter(Boolean);
+
+            await DeliverySession.updateMany(
+                sessionFilter,
+                { $set: { state: sessionTerminalState, subState: 'NONE' } }
+            );
+
+            if (sIds.length > 0) {
+                await DeliveryAttempt.updateMany(
+                    { sessionId: { $in: sIds }, state: 'WAITING_CUSTOMER_REVIEW' },
+                    { $set: { state: sessionTerminalState } }
+                );
+            }
+
+            if (io && clientId) {
+                io.to(`user:${clientId}`).emit('pod:session_ended', {
+                    orderId: numericId,
+                    _id: mongoId,
+                    status: isCompletedStatus ? 'completed' : 'cancelled',
+                });
+            }
+        }
+    } catch (podErr) {
+        logger.warn(`[terminateOrderTracking] PoD session cleanup error: ${podErr.message}`);
+    }
 }
 
 /** Cheap check used by the GPS hot path. Returns true if trip was torn down. */
