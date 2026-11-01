@@ -1,5 +1,6 @@
 const asyncHandler = require('express-async-handler');
 const admin = require('firebase-admin');
+const axios = require('axios');
 const jwt = require('jsonwebtoken'); // kept for any legacy usage
 const { getRegistrationTokenSecret } = require('../utils/secrets');
 const bcrypt = require('bcryptjs');
@@ -68,25 +69,46 @@ const googleSignIn = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: 'idToken is required' });
     }
 
-    if (!initFirebaseAdmin()) {
-        return res.status(500).json({
-            message: 'خدمة تسجيل الدخول بجوجل غير مهيأة على السيرفر. يرجى إضافة FIREBASE_SERVICE_ACCOUNT في إعدادات السيرفر.',
-        });
-    }
-
-    // ── 1. Verify Firebase ID Token ──────────────────────────────────────
+    // ── 1. Verify Token (Firebase ID Token OR Direct Google OAuth Token) ──
+    let uid, email, name, picture;
     let decoded;
-    try {
-        decoded = await admin.auth().verifyIdToken(idToken);
-    } catch (err) {
-        console.error('❌ Firebase token verification failed:', err.message);
-        return res.status(401).json({ message: 'Invalid or expired Google token' });
+
+    // A) Try Firebase Admin first (used by native mobile Android & iOS apps)
+    if (initFirebaseAdmin()) {
+        try {
+            decoded = await admin.auth().verifyIdToken(idToken);
+            uid = decoded.uid;
+            email = decoded.email;
+            name = decoded.name;
+            picture = decoded.picture;
+            console.log(`✅ [GoogleSignIn] Token verified via Firebase Admin for: ${email}`);
+        } catch (fbErr) {
+            console.warn(`ℹ️ [GoogleSignIn] Firebase Admin verifyIdToken rejected token: ${fbErr.message}. Trying direct Google OAuth tokeninfo...`);
+        }
     }
 
-    const { uid, email, name, picture } = decoded;
-
+    // B) Fallback: Verify as direct Google OAuth ID Token (used by Web / iOS Safari redirect)
     if (!email) {
-        return res.status(400).json({ message: 'Google account must have an email address' });
+        try {
+            const googleResp = await axios.get(
+                `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`,
+                { timeout: 8000 }
+            );
+            const gData = googleResp.data;
+            if (gData && gData.email) {
+                uid = gData.sub;
+                email = gData.email;
+                name = gData.name || [gData.given_name, gData.family_name].filter(Boolean).join(' ');
+                picture = gData.picture;
+                console.log(`✅ [GoogleSignIn] Direct Google OAuth token verified for: ${email} (sub: ${uid})`);
+            }
+        } catch (googleErr) {
+            console.error('❌ [GoogleSignIn] Direct Google OAuth verification failed:', googleErr?.response?.data || googleErr.message);
+        }
+    }
+
+    if (!uid || !email) {
+        return res.status(401).json({ message: 'Invalid or expired Google token' });
     }
 
     const fcmToken = req.body?.fcmToken || req.headers['fcm-token'] || req.headers['x-fcm-token'];
