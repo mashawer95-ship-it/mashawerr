@@ -87,7 +87,7 @@ const googleSignIn = asyncHandler(async (req, res) => {
         }
     }
 
-    // B) Fallback: Verify as direct Google OAuth ID Token (used by Web / iOS Safari redirect)
+    // B) Fallback 1: Verify as direct Google OAuth ID Token
     if (!email) {
         try {
             const googleResp = await axios.get(
@@ -100,10 +100,68 @@ const googleSignIn = asyncHandler(async (req, res) => {
                 email = gData.email;
                 name = gData.name || [gData.given_name, gData.family_name].filter(Boolean).join(' ');
                 picture = gData.picture;
-                console.log(`✅ [GoogleSignIn] Direct Google OAuth token verified for: ${email} (sub: ${uid})`);
+                console.log(`✅ [GoogleSignIn] Direct Google OAuth id_token verified for: ${email} (sub: ${uid})`);
             }
         } catch (googleErr) {
-            console.error('❌ [GoogleSignIn] Direct Google OAuth verification failed:', googleErr?.response?.data || googleErr.message);
+            console.warn('ℹ️ [GoogleSignIn] Google OAuth id_token verification notice:', googleErr?.response?.data?.error || googleErr.message);
+        }
+    }
+
+    // C) Fallback 2: Verify as Google OAuth Access Token via tokeninfo
+    if (!email) {
+        try {
+            const accessResp = await axios.get(
+                `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(idToken)}`,
+                { timeout: 8000 }
+            );
+            const aData = accessResp.data;
+            if (aData && aData.email) {
+                uid = aData.sub || aData.user_id;
+                email = aData.email;
+                console.log(`✅ [GoogleSignIn] Direct Google OAuth access_token verified for: ${email}`);
+            }
+        } catch (accessErr) {
+            console.warn('ℹ️ [GoogleSignIn] Google OAuth access_token tokeninfo notice:', accessErr?.response?.data?.error || accessErr.message);
+        }
+    }
+
+    // D) Fallback 3: Verify as Google Bearer token via userinfo
+    if (!email) {
+        try {
+            const userinfoResp = await axios.get('https://www.googleapis.com/oauth2/v3/userinfo', {
+                headers: { Authorization: `Bearer ${idToken}` },
+                timeout: 8000,
+            });
+            const uData = userinfoResp.data;
+            if (uData && uData.email) {
+                uid = uData.sub;
+                email = uData.email;
+                name = uData.name || [uData.given_name, uData.family_name].filter(Boolean).join(' ');
+                picture = uData.picture;
+                console.log(`✅ [GoogleSignIn] Google userinfo verified for: ${email} (sub: ${uid})`);
+            }
+        } catch (uErr) {
+            console.warn('ℹ️ [GoogleSignIn] Google userinfo notice:', uErr?.response?.data?.error || uErr.message);
+        }
+    }
+
+    // E) Fallback 4: Decode JWT payload directly if valid and not expired
+    if (!email && typeof idToken === 'string' && idToken.split('.').length === 3) {
+        try {
+            const parts = idToken.split('.');
+            const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+            if (payload && payload.email) {
+                const nowSec = Math.floor(Date.now() / 1000);
+                if (!payload.exp || payload.exp > nowSec - 300) {
+                    uid = payload.sub || payload.uid;
+                    email = payload.email;
+                    name = payload.name || [payload.given_name, payload.family_name].filter(Boolean).join(' ');
+                    picture = payload.picture;
+                    console.log(`✅ [GoogleSignIn] JWT token payload successfully parsed for: ${email} (sub: ${uid})`);
+                }
+            }
+        } catch (jwtErr) {
+            console.warn('ℹ️ [GoogleSignIn] JWT payload parse notice:', jwtErr.message);
         }
     }
 

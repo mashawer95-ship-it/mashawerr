@@ -74,7 +74,7 @@ app.use(cors({
     origin: isDev ? true : process.env.ALLOWED_ORIGIN || true,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'token', 'x-api-key', 'x-admin-key'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'token', 'x-api-key', 'x-admin-key', 'x-device-id', 'fcm-token', 'x-fcm-token', 'Accept', 'Origin'],
 }));
 // Body size caps (was 50mb on every route → trivial memory-exhaustion DoS).
 // Binary uploads go through multer with its own limits. Override via env if needed.
